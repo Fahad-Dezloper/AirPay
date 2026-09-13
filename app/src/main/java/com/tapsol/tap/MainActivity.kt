@@ -40,6 +40,11 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var reader: TapReader
     private lateinit var wallet: Wallet
+    private lateinit var contacts: Contacts
+
+    /** Our own Genesis mint, if this phone's wallet holds one. Attached to every request. */
+    private var myGenesis by mutableStateOf<String?>(null)
+    private var contactCount by mutableIntStateOf(0)
     private val log = mutableStateListOf<String>()
 
     private var incoming by mutableStateOf<PayRequest?>(null)
@@ -60,10 +65,21 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         wallet = Wallet(this)
+        contacts = Contacts(this)
+        contactCount = contacts.count()
         reader = TapReader(
             activity = this,
             onLog = { line -> runOnUiThread { push(line) } },
-            onRequest = { req -> runOnUiThread { incoming = req } },
+            onRequest = { req ->
+                runOnUiThread {
+                    incoming = req
+                    // The tap itself is the introduction — record them before any payment,
+                    // because a declined payment is still a person you met.
+                    val isNew = contacts.record(req.recipient, req.label, req.genesis != null)
+                    contactCount = contacts.count()
+                    push(if (isNew) "+ new contact ${req.label}" else "— known contact ${req.label}")
+                }
+            },
         )
 
         setContent {
@@ -121,6 +137,15 @@ class MainActivity : ComponentActivity() {
                                             runCatching { Chain.balance(r.address) }.getOrNull()
                                         }
                                         if (b != null) push("   balance ${"%.4f".format(b)} SOL")
+                                        // Genesis lives on mainnet even though we pay on devnet.
+                                        val g = withContext(Dispatchers.IO) {
+                                            runCatching { Genesis.mintFor(r.address) }.getOrNull()
+                                        }
+                                        myGenesis = g
+                                        push(
+                                            if (g != null) "✓ Verified Seeker — genesis ${g.take(8)}…"
+                                            else "   no Genesis Token on this wallet"
+                                        )
                                     }
                                     is Wallet.Outcome.Failed -> push("✗ ${r.why}")
                                     Wallet.Outcome.Declined -> push("— wallet declined")
@@ -177,6 +202,11 @@ class MainActivity : ComponentActivity() {
                             }
                         }
 
+                        if (contactCount > 0) {
+                            Spacer(Modifier.height(14.dp))
+                            ContactStrip(contacts.all())
+                        }
+
                         Spacer(Modifier.height(16.dp))
                         Text("EXCHANGE", color = Dim, fontSize = 10.sp, letterSpacing = 2.sp)
                         Spacer(Modifier.height(6.dp))
@@ -222,6 +252,11 @@ class MainActivity : ComponentActivity() {
             is Wallet.SendOutcome.Sent -> {
                 push("✓ SENT — ${r.signature}")
                 push("   ${Chain.explorerUrl(r.signature)}")
+                contacts.record(
+                    req.recipient, req.label, req.genesis != null,
+                    paid = req.amount.toDoubleOrNull() ?: 0.0,
+                )
+                contactCount = contacts.count()
             }
             is Wallet.SendOutcome.Failed -> push("✗ ${r.why}")
         }
@@ -238,6 +273,7 @@ class MainActivity : ComponentActivity() {
                 token = "SOL",
                 label = android.os.Build.MODEL,
                 reference = PayRequest.newReference(),
+                genesis = myGenesis,
             ) else null
     }
 
@@ -290,6 +326,51 @@ private fun WalletRow(address: String?, busy: Boolean, onConnect: () -> Unit) {
                 onClick = onConnect, enabled = !busy,
                 colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = Ink),
             ) { Text(if (busy) "…" else "Connect", fontWeight = FontWeight.SemiBold) }
+        }
+    }
+}
+
+/**
+ * People met by tapping. The reason to open the app on a day you are not paying anyone —
+ * and the seed of the social graph the reward loop needs, since a new counterparty is worth
+ * more than a repeat one.
+ */
+@Composable
+private fun ContactStrip(list: List<Contact>) {
+    Column {
+        Text("TAPPED ${list.size}", color = Dim, fontSize = 10.sp, letterSpacing = 2.sp)
+        Spacer(Modifier.height(6.dp))
+        list.take(3).forEach { c ->
+            Row(
+                Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(
+                    Modifier.size(26.dp)
+                        .background(if (c.seeker) Accent.copy(alpha = .18f) else Panel, RoundedCornerShape(13.dp)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(c.label.take(1).uppercase(),
+                        color = if (c.seeker) Accent else Dim,
+                        fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                }
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(c.label, color = Fg, fontSize = 13.sp)
+                        if (c.seeker) {
+                            Spacer(Modifier.width(6.dp))
+                            Text("SEEKER", color = Accent, fontSize = 8.sp,
+                                letterSpacing = 1.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                    Text(c.short, color = Dim, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
+                }
+                Text(
+                    if (c.totalPaid > 0) "${"%.3f".format(c.totalPaid)} SOL" else "${c.taps} tap${if (c.taps > 1) "s" else ""}",
+                    color = Dim, fontSize = 10.sp,
+                )
+            }
         }
     }
 }
