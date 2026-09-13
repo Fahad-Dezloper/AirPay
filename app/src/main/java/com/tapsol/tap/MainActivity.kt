@@ -41,6 +41,14 @@ class MainActivity : ComponentActivity() {
     private var incoming by mutableStateOf<PayRequest?>(null)
     private var respond: ((PayAck) -> Boolean)? = null
 
+    /**
+     * Lives here rather than only in composition because reader mode is torn down by the
+     * platform on every pause — a notification, a glance away, even a screenshot. Without
+     * re-arming on resume the button stays lit while the radio is silent, which is exactly
+     * how the first Phase 1 test failed: a contactless card produced no tag at all.
+     */
+    private var mode by mutableStateOf(Mode.IDLE)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -58,30 +66,19 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme(colorScheme = darkColorScheme(background = Ink, surface = Ink)) {
                 val scope = rememberCoroutineScope()
-                var mode by remember { mutableStateOf(Mode.IDLE) }
                 var amount by remember { mutableStateOf("2.50") }
 
                 LaunchedEffect(Unit) {
                     scope.launch { TapHostApduService.events.collect { push(it) } }
                 }
 
-                // Reader mode must be armed only while paying, or this phone would try to
-                // read every card it passes.
-                LaunchedEffect(mode) {
-                    if (mode == Mode.PAY) reader.start() else reader.stop()
-                    TapHostApduService.pending.value =
-                        if (mode == Mode.REQUEST) PayRequest(
-                            recipient = myAddress,
-                            amount = amount,
-                            token = "USDC",
-                            label = android.os.Build.MODEL,
-                            nonce = PayRequest.newNonce(),
-                        ) else null
-                }
+                LaunchedEffect(mode, amount) { applyMode(amount) }
+
+                val diag = remember { Diagnostics.read(this@MainActivity) }
 
                 Surface(Modifier.fillMaxSize(), color = Ink) {
                     Column(Modifier.fillMaxSize().padding(20.dp)) {
-                        Header(reader.available, reader.enabled)
+                        Header(diag)
                         Spacer(Modifier.height(18.dp))
 
                         if (mode == Mode.REQUEST) {
@@ -108,7 +105,7 @@ class MainActivity : ComponentActivity() {
                         Spacer(Modifier.height(14.dp))
                         Text(
                             when (mode) {
-                                Mode.REQUEST -> "Hold the other phone against the back of this one."
+                                Mode.REQUEST -> "Serving a request. Hold the other phone against the back of this one."
                                 Mode.PAY -> "Hold this phone against the one requesting."
                                 Mode.IDLE -> "Pick a side. One requests, one pays."
                             },
@@ -144,9 +141,35 @@ class MainActivity : ComponentActivity() {
         if (log.size > 200) log.removeAt(0)
     }
 
+    /** Single place that puts the radio into whatever the current mode requires. */
+    private fun applyMode(amount: String = lastAmount) {
+        lastAmount = amount
+        if (mode == Mode.PAY) reader.start() else reader.stop()
+        TapHostApduService.pending.value =
+            if (mode == Mode.REQUEST) PayRequest(
+                recipient = myAddress,
+                amount = amount,
+                token = "USDC",
+                label = android.os.Build.MODEL,
+                nonce = PayRequest.newNonce(),
+            ) else null
+    }
+
+    private var lastAmount = "2.50"
+
+    override fun onResume() {
+        super.onResume()
+        // Re-arm. The platform dropped reader mode while we were away.
+        if (mode != Mode.IDLE) {
+            push("resumed — re-arming ${mode.name.lowercase()}")
+            applyMode()
+        }
+    }
+
     override fun onPause() {
         super.onPause()
-        // Leaving the app must not leave a live payment request being served.
+        // Leaving the app must not leave a live payment request being served, but keep `mode`
+        // so onResume can put it back.
         reader.stop()
         TapHostApduService.pending.value = null
     }
@@ -163,16 +186,39 @@ private val Accent = Color(0xFF14F195)   // Solana green
 private val Warn = Color(0xFFE5534B)
 
 @Composable
-private fun Header(available: Boolean, enabled: Boolean) {
+private fun Header(d: Diagnostics) {
+    var open by remember { mutableStateOf(d.blocker != null) }
     Column {
-        Text("TAP", color = Fg, fontSize = 30.sp, fontWeight = FontWeight.Bold, letterSpacing = 4.sp)
-        Spacer(Modifier.height(4.dp))
-        val (msg, color) = when {
-            !available -> "No NFC on this device" to Warn
-            !enabled -> "NFC is switched off" to Warn
-            else -> "NFC ready · ${android.os.Build.MODEL}" to Accent
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("TAP", color = Fg, fontSize = 30.sp, fontWeight = FontWeight.Bold, letterSpacing = 4.sp)
+            Spacer(Modifier.weight(1f))
+            TextButton(onClick = { open = !open }) {
+                Text(if (open) "hide" else "check", color = Dim, fontSize = 12.sp)
+            }
         }
-        Text(msg, color = color, fontSize = 12.sp)
+        Text(
+            d.blocker ?: "Ready · ${d.model}",
+            color = if (d.blocker != null) Warn else Accent,
+            fontSize = 12.sp,
+        )
+        if (open) {
+            Spacer(Modifier.height(10.dp))
+            Column(
+                Modifier.fillMaxWidth()
+                    .background(Panel, RoundedCornerShape(8.dp))
+                    .border(1.dp, Line, RoundedCornerShape(8.dp))
+                    .padding(12.dp)
+            ) {
+                d.lines().forEach { (label, ok) ->
+                    Row(Modifier.padding(vertical = 3.dp)) {
+                        Text(if (ok) "✓" else "✗", color = if (ok) Accent else Warn,
+                            fontSize = 12.sp, fontFamily = FontFamily.Monospace)
+                        Spacer(Modifier.width(10.dp))
+                        Text(label, color = if (ok) Dim else Warn, fontSize = 12.sp)
+                    }
+                }
+            }
+        }
     }
 }
 
