@@ -35,10 +35,12 @@ object Chain {
         recipient: String,
         lamports: Long,
         reference: String,
+        /** Test seam — production always fetches a live blockhash. */
+        blockhashOverride: String? = null,
     ): ByteArray {
         val from = PublicKey(payer)
         val to = PublicKey(recipient)
-        val blockhash = conn.getLatestBlockhash()
+        val blockhash = blockhashOverride ?: conn.getLatestBlockhash()
 
         val transfer = TransferInstruction(from, to, lamports)
 
@@ -55,8 +57,25 @@ object Chain {
         )
 
         val tx = Transaction(blockhash, withRef, feePayer = from)
-        // Unsigned: MWA hands this to the wallet, which signs and submits it.
-        return tx.serialize()
+        return reserveSignatureSlot(tx.serialize())
+    }
+
+    /**
+     * sol4k serializes an unsigned transaction with a signature count of ZERO, and Seeker
+     * Wallet rightly refuses it: Solana's wire format is
+     *     compact-u16 signature count | 64 bytes per signature | message
+     * so zero slots leaves the wallet nowhere to write its signature. The rejection reads
+     * "not properly formed and can't be signed", which is exactly correct.
+     *
+     * A transaction that needs one signer must arrive with one zero-filled slot reserved.
+     * The wallet fills it in. Verified by TxShapeTest, which asserts the leading byte.
+     */
+    private fun reserveSignatureSlot(serialized: ByteArray): ByteArray {
+        if (serialized.isEmpty()) return serialized
+        // Already has slots (a signed or pre-reserved transaction) — leave it alone.
+        if (serialized[0].toInt() != 0) return serialized
+        val message = serialized.copyOfRange(1, serialized.size)
+        return byteArrayOf(1) + ByteArray(64) + message
     }
 
     /** SOL balance, in SOL. */
