@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- requireDeviceUnlock=true: a payment request should not be served from a locked phone.
+     Category "other" rather than "payment" — we are not an EMV payment applet and must not
+     compete for the default-payment slot. -->
+<host-apdu-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:description="@string/aid_group_desc"
+    android:requireDeviceUnlock="true"
+    android:apduServiceBanner="@null">
+    <aid-group
+        android:description="@string/aid_group_desc"
+        android:category="other">
+        <aid-filter android:name="F0536F6C616E61546170" />
+    </aid-group>
+</host-apdu-service>
