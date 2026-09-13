@@ -49,12 +49,19 @@ The capability has been claimed by the biggest wallets on the platform and built
 
 ## Status
 
-Phase 1 — proving the radio exchange. See `../PLAN.md` for the full build plan.
+**Phase 1 complete — two phones exchange bytes on a tap, on real hardware.**
+
+Captured from a Solana Seeker acting as the card, read by a OnePlus CPH2401:
+
+```
+← 00A404000A F0536F6C616E61546170 00      ISO 7816 SELECT, over the air
+SELECT ok → serving 132B request           payment request served
+```
 
 - [x] HCE service registered; AID live in the NFC routing table
 - [x] Reader mode with platform NDEF handling and sounds disabled
 - [x] Wire format with replay protection
-- [ ] Two devices exchanging a payload end to end
+- [x] **Two devices exchanging a payload end to end**
 - [ ] Mobile Wallet Adapter, real USDC transfer
 - [ ] Genesis Token verification
 - [ ] Pairing animation
