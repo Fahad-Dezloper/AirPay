@@ -14,16 +14,30 @@ payee phone                              payer phone
 (card / HCE)                             (reader mode)
      │                                        │
      │◄────────── SELECT F0536F6C616E61546170 │
+     │ {recipient, amount, token, reference}─►│   ~100ms
      │                                        │
-     │ {recipient, amount, token, nonce} ────►│
+     ✂  phones separate here ─ nothing further crosses the radio
+     │                                        │
      │                                        │  confirm + biometric
-     │◄───────── {payer, nonce echoed} ───────│
+     │                                        │  sign + submit
+     │                                        ▼
+     │                                    Solana
      │                                        │
-     └──────── transaction submitted to Solana ────────►
+     └── getSignaturesForAddress(reference) ──┘
+         "Paid ✓" appears on the payee's screen
 ```
 
-The one-time nonce must be echoed back, so a recording of one tap cannot be replayed as a
-second payment.
+**NFC has no connection that survives separation**, so nothing important may depend on the
+phones staying together. One SELECT, one response, done.
+
+The reply travels over the chain instead, using the Solana Pay `reference`: a 32-byte key
+attached to the transfer as a read-only, non-signer account. Validators index transactions by
+account key, so the payee finds the payment without knowing its signature in advance. That is
+also stronger replay protection than echoing a nonce over the radio, because it is verified
+on-chain.
+
+Because the request is emitted in standard Solana Pay form, **any Solana Pay wallet can settle
+it** — the paying side does not have to be this app.
 
 ## Two tiers
 
@@ -55,7 +69,8 @@ Captured from a Solana Seeker acting as the card, read by a OnePlus CPH2401:
 
 ```
 ← 00A404000A F0536F6C616E61546170 00      ISO 7816 SELECT, over the air
-SELECT ok → serving 132B request           payment request served
+SELECT ok → serving 144B request, ref 9upRzPnt…
+deactivated: phones parted                 ~100ms later — the expected ending
 ```
 
 - [x] HCE service registered; AID live in the NFC routing table

@@ -4,29 +4,37 @@ import org.json.JSONObject
 import java.security.SecureRandom
 
 /**
- * What actually crosses the 4cm gap.
+ * What crosses the 4cm gap — and it only ever travels ONE way.
  *
- * The tap carries IDENTITY and INTENT, never money. The payment itself is an ordinary Solana
- * transaction over the network — which is why nobody can "intercept funds" by sniffing the
- * radio, and why the phrasing matters when explaining this.
+ * NFC has no connection that survives separation; the field dies the moment the phones part.
+ * So nothing important may depend on the phones staying together. The payee serves a request,
+ * the payer reads it in ~100ms, and they separate immediately. Confirmation, biometrics and
+ * signing all happen afterwards, at whatever pace the payer likes.
  *
- * Kept deliberately small. A contactless exchange lasts only as long as two phones are held
- * together, and every extra byte is another chance for the user to pull away mid-transfer.
+ * The payee then learns about the payment from the CHAIN, not from the radio, by polling for
+ * the `reference` key. That is the Solana Pay mechanism: a 32-byte value included as a
+ * read-only, non-signer account on the transfer instruction. Validators index transactions by
+ * account key, so `getSignaturesForAddress(reference)` finds the payment without knowing its
+ * signature in advance.
+ *
+ * Using the standard rather than inventing one also means any Solana Pay wallet can pay a
+ * request we emit, not just this app.
  */
 data class PayRequest(
-    /** Base58 Solana address that wants to be paid. */
+    /** Base58 Solana address to be paid. */
     val recipient: String,
     /** Human-readable amount, e.g. "2.50". Empty means "payer decides". */
     val amount: String,
-    /** SPL mint, or "SOL". */
+    /** SPL mint address, or "SOL". */
     val token: String,
     /** Display name of whoever is asking. */
     val label: String,
     /**
-     * One-time value. The payer must echo it back, so a recording of one tap cannot be
-     * replayed as a second payment.
+     * Solana Pay `reference`: a unique 32-byte key, base58 encoded, attached to the transfer
+     * as a read-only non-signer account. Doubles as replay protection — it is single-use and
+     * verified on-chain rather than trusted over the radio.
      */
-    val nonce: String,
+    val reference: String,
     /** Genesis Token mint if the requester is on a verified Seeker, else null. */
     val genesis: String? = null,
 ) {
@@ -36,73 +44,93 @@ data class PayRequest(
         put("a", amount)
         put("t", token)
         put("l", label)
-        put("n", nonce)
+        put("f", reference)
         genesis?.let { put("g", it) }
     }.toString().toByteArray(Charsets.UTF_8)
 
+    /**
+     * The same request as a `solana:` URL. Emitting the standard form means a plain Solana Pay
+     * wallet can settle this without our app on the paying side.
+     */
+    fun toSolanaPayUrl(): String = buildString {
+        append("solana:").append(recipient)
+        append("?amount=").append(amount)
+        if (token != "SOL") append("&spl-token=").append(token)
+        append("&reference=").append(reference)
+        append("&label=").append(java.net.URLEncoder.encode(label, "UTF-8"))
+    }
+
     companion object {
-        const val WIRE_VERSION = 1
+        const val WIRE_VERSION = 2
 
         fun fromBytes(b: ByteArray): PayRequest? = try {
             val o = JSONObject(String(b, Charsets.UTF_8))
-            // Refuse anything from a newer wire version rather than guessing at its meaning.
+            // Refuse a newer wire version rather than guessing at its meaning.
             if (o.optInt("v") != WIRE_VERSION) null
             else PayRequest(
                 recipient = o.getString("r"),
                 amount = o.optString("a"),
                 token = o.optString("t", "SOL"),
                 label = o.optString("l"),
-                nonce = o.getString("n"),
+                reference = o.getString("f"),
                 genesis = if (o.has("g")) o.getString("g") else null,
             )
         } catch (e: Exception) {
             null
         }
 
-        fun newNonce(): String {
-            val b = ByteArray(16)
+        /**
+         * A fresh reference per request. Base58 so it is a valid account key on the wire —
+         * it never needs a private key, only uniqueness.
+         */
+        fun newReference(): String {
+            val b = ByteArray(32)
             SecureRandom().nextBytes(b)
-            return b.toHex()
+            return Base58.encode(b)
         }
     }
 }
 
-/** The payer's reply: who is paying, echoing the nonce so the request can be matched. */
-data class PayAck(
-    val payer: String,
-    val nonce: String,
-    val genesis: String? = null,
-) {
-    fun toBytes(): ByteArray = JSONObject().apply {
-        put("v", PayRequest.WIRE_VERSION)
-        put("p", payer)
-        put("n", nonce)
-        genesis?.let { put("g", it) }
-    }.toString().toByteArray(Charsets.UTF_8)
+/** Minimal base58 encoder — the alphabet Solana uses for account keys. */
+object Base58 {
+    private const val ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 
-    companion object {
-        fun fromBytes(b: ByteArray): PayAck? = try {
-            val o = JSONObject(String(b, Charsets.UTF_8))
-            if (o.optInt("v") != PayRequest.WIRE_VERSION) null
-            else PayAck(o.getString("p"), o.getString("n"),
-                if (o.has("g")) o.getString("g") else null)
-        } catch (e: Exception) {
-            null
+    fun encode(input: ByteArray): String {
+        if (input.isEmpty()) return ""
+        val bytes = input.copyOf()
+        val out = StringBuilder()
+        var zeros = 0
+        while (zeros < bytes.size && bytes[zeros].toInt() == 0) zeros++
+        var start = zeros
+        while (start < bytes.size) {
+            var carry = 0
+            for (i in start until bytes.size) {
+                val v = (bytes[i].toInt() and 0xFF) + carry * 256
+                bytes[i] = (v / 58).toByte()
+                carry = v % 58
+            }
+            out.append(ALPHABET[carry])
+            if (bytes[start].toInt() == 0) start++
         }
+        repeat(zeros) { out.append(ALPHABET[0]) }
+        return out.reverse().toString()
     }
 }
 
 // ---- APDU plumbing ----------------------------------------------------------
 
 /**
- * ISO 7816-4 is the only language an NFC reader and a card-emulating phone share, so the
- * exchange is shaped like smartcard commands even though both ends are phones.
+ * ISO 7816-4 is the only language a reader and a card-emulating phone share, so the exchange
+ * is shaped like smartcard commands even though both ends are phones.
+ *
+ * One command is enough now. SELECT returns the request and the exchange is over — there is
+ * no reply leg, because the reply travels over the chain.
  */
 object Apdu {
 
     /**
      * Proprietary AID: F0 + "SolanaTap". The F0 prefix is the range reserved for
-     * non-registered applications, so this cannot collide with a real payment applet.
+     * non-registered applications, so it cannot collide with a real payment applet.
      */
     const val AID = "F0536F6C616E61546170"
 
@@ -112,13 +140,6 @@ object Apdu {
         return byteArrayOf(0x00, 0xA4.toByte(), 0x04, 0x00, a.size.toByte()) + a + byteArrayOf(0x00)
     }
 
-    /** Reader → card: here is who I am, and the nonce echoed back. */
-    fun sendAck(payload: ByteArray): ByteArray =
-        byteArrayOf(CLA_TAP, INS_ACK, 0x00, 0x00, payload.size.toByte()) + payload + byteArrayOf(0x00)
-
-    const val CLA_TAP = 0x80.toByte()
-    const val INS_ACK = 0x10.toByte()
-
     val SW_OK = byteArrayOf(0x90.toByte(), 0x00)
     val SW_UNKNOWN_CMD = byteArrayOf(0x6D, 0x00)
     val SW_NOT_READY = byteArrayOf(0x69, 0x85.toByte())
@@ -126,23 +147,12 @@ object Apdu {
     fun isOk(r: ByteArray) = r.size >= 2 &&
         r[r.size - 2] == 0x90.toByte() && r[r.size - 1] == 0x00.toByte()
 
-    /** Strip the two-byte status word to get the actual data. */
+    /** Strip the two-byte status word to get the payload. */
     fun body(r: ByteArray): ByteArray =
         if (r.size <= 2) ByteArray(0) else r.copyOfRange(0, r.size - 2)
 
     fun isSelect(cmd: ByteArray): Boolean =
         cmd.size >= 2 && cmd[0] == 0x00.toByte() && cmd[1] == 0xA4.toByte()
-
-    fun isAck(cmd: ByteArray): Boolean =
-        cmd.size >= 2 && cmd[0] == CLA_TAP && cmd[1] == INS_ACK
-
-    /** Data field of a case-3/4 APDU: skip CLA INS P1 P2 Lc. */
-    fun dataOf(cmd: ByteArray): ByteArray {
-        if (cmd.size < 5) return ByteArray(0)
-        val lc = cmd[4].toInt() and 0xFF
-        if (lc == 0 || cmd.size < 5 + lc) return ByteArray(0)
-        return cmd.copyOfRange(5, 5 + lc)
-    }
 }
 
 fun ByteArray.toHex(): String = joinToString("") { "%02X".format(it) }

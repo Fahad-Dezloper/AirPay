@@ -39,7 +39,6 @@ class MainActivity : ComponentActivity() {
     private val myAddress = "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU"
 
     private var incoming by mutableStateOf<PayRequest?>(null)
-    private var respond: ((PayAck) -> Boolean)? = null
 
     /**
      * Lives here rather than only in composition because reader mode is torn down by the
@@ -55,12 +54,7 @@ class MainActivity : ComponentActivity() {
         reader = TapReader(
             activity = this,
             onLog = { line -> runOnUiThread { push(line) } },
-            onRequest = { req, send ->
-                runOnUiThread {
-                    incoming = req
-                    respond = send
-                }
-            },
+            onRequest = { req -> runOnUiThread { incoming = req } },
         )
 
         setContent {
@@ -123,13 +117,13 @@ class MainActivity : ComponentActivity() {
                     ConfirmSheet(
                         req = req,
                         onPay = {
-                            val ok = respond?.invoke(
-                                PayAck(payer = myAddress, nonce = req.nonce)
-                            ) ?: false
-                            push(if (ok) "✓ ack delivered" else "✗ ack failed")
-                            incoming = null; respond = null
+                            // Phase 2 replaces this with MWA sign + submit. The phones are
+                            // already apart by now — nothing here touches NFC.
+                            push("→ paying ${req.amount} ${req.token} to ${req.recipient.take(8)}…")
+                            push("   ref ${req.reference.take(12)}…  (payee polls the chain for this)")
+                            incoming = null
                         },
-                        onCancel = { push("— declined"); incoming = null; respond = null },
+                        onCancel = { push("— declined"); incoming = null },
                     )
                 }
             }
@@ -151,7 +145,7 @@ class MainActivity : ComponentActivity() {
                 amount = amount,
                 token = "USDC",
                 label = android.os.Build.MODEL,
-                nonce = PayRequest.newNonce(),
+                reference = PayRequest.newReference(),
             ) else null
     }
 

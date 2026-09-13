@@ -10,6 +10,10 @@ import android.util.Log
 /**
  * The "reader" half of a tap. This phone is paying, so it drives the exchange.
  *
+ * One SELECT, one response, done — roughly 100ms. Nothing is sent back over NFC, so the
+ * connection is allowed to die the moment the phones separate. Confirmation and signing happen
+ * afterwards, with the phones apart, and the payee finds out from the chain.
+ *
  * Reader mode is used rather than foreground dispatch because it lets us disable the platform's
  * NDEF handling and its confirmation sound — both of which fight the pairing animation and add
  * latency to a gesture that has to feel instant.
@@ -17,7 +21,7 @@ import android.util.Log
 class TapReader(
     private val activity: Activity,
     private val onLog: (String) -> Unit,
-    private val onRequest: (PayRequest, respond: (PayAck) -> Boolean) -> Unit,
+    private val onRequest: (PayRequest) -> Unit,
 ) : NfcAdapter.ReaderCallback {
 
     private val adapter: NfcAdapter? = NfcAdapter.getDefaultAdapter(activity)
@@ -52,9 +56,9 @@ class TapReader(
         }
         try {
             iso.connect()
-            // A tap that needs holding for more than ~2s feels broken, but allow headroom
-            // for the transaction-building round trip.
-            iso.timeout = 5000
+            // Only one command crosses the link, so a short timeout is right — if the phones
+            // are too far apart we want to fail fast and let the user try again.
+            iso.timeout = 2000
             onLog("connected (maxTransceive=${iso.maxTransceiveLength}B)")
 
             val sel = Apdu.select()
@@ -76,22 +80,10 @@ class TapReader(
                 return
             }
             onLog("✓ ${req.label} wants ${req.amount} ${req.token}")
+            onLog("— you can separate the phones now")
 
-            // Hand it up. The callback decides whether to pay and returns the ack to send.
-            onRequest(req) { ack ->
-                try {
-                    val cmd = Apdu.sendAck(ack.toBytes())
-                    onLog("→ ACK ${ack.payer.take(8)}…")
-                    val r = iso.transceive(cmd)
-                    Log.i(TAG, "← ${r.toHex()}")
-                    val ok = Apdu.isOk(r)
-                    onLog(if (ok) "✓ accepted" else "✗ refused: ${r.toHex()}")
-                    ok
-                } catch (e: Exception) {
-                    onLog("✗ ack failed: ${e.message}")
-                    false
-                }
-            }
+            // Everything after this happens with the phones apart.
+            onRequest(req)
         } catch (e: Exception) {
             onLog("✗ ${e.javaClass.simpleName}: ${e.message}")
         } finally {
