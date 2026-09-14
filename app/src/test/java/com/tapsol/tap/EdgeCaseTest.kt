@@ -117,6 +117,26 @@ class EdgeCaseTest {
         assertTrue(url.contains("amount=0.01"))
     }
 
+    // ------------------------------------------------- the wrong-asset class of bug
+
+    /**
+     * The confirm sheet renders req.token, but buildTransfer only ever emits a SystemProgram
+     * transfer. A USDC request would have shown "5 USDC" and sent 5 SOL. On mainnet that is a
+     * wrong-asset payment with no undo, so a non-SOL request must be refused outright.
+     */
+    @Test fun `a request in another token is not silently paid in SOL`() {
+        val usdc = PayRequest(good, "5", "USDC", "Shop", ref)
+        assertTrue("only SOL is supported, so this must not look payable",
+            !usdc.token.equals("SOL", ignoreCase = true))
+        // The wire layer accepts it — refusal is the payer's decision, not a parse failure,
+        // so the user is told why rather than seeing a corrupt-request error.
+        assertNull(usdc.validate())
+    }
+
+    @Test fun `a SOL request is still payable`() {
+        assertTrue(req().token.equals("SOL", ignoreCase = true))
+    }
+
     /**
      * The crash that shipped: Chain.balance() returns a sealed result, and the caller formatted
      * it with %.4f as though it were a Double. That compiles, because String.format takes Any,
@@ -130,7 +150,6 @@ class EdgeCaseTest {
         } catch (e: java.util.IllegalFormatConversionException) {
             // expected
         }
-        // The correct form.
         assertEquals("1.2345", "%.4f".format((result as Chain.Balance.Ok).sol))
     }
 

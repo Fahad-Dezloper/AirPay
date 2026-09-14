@@ -13,6 +13,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -74,6 +75,9 @@ class MainActivity : ComponentActivity() {
     }
     private var status by mutableStateOf<Status>(Status.Idle)
 
+    /** References this phone has already paid, so a repeat tap cannot pay twice. */
+    private val paidReferences = mutableSetOf<String>()
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         installCrashGuard()
@@ -85,6 +89,10 @@ class MainActivity : ComponentActivity() {
             onLog = { line -> runOnUiThread { push(line) } },
             onRequest = { req ->
                 runOnUiThread {
+                    // Reader mode fires repeatedly while phones stay in contact. Swapping the
+                    // request under an open dialog could have someone approve a different one
+                    // than they read.
+                    if (incoming != null) return@runOnUiThread
                     incoming = req
                     // The tap itself is the introduction — record them before any payment,
                     // because a declined payment is still a person you met.
@@ -98,9 +106,12 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme(colorScheme = darkColorScheme(background = Ink, surface = Ink)) {
                 val scope = rememberCoroutineScope()
-                var amount by remember { mutableStateOf(lastAmount) }
+                var amount by rememberSaveable { mutableStateOf(lastAmount) }
                 var busy by remember { mutableStateOf(false) }
-                val diag = remember { Diagnostics.read(this@MainActivity) }
+                // Re-read on every resume: NFC can be switched off while the app sits open,
+                // and a stale "Ready" is worse than no indicator at all.
+                var diag by remember { mutableStateOf(Diagnostics.read(this@MainActivity)) }
+                LaunchedEffect(resumeTick) { diag = Diagnostics.read(this@MainActivity) }
 
                 LaunchedEffect(Unit) {
                     scope.launch { TapHostApduService.events.collect { push(it) } }
@@ -296,6 +307,30 @@ class MainActivity : ComponentActivity() {
 
     /** The payer's half. Runs entirely with the phones already apart. */
     private suspend fun pay(payer: String, req: PayRequest) {
+        // The confirm sheet renders req.token, but buildTransfer only ever makes a SystemProgram
+        // transfer. A request denominated in USDC would have displayed "5 USDC" and sent 5 SOL.
+        // Refusing is the only honest option until SPL transfers exist.
+        if (!req.token.equals("SOL", ignoreCase = true)) {
+            status = Status.Problem(
+                "Can't pay in ${req.token}",
+                "This version only sends SOL. Ask them to request SOL instead.",
+            )
+            return
+        }
+
+        // Paying yourself burns a fee and achieves nothing.
+        if (req.recipient == payer) {
+            status = Status.Problem("That's your own wallet", "Pick a different phone to pay.")
+            return
+        }
+
+        // The payee retires a reference once they see payment, but the payer can tap the same
+        // request again first. On-chain that is a second real transfer.
+        if (paidReferences.contains(req.reference)) {
+            status = Status.Problem("Already paid", "You have paid this request. Ask for a new one.")
+            return
+        }
+
         val lamports = ((req.amount.toDoubleOrNull() ?: 0.0) * Chain.LAMPORTS_PER_SOL).toLong()
 
         status = Status.Working("Checking your balance…")
@@ -325,6 +360,7 @@ class MainActivity : ComponentActivity() {
         status = Status.Working("Waiting for your wallet…")
         when (val r = wallet.signAndSend(tx)) {
             is Wallet.SendOutcome.Sent -> {
+                paidReferences.add(req.reference)
                 status = Status.Sent(r.signature)
                 push("✓ SENT — ${r.signature}")
                 push("   ${Chain.explorerUrl(r.signature)}")
@@ -361,8 +397,12 @@ class MainActivity : ComponentActivity() {
             ) else null
     }
 
+    /** Bumped on resume so composables that cache device state can re-read it. */
+    private var resumeTick by mutableIntStateOf(0)
+
     override fun onResume() {
         super.onResume()
+        resumeTick++
         if (mode != Mode.IDLE) applyMode()
     }
 
