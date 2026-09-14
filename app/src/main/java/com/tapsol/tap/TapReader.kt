@@ -68,7 +68,15 @@ class TapReader(
             Log.i(TAG, "← ${resp.toHex()}")
 
             if (!Apdu.isOk(resp)) {
-                onLog("✗ SELECT refused: ${resp.toHex()}")
+                // 6985 is the other phone's own Tap service answering honestly: it has no
+                // request to give. That is a state — they are in Pay mode, or their request
+                // was already taken — not a fault, and a raw status word says none of that.
+                val nothingPending = resp.size >= 2 &&
+                    resp[resp.size - 2] == 0x69.toByte() && resp[resp.size - 1] == 0x85.toByte()
+                onLog(
+                    if (nothingPending) "— that phone is not requesting anything right now"
+                    else "✗ that phone refused the tap (${resp.toHex()})"
+                )
                 return
             }
             val body = Apdu.body(resp)

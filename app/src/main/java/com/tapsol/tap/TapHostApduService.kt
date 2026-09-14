@@ -43,6 +43,10 @@ class TapHostApduService : HostApduService() {
         events.tryEmit("→ sent ${req.amount} ${req.token} request (${body.size}B)")
         // Handed over. From here the payee watches the chain for `reference`.
         served.tryEmit(req)
+        // One serve, one request. Leaving it pending let the same reference go out on a
+        // second tap — observed 21 seconds apart in a real session — and two payers would
+        // each have paid it in full, with the payee only ever seeing the first.
+        pending.value = null
         return body + Apdu.SW_OK
     }
 

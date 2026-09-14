@@ -80,36 +80,50 @@ class Wallet(private val activity: ComponentActivity) {
     }
 
     /**
-     * Hands an unsigned transaction to the wallet to sign and broadcast.
+     * Asks the wallet to SIGN only. We submit.
      *
-     * `signAndSendTransactions` rather than sign-then-send-ourselves, because the wallet can
-     * re-sign if the blockhash expires between signing and submission, and we cannot.
+     * `signAndSendTransactions` has the wallet broadcast, which means the wallet picks the
+     * cluster — and Phantom sitting on mainnet fails a devnet transaction silently, returning
+     * an empty error. Signing here and submitting ourselves makes the wallet's own network
+     * setting irrelevant, which is the difference between "works" and "works if the user
+     * configured their wallet the way we assumed".
      *
      * Retries once on an authorization failure. A stale token is the most common reason a
      * payment dies at the last step, and asking the user to reconnect by hand — when we know
      * exactly what is wrong — is a poor way to end a tap.
      */
-    suspend fun signAndSend(unsignedTx: ByteArray): SendOutcome {
+    suspend fun signOnly(unsignedTx: ByteArray): SendOutcome {
         val first = attemptSend(unsignedTx)
         if (first !is SendOutcome.NeedsReconnect) return first
 
-        forget()
+        // Drop the token, keep the account. MWA reports a stale session and a plain user
+        // decline identically (`-1 / authorization request failed`), so a declined payment
+        // used to wipe the stored address and leave the app asking to connect on next launch.
+        // Losing a session is not losing an account.
+        forgetToken()
         return when (val again = attemptSend(unsignedTx)) {
             is SendOutcome.NeedsReconnect -> SendOutcome.Failed(
-                "Your wallet session expired. Connect again, then retry the tap."
+                "Your wallet did not approve that. Try the tap again."
             )
             else -> again
         }
     }
 
     private suspend fun attemptSend(unsignedTx: ByteArray): SendOutcome = try {
-        when (val r = adapter.transact(sender) { signAndSendTransactions(arrayOf(unsignedTx)) }) {
+        when (val r = adapter.transact(sender) { signTransactions(arrayOf(unsignedTx)) }) {
             is TransactionResult.Success -> {
-                // A successful transact may hand back a refreshed token; keep it.
-                r.authResult.authToken?.let { prefs.edit().putString(KEY_TOKEN, it).apply() }
-                val sig: ByteArray? = r.payload.signatures.firstOrNull()
-                if (sig == null) SendOutcome.Failed("wallet returned no signature")
-                else SendOutcome.Sent(Base58.encode(sig))
+                // A successful transact hands back a refreshed token, and wallets roll them:
+                // issuing the new one invalidates the old. Writing it to prefs but not to the
+                // adapter left THIS session still presenting the dead token, so the next
+                // payment failed authorization — which is why every payment was asking to
+                // connect first. Both copies get updated.
+                r.authResult.authToken?.let {
+                    adapter.authToken = it
+                    prefs.edit().putString(KEY_TOKEN, it).apply()
+                }
+                val signed: ByteArray? = r.payload.signedPayloads.firstOrNull()
+                if (signed == null) SendOutcome.Failed("The wallet returned nothing to send.")
+                else SendOutcome.Signed(signed)
             }
             is TransactionResult.NoWalletFound -> SendOutcome.Failed("no wallet app found")
             is TransactionResult.Failure -> classify(r.e.message)
@@ -143,14 +157,22 @@ class Wallet(private val activity: ComponentActivity) {
         }
     }
 
+    /** Ends the session but keeps the account — the user is still connected to this wallet. */
+    private fun forgetToken() {
+        adapter.authToken = null
+        prefs.edit().remove(KEY_TOKEN).apply()
+    }
+
+    /** A real disconnect: the user asked to sign out. */
     private fun forget() {
         address = null
-        adapter.authToken = null
-        prefs.edit().remove(KEY_TOKEN).remove(KEY_ADDRESS).apply()
+        forgetToken()
+        prefs.edit().remove(KEY_ADDRESS).apply()
     }
 
     sealed interface SendOutcome {
-        data class Sent(val signature: String) : SendOutcome
+        /** The wallet signed it. Submitting is our job. */
+        data class Signed(val tx: ByteArray) : SendOutcome
         data class Failed(val why: String) : SendOutcome
         /** Internal: the session went stale and the send is worth one retry. */
         data object NeedsReconnect : SendOutcome

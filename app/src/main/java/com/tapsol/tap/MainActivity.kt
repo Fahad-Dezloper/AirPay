@@ -22,6 +22,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -59,8 +60,16 @@ class MainActivity : ComponentActivity() {
     private var lastAmount = "0.01"
     private var connected by mutableStateOf<String?>(null)
 
-    /** The reference we are watching the chain for, once a reader has taken our request. */
-    private var watching by mutableStateOf<String?>(null)
+    /**
+     * Every payment handed out and not yet settled.
+     *
+     * A list because the payee should not be blocked: after serving one phone it re-arms
+     * immediately and can take the next tap while the first payer is still in their wallet.
+     * Each entry carries its own reference and its own blockhash, so they settle and expire
+     * independently of one another.
+     */
+    private val outstanding = mutableStateListOf<Watch.Armed>()
+    private lateinit var watch: Watch
     private var paidSignature by mutableStateOf<String?>(null)
 
     /**
@@ -85,6 +94,15 @@ class MainActivity : ComponentActivity() {
         connected = wallet.address   // a session persisted from last launch
         contacts = Contacts(this)
         contactCount = contacts.count()
+        watch = Watch(this)
+        // A request that outlived the app. The payer may have settled it while we were gone,
+        // so resume the wait rather than lose a payment that already happened.
+        // Payments that outlived the app. The payers may have settled while we were gone,
+        // so the whole queue is resumed rather than lost.
+        watch.all().forEach { a ->
+            outstanding.add(a)
+            push("resuming wait for ${a.reference.take(8)}…")
+        }
         reader = TapReader(
             activity = this,
             onLog = { line -> runOnUiThread { push(line) } },
@@ -118,54 +136,142 @@ class MainActivity : ComponentActivity() {
                     scope.launch { TapHostApduService.events.collect { push(it) } }
                     scope.launch {
                         TapHostApduService.served.collect { req ->
-                            watching = req.reference
-                            push("watching chain for ${req.reference.take(8)}…")
+                            // The hash we just handed over IS the payer's hash, so polling it
+                            // tells us exactly when their transaction stops being submittable.
+                            val entry = Watch.Armed(
+                                reference = req.reference,
+                                amount = req.amount,
+                                startedAt = System.currentTimeMillis(),
+                                blockhash = req.blockhash,
+                                // The tap is one-way: the payee is read, and never learns
+                                // who read it. The amount is the only honest label we have.
+                                label = req.amount,
+                            )
+                            outstanding.add(entry)
+                            watch.add(entry)
+                            push("watching chain for ${req.reference.take(8)}… (${outstanding.size} open)")
+                            // Re-arm straight away so the next person can tap while this payer
+                            // is still deciding. This is the whole point of a queue.
+                            applyMode(amount)
                         }
                     }
                 }
 
                 LaunchedEffect(mode, amount, connected) { applyMode(amount) }
 
-                // The payee's half — runs with the phones long since parted.
-                LaunchedEffect(watching) {
-                    val ref = watching ?: return@LaunchedEffect
-                    val startedAt = System.currentTimeMillis()
-                    var offlineStreak = 0
-                    while (watching == ref) {
-                        val sig = withContext(Dispatchers.IO) { Chain.findPayment(ref) }
-                        if (sig != null) {
-                            paidSignature = sig
-                            status = Status.Idle
-                            push("✓ PAID — $sig")
-                            // Retire it: a served-and-paid reference must never be payable
-                            // twice, and we already saw one request served on two taps.
-                            TapHostApduService.pending.value = null
-                            mode = Mode.IDLE
-                            watching = null
-                            break
+                // The blockhash inside an armed request is the deadline BOTH phones will bind
+                // to, so it has to be fresh at the moment of the tap — not at the moment
+                // Request was pressed.
+                //
+                // The interval is the payer's whole budget. A hash lives ~60s, so whatever age
+                // it has when handed over is time the payer does not get: refreshing every 20s
+                // meant serving a hash up to 20s old, leaving as little as 40s to read the
+                // sheet, press Pay, wait for the wallet to launch, and approve. That is not
+                // enough, and it read as "the sender keeps getting stuck". Five seconds costs
+                // a request per five seconds while the Request screen is open — only while it
+                // is open — and hands the payer very nearly the full window.
+                LaunchedEffect(mode, connected) {
+                    if (mode != Mode.REQUEST || connected == null) return@LaunchedEffect
+                    while (true) {
+                        val bh = withContext(Dispatchers.IO) { Chain.latestBlockhash() }
+                        val live = TapHostApduService.pending.value
+                        if (bh != null && live != null && live.blockhash != bh) {
+                            TapHostApduService.pending.value = live.copy(blockhash = bh)
+                            android.util.Log.i("TapUI", "armed hash ${bh.take(8)}…")
                         }
-                        // "Not yet" and "can't tell" must not look the same to a user.
-                        if (!withContext(Dispatchers.IO) { Chain.reachable() }) {
-                            if (++offlineStreak >= 3) {
+                        delay(5_000)
+                    }
+                }
+
+                // The payee's half — runs with the phones long since parted, over EVERY
+                // outstanding payment at once. A single blocking wait meant the second person
+                // in a queue could not tap until the first had paid; there is no reason for
+                // that, since each payment is tracked by its own reference on the chain.
+                LaunchedEffect(Unit) {
+                    val offline = mutableMapOf<String, Int>()
+                    val lastHashCheck = mutableMapOf<String, Long>()
+                    while (true) {
+                        val now = System.currentTimeMillis()
+                        val queue = outstanding.toList()
+                        if (queue.isEmpty()) {
+                            delay(400)
+                            continue
+                        }
+                        for (p in queue) {
+                            if (outstanding.none { it.reference == p.reference }) continue
+                            val waited = now - p.startedAt
+                            android.util.Log.i(
+                                "TapUI", "poll ref=${p.reference.take(8)} waited=${waited}ms",
+                            )
+                            val found = withContext(Dispatchers.IO) { Chain.findPayment(p.reference) }
+                            android.util.Log.i("TapUI", "poll -> $found")
+
+                            if (found is Chain.Found.Yes) {
+                                settle(p, found.signature)
+                                continue
+                            }
+
+                            // "Not yet", "can't tell" and "our question was wrong" must not
+                            // look the same. The last is the dangerous one: it wears the same
+                            // spinner as patience while the payment has already arrived.
+                            when (found) {
+                                is Chain.Found.Broken -> status = Status.Problem(
+                                    "Can't check for payment",
+                                    "Solana rejected our query: ${found.why}",
+                                )
+                                Chain.Found.Offline -> {
+                                    val n = (offline[p.reference] ?: 0) + 1
+                                    offline[p.reference] = n
+                                    if (n >= 3) status = Status.Problem(
+                                        "Can't reach Solana",
+                                        "Still waiting, but we cannot check right now.",
+                                    )
+                                }
+                                else -> offline[p.reference] = 0
+                            }
+
+                            // Is this payer's attempt still able to land at all? Their
+                            // transaction is bound to the blockhash we handed them, and once
+                            // that dies their signature is worthless. Checked on the payer's
+                            // own cadence so both phones conclude it within a poll of each
+                            // other; null — "could not ask" — is never read as dead.
+                            val bh = p.blockhash
+                            val due = now - (lastHashCheck[p.reference] ?: 0L) > 4_000
+                            var dead = false
+                            if (bh != null && waited > EXPIRY_FLOOR_MS && due) {
+                                lastHashCheck[p.reference] = now
+                                if (withContext(Dispatchers.IO) { Chain.blockhashAlive(bh) } == false) {
+                                    // One last look: it could have landed as the hash died.
+                                    val late = withContext(Dispatchers.IO) { Chain.findPayment(p.reference) }
+                                    if (late is Chain.Found.Yes) {
+                                        settle(p, late.signature)
+                                        continue
+                                    }
+                                    dead = true
+                                    push("— ${p.reference.take(8)}… can no longer land")
+                                }
+                            }
+
+                            if (dead || waited > WATCH_TIMEOUT_MS) {
+                                // Stop watching, but do NOT forget unless it is truly old: a
+                                // payer who took six minutes still moved real SOL, and the
+                                // payee has to find out eventually. Each launch buys the
+                                // reference one more look at the chain.
+                                val abandoned = waited > Watch.ABANDON_MS
+                                if (abandoned) watch.remove(p.reference)
+                                outstanding.removeAll { it.reference == p.reference }
+                                push("— expired, nobody paid ${p.reference.take(8)}…")
                                 status = Status.Problem(
-                                    "Can't reach Solana",
-                                    "Still waiting, but we cannot check right now.",
+                                    if (abandoned) "Never paid" else "Payment not sent",
+                                    if (abandoned) "That ${p.amount} SOL request was never paid."
+                                    else "That ${p.amount} SOL request was not approved in time.",
                                 )
                             }
-                        } else offlineStreak = 0
-
-                        // Never wait forever. A request nobody paid becomes stale, not eternal.
-                        if (System.currentTimeMillis() - startedAt > WATCH_TIMEOUT_MS) {
-                            status = Status.Problem(
-                                "No payment yet",
-                                "This request expired. Start a new one when you are ready.",
-                            )
-                            TapHostApduService.pending.value = null
-                            mode = Mode.IDLE
-                            watching = null
-                            break
                         }
-                        delay(2000)
+                        // Tight while payers are plausibly still in their wallets, relaxed
+                        // after that. Scaled by queue size so a long queue is not a flood.
+                        val youngest = outstanding.minOfOrNull { now - it.startedAt } ?: 0
+                        delay(if (youngest < 30_000) 600L else 2_000L)
                     }
                 }
 
@@ -186,8 +292,12 @@ class MainActivity : ComponentActivity() {
                                 }
                             },
                         ) {
-                            scope.launch {
+                            // Same shape as paying: connecting opens the wallet app and
+                            // suspends there, so it outlives the composition and must clear
+                            // `busy` even when cancelled.
+                            lifecycleScope.launch {
                                 busy = true
+                                try {
                                 push("opening wallet…")
                                 when (val r = wallet.connect()) {
                                     is Wallet.Outcome.Ok -> {
@@ -215,7 +325,9 @@ class MainActivity : ComponentActivity() {
                                     is Wallet.Outcome.Failed -> push("✗ ${r.why}")
                                     Wallet.Outcome.Declined -> push("— wallet declined")
                                 }
-                                busy = false
+                                } finally {
+                                    busy = false
+                                }
                             }
                         }
 
@@ -246,8 +358,12 @@ class MainActivity : ComponentActivity() {
 
                         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                             ModeButton("Request", mode == Mode.REQUEST, connected != null, Modifier.weight(1f)) {
-                                mode = if (mode == Mode.REQUEST) Mode.IDLE else Mode.REQUEST
-                                paidSignature = null
+                                if (mode == Mode.REQUEST) {
+                                    mode = Mode.IDLE
+                                } else {
+                                    mode = Mode.REQUEST
+                                    paidSignature = null
+                                }
                             }
                             ModeButton("Pay", mode == Mode.PAY, connected != null, Modifier.weight(1f)) {
                                 mode = if (mode == Mode.PAY) Mode.IDLE else Mode.PAY
@@ -258,13 +374,35 @@ class MainActivity : ComponentActivity() {
                         Text(
                             when {
                                 connected == null -> "Connect a wallet first."
-                                watching != null -> "Waiting for payment…"
+                                mode == Mode.REQUEST && outstanding.isNotEmpty() ->
+                                    "Ready for the next tap — ${outstanding.size} still to pay."
                                 mode == Mode.REQUEST -> "Hold the other phone against the back of this one."
                                 mode == Mode.PAY -> "Hold this phone against the one requesting."
+                                outstanding.isNotEmpty() -> "Waiting on ${outstanding.size} payment(s)…"
                                 else -> "Pick a side. One requests, one pays."
                             },
-                            color = if (watching != null) Accent else Dim, fontSize = 13.sp,
+                            color = if (outstanding.isNotEmpty()) Accent else Dim, fontSize = 13.sp,
                         )
+
+                        if (outstanding.isNotEmpty()) {
+                            Spacer(Modifier.height(10.dp))
+                            OutstandingList(outstanding) { ref ->
+                                push("— stopped waiting on ${ref.take(8)}…")
+                                watch.remove(ref)
+                                outstanding.removeAll { it.reference == ref }
+                            }
+                        }
+
+                        // The payer can abandon a payment — decline it, close the wallet, walk
+                        // away — and nothing about that reaches us over the chain. Without this
+                        // the payee is pinned to a countdown for a payment that is never coming.
+                        if (outstanding.size > 1) {
+                            Spacer(Modifier.height(8.dp))
+                            OutlinedButton(
+                                onClick = { cancelWait("stopped waiting") },
+                                modifier = Modifier.fillMaxWidth(),
+                            ) { Text("Stop waiting on all", color = Warn, fontSize = 13.sp) }
+                        }
 
                         paidSignature?.let { sig ->
                             Spacer(Modifier.height(10.dp))
@@ -304,10 +442,22 @@ class MainActivity : ComponentActivity() {
                             val payer = connected
                             incoming = null
                             if (payer == null) push("✗ connect a wallet first")
-                            else scope.launch {
+                            // lifecycleScope, not the composition's scope: paying suspends
+                            // inside the wallet for as long as the user takes — a minute and a
+                            // half of Phantom is normal — and a composition disposed behind
+                            // that dialog would cancel the payment mid-flight.
+                            //
+                            // finally, not a trailing assignment: cancellation skips the line
+                            // after a suspend point, which left `busy` stuck true and the
+                            // confirm button reading "…" instead of "Pay" for the rest of the
+                            // session, with no way back short of restarting the app.
+                            else lifecycleScope.launch {
                                 busy = true
-                                pay(payer, req)
-                                busy = false
+                                try {
+                                    pay(payer, req)
+                                } finally {
+                                    busy = false
+                                }
                             }
                         },
                         onCancel = { push("— declined"); incoming = null },
@@ -345,9 +495,24 @@ class MainActivity : ComponentActivity() {
 
         val lamports = ((req.amount.toDoubleOrNull() ?: 0.0) * Chain.LAMPORTS_PER_SOL).toLong()
 
+        // Bind to the hash that crossed the tap. Check it is still alive first: signing
+        // against a dead blockhash wastes the user's fingerprint on a transaction the network
+        // will refuse, and the payee has already stopped waiting for it.
+        val shared = req.blockhash
+        if (shared != null) {
+            if (withContext(Dispatchers.IO) { Chain.blockhashAlive(shared) } == false) {
+                status = Status.Problem(
+                    "This request expired",
+                    "They took it back. Ask them to tap again.",
+                )
+                return
+            }
+        }
+
+        push("pay: building on ${shared?.take(8) ?: "own"} hash")
         status = Status.Working("Checking your balance…")
         val built = withContext(Dispatchers.IO) {
-            Chain.buildTransfer(payer, req.recipient, lamports, req.reference)
+            Chain.buildTransfer(payer, req.recipient, lamports, req.reference, sharedBlockhash = shared)
         }
 
         val tx = when (built) {
@@ -369,18 +534,70 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        // The wallet's approval sheet has no deadline of its own — Phantom will sit on that
+        // screen indefinitely — but the transaction underneath it does: it is bound to the
+        // blockhash just fetched, and dies with it. Without saying so, the payer stares at an
+        // approve button that has already stopped meaning anything, while the payee has
+        // already been told the payment is dead. A ticker says it on this side too.
+        //
+        // It does NOT cancel the wallet call. Aborting an MWA transact mid-flight risks
+        // leaving the session wedged, and there is nothing to gain: we submit the signature
+        // ourselves, so a late approval simply fails preflight and is reported honestly.
+        push("pay: opening wallet")
         status = Status.Working("Waiting for your wallet…")
-        when (val r = wallet.signAndSend(tx)) {
-            is Wallet.SendOutcome.Sent -> {
-                paidReferences.add(req.reference)
-                status = Status.Sent(r.signature)
-                push("✓ SENT — ${r.signature}")
-                push("   ${Chain.explorerUrl(r.signature)}")
-                contacts.record(
-                    req.recipient, req.label, req.genesis != null,
-                    paid = req.amount.toDoubleOrNull() ?: 0.0,
-                )
-                contactCount = contacts.count()
+        val openedAt = System.currentTimeMillis()
+        val deadline = lifecycleScope.launch {
+            if (shared == null) {
+                // No shared hash to watch — fall back to the blockhash lifetime as a bound.
+                delay(APPROVE_WINDOW_MS)
+            } else {
+                // Watch the very hash the payee is watching, so both phones give up together.
+                while (withContext(Dispatchers.IO) { Chain.blockhashAlive(shared) } != false) {
+                    delay(4_000)
+                }
+            }
+            push("pay: approval window CLOSED after ${System.currentTimeMillis() - openedAt}ms")
+            status = Status.Problem(
+                "Payment not sent",
+                "The approval window closed before you approved. Nothing was sent — tap again.",
+            )
+            // The wallet's own sheet has no deadline and will sit there for another minute,
+            // showing an approve button that has already stopped meaning anything. Ask to come
+            // forward so the payer sees the truth instead. Android restricts activity starts
+            // from the background, so this may be refused — the state is set either way, and
+            // is waiting whenever they come back on their own.
+            bringForward()
+        }
+        val r = wallet.signOnly(tx)
+        deadline.cancel()
+        push("pay: wallet returned after ${System.currentTimeMillis() - openedAt}ms")
+        when (r) {
+            is Wallet.SendOutcome.Signed -> {
+                // We submit, not the wallet — so the cluster is ours to choose.
+                status = Status.Working("Sending…")
+                when (val sent = withContext(Dispatchers.IO) { Chain.submit(r.tx) }) {
+                    is Chain.Submitted.Ok -> {
+                        paidReferences.add(req.reference)
+                        status = Status.Sent(sent.signature)
+                        push("✓ SENT — ${sent.signature}")
+                        push("   ${Chain.explorerUrl(sent.signature)}")
+                        contacts.record(
+                            req.recipient, req.label, req.genesis != null,
+                            paid = req.amount.toDoubleOrNull() ?: 0.0,
+                        )
+                        contactCount = contacts.count()
+                    }
+                    is Chain.Submitted.Rejected -> {
+                        val stale = sent.why.contains("blockhash", true)
+                        status = Status.Problem(
+                            if (stale) "That took too long" else "The network refused it",
+                            if (stale) "Tap again and approve a little quicker." else sent.why,
+                        )
+                    }
+                    Chain.Submitted.Offline -> status = Status.Problem(
+                        "Can't reach Solana", "Signed, but not sent. Check your connection.",
+                    )
+                }
             }
             is Wallet.SendOutcome.Failed -> {
                 // A blockhash that expired while the user was deciding is the common case,
@@ -403,19 +620,85 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * Abandons whatever payment we were waiting for.
+     *
+     * Nothing about a payer giving up — declining, closing the wallet, letting the blockhash
+     * expire — travels back over the chain, so the payee cannot detect it and must be able to
+     * say so. Clearing the disk entry too: this is a deliberate "that one is not coming".
+     */
+    /**
+     * Ask to be the foreground app again.
+     *
+     * Best effort by design: since Android 10 a background app usually cannot start an
+     * activity, and we may well be refused. Never rely on it — it is a courtesy on top of
+     * state that is already correct.
+     */
+    private fun bringForward() {
+        val ok = runCatching {
+            startActivity(
+                android.content.Intent(this, MainActivity::class.java).addFlags(
+                    android.content.Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
+                        android.content.Intent.FLAG_ACTIVITY_NEW_TASK
+                )
+            )
+        }.isSuccess
+        push("pay: bring-to-front ${if (ok) "requested" else "refused by Android"}")
+    }
+
+    /** One payment arrived. Retire it and leave the rest of the queue running. */
+    private fun settle(p: Watch.Armed, signature: String) {
+        paidSignature = signature
+        status = Status.Idle
+        push("✓ PAID ${p.amount} SOL — $signature")
+        watch.remove(p.reference)
+        outstanding.removeAll { it.reference == p.reference }
+    }
+
+    /**
+     * Give up on everything outstanding.
+     *
+     * Nothing about a payer abandoning a payment reaches the chain, so the payee can never
+     * observe it directly and must be able to say so by hand. Clearing the disk entries too:
+     * this is a deliberate "those are not coming".
+     */
+    private fun cancelWait(why: String) {
+        if (outstanding.isEmpty()) return
+        push("— $why (dropped ${outstanding.size})")
+        watch.clear()
+        outstanding.clear()
+        TapHostApduService.pending.value = null
+        status = Status.Idle
+    }
+
     private fun applyMode(amount: String = lastAmount) {
         lastAmount = amount
         if (mode == Mode.PAY) reader.start() else reader.stop()
         val addr = connected
-        TapHostApduService.pending.value =
-            if (mode == Mode.REQUEST && addr != null) PayRequest(
-                recipient = addr,
-                amount = amount,
-                token = "SOL",
-                label = android.os.Build.MODEL,
-                reference = PayRequest.newReference(),
-                genesis = myGenesis,
-            ) else null
+        if (mode != Mode.REQUEST || addr == null) {
+            TapHostApduService.pending.value = null
+            return
+        }
+        // Deliberately NOT blocked by outstanding payments any more. Each one is tracked by
+        // its own reference, so arming the next request cannot be confused with the last —
+        // and refusing to arm was what made the second person in a queue wait on the first.
+        val live = TapHostApduService.pending.value
+        // Keep the same reference across a pause/resume. This runs again on every onResume,
+        // and minting a fresh reference each time meant a notification — or the screen simply
+        // sleeping — silently swapped the key under a request already on screen. The payer
+        // would then pay a reference we had stopped watching, and ✓ Paid would never arrive.
+        if (live != null &&
+            live.recipient == addr && live.amount == amount && live.genesis == myGenesis
+        ) return
+
+        TapHostApduService.pending.value = PayRequest(
+            recipient = addr,
+            amount = amount,
+            token = "SOL",
+            label = android.os.Build.MODEL,
+            reference = PayRequest.newReference(),
+            genesis = myGenesis,
+        )
     }
 
     /** Bumped on resume so composables that cache device state can re-read it. */
@@ -434,6 +717,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun push(line: String) {
+        android.util.Log.i("TapUI", line)
         log.add(line)
         if (log.size > 200) log.removeAt(0)
     }
@@ -466,8 +750,39 @@ class MainActivity : ComponentActivity() {
     private enum class Mode { IDLE, REQUEST, PAY }
 
     private companion object {
-        /** How long a served request stays payable before it is retired. */
-        const val WATCH_TIMEOUT_MS = 5 * 60 * 1000L
+        /**
+         * How long the payee actively waits before calling a payment expired.
+         *
+         * Nothing about a payer giving up reaches the chain, so absence of a transaction is
+         * the only evidence the payee ever gets — and absence looks identical to slowness.
+         * The one real bound is Solana's: a transaction is built against a blockhash that
+         * dies after ~150 slots, roughly 60–90 seconds. Once that window plus a margin has
+         * passed, the payer's transaction cannot land, and waiting longer is just a spinner
+         * pretending to be patience.
+         *
+         * Two minutes, not five. The payer could of course tap again and build afresh, which
+         * is why the reference stays on disk for a late look rather than being deleted here.
+         */
+        const val WATCH_TIMEOUT_MS = 2 * 60 * 1000L
+
+        /**
+         * No expiry is declared before this, however the chain answers — insurance against a
+         * hash that was already stale when armed, or a bad answer from the node.
+         *
+         * It was 40s, from when each side timed its own hash and the payee's was the older
+         * one. Both now watch the SAME hash, so the guard no longer protects against anything
+         * the payer is not equally exposed to — it only made the payee announce expiry seven
+         * seconds after the payer had already given up on the very same fact. Measured: payer
+         * saw the hash die at 33s, payee was gagged until 40s.
+         */
+        const val EXPIRY_FLOOR_MS = 12 * 1000L
+
+        /**
+         * How long the payer's signature is worth having. A transaction is only submittable
+         * while its blockhash lives (~150 slots), and the blockhash is fetched immediately
+         * before the wallet is opened, so this is that window less a little slack.
+         */
+        const val APPROVE_WINDOW_MS = 55 * 1000L
     }
 }
 
@@ -689,4 +1004,35 @@ private fun ConfirmSheet(req: PayRequest, busy: Boolean, onPay: () -> Unit, onCa
         },
         dismissButton = { TextButton(onClick = onCancel) { Text("Cancel", color = Dim) } },
     )
+}
+
+/**
+ * The payments handed out and not yet settled.
+ *
+ * Visible as a list rather than a single line because the payee can now be owed by several
+ * people at once, and "waiting" without saying who for is not information. Each row can be
+ * dropped on its own — one payer walking away should not cost the others their place.
+ */
+@Composable
+private fun OutstandingList(items: List<Watch.Armed>, onDrop: (String) -> Unit) {
+    Column(Modifier.fillMaxWidth()) {
+        Text("AWAITING PAYMENT", color = Dim, fontSize = 10.sp, letterSpacing = 2.sp)
+        Spacer(Modifier.height(6.dp))
+        items.forEach { p ->
+            val age = ((System.currentTimeMillis() - p.startedAt) / 1000).toInt()
+            Row(
+                Modifier.fillMaxWidth().padding(vertical = 3.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("${p.amount} SOL", color = Accent, fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold)
+                Spacer(Modifier.width(8.dp))
+                Text("${p.reference.take(8)}… · ${age}s", color = Dim, fontSize = 11.sp,
+                    fontFamily = FontFamily.Monospace, modifier = Modifier.weight(1f))
+                TextButton(onClick = { onDrop(p.reference) }) {
+                    Text("Drop", color = Warn, fontSize = 11.sp)
+                }
+            }
+        }
+    }
 }

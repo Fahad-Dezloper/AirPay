@@ -37,6 +37,19 @@ data class PayRequest(
     val reference: String,
     /** Genesis Token mint if the requester is on a verified Seeker, else null. */
     val genesis: String? = null,
+    /**
+     * The blockhash the payer must build against — and therefore the moment this request dies.
+     *
+     * Both phones need to agree on when a payment is no longer possible, and each fetching its
+     * own blockhash does not achieve that: the payee's is taken when the request is served, the
+     * payer's when they press Pay, so the payee's is always older and always expires first. It
+     * would announce "expired" while the payer's transaction was still perfectly valid.
+     *
+     * Carrying one hash across the tap makes the deadline a shared fact rather than two
+     * estimates. Both sides poll `isBlockhashValid` on this exact value and get the same answer
+     * at the same instant. The payee keeps it fresh while the request waits to be tapped.
+     */
+    val blockhash: String? = null,
 ) {
     fun toBytes(): ByteArray = JSONObject().apply {
         put("v", WIRE_VERSION)
@@ -46,6 +59,7 @@ data class PayRequest(
         put("l", label)
         put("f", reference)
         genesis?.let { put("g", it) }
+        blockhash?.let { put("b", it) }
     }.toString().toByteArray(Charsets.UTF_8)
 
     /**
@@ -69,6 +83,7 @@ data class PayRequest(
         !isBase58Address(recipient) -> "The request has an invalid destination address."
         !isBase58Address(reference) -> "The request has an invalid reference."
         genesis != null && !isBase58Address(genesis) -> "The request has an invalid Genesis token."
+        blockhash != null && !isBase58Address(blockhash) -> "The request has an invalid blockhash."
         amount.isNotBlank() && amount.toDoubleOrNull() == null -> "The request has an unreadable amount."
         (amount.toDoubleOrNull() ?: 0.0) < 0 -> "The request asks for a negative amount."
         (amount.toDoubleOrNull() ?: 0.0) > MAX_AMOUNT -> "That amount looks wrong — refusing it."
@@ -77,7 +92,9 @@ data class PayRequest(
     }
 
     companion object {
-        const val WIRE_VERSION = 2
+        // 3 carries the shared blockhash. A v2 peer is refused rather than paid against a
+        // deadline only one side knows about.
+        const val WIRE_VERSION = 3
 
         /** A sanity ceiling. A tap should never carry a life-changing sum by accident. */
         const val MAX_AMOUNT = 1_000.0
@@ -98,6 +115,7 @@ data class PayRequest(
                 label = o.optString("l"),
                 reference = o.getString("f"),
                 genesis = if (o.has("g")) o.getString("g") else null,
+                blockhash = if (o.has("b")) o.getString("b") else null,
             )
         } catch (e: Exception) {
             null

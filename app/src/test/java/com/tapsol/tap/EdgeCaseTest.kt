@@ -26,7 +26,8 @@ class EdgeCaseTest {
         reference: String = ref,
         label: String = "Seeker",
         genesis: String? = null,
-    ) = PayRequest(recipient, amount, "SOL", label, reference, genesis)
+        blockhash: String? = null,
+    ) = PayRequest(recipient, amount, "SOL", label, reference, genesis, blockhash)
 
     // ---------------------------------------------------------------- must reject
 
@@ -68,6 +69,41 @@ class EdgeCaseTest {
     @Test fun `a newer wire version is refused rather than guessed at`() {
         val future = """{"v":99,"r":"$good","a":"1","t":"SOL","l":"x","f":"$ref"}"""
         assertNull(PayRequest.fromBytes(future.toByteArray()))
+    }
+
+    /**
+     * v2 has no blockhash, so a v2 peer would have each side timing its own — the mismatch
+     * this version exists to remove. Refusing is better than paying against a deadline only
+     * one phone knows about.
+     */
+    @Test fun `a v2 peer is refused, because its deadline is unknowable`() {
+        val v2 = """{"v":2,"r":"$good","a":"1","t":"SOL","l":"x","f":"$ref"}"""
+        assertNull(PayRequest.fromBytes(v2.toByteArray()))
+    }
+
+    @Test fun `the shared blockhash survives the wire`() {
+        val original = req(blockhash = BLOCKHASH)
+        val back = PayRequest.fromBytes(original.toBytes())
+        assertNotNull(back)
+        assertEquals(BLOCKHASH, back!!.blockhash)
+        assertNull(back.validate())
+    }
+
+    @Test fun `a garbage blockhash is refused rather than built against`() {
+        assertNotNull(req(blockhash = "not-a-hash").validate())
+        assertNotNull(req(blockhash = "abc").validate())
+    }
+
+    /** No blockhash is still valid — the payer falls back to fetching its own. */
+    @Test fun `a request without a blockhash is still well formed`() {
+        assertNull(req(blockhash = null).validate())
+    }
+
+    /** The payer must build against the hash it was given, not one of its own choosing. */
+    @Test fun `a shared blockhash is the one actually used`() {
+        val r = Chain.buildTransfer(good, ref, 10_000, ref, blockhashOverride = BLOCKHASH)
+        assertTrue(r is Chain.Built.Ok)
+        assertEquals("the wallet needs one slot to sign into", 1, (r as Chain.Built.Ok).tx[0].toInt())
     }
 
     // ---------------------------------------------------------------- must accept
@@ -153,7 +189,43 @@ class EdgeCaseTest {
         assertEquals("1.2345", "%.4f".format((result as Chain.Balance.Ok).sol))
     }
 
+    // ------------------------------------------- the silent-wait class of bug
+
+    /**
+     * The payee's whole confirmation rests on one RPC call, and `getSignaturesForAddress`
+     * refuses any commitment below `confirmed`:
+     *
+     *     -32602  Method does not support commitment below `confirmed`
+     *
+     * It refuses with an HTTP 200 carrying an error object, so the signature regex simply
+     * finds nothing and "your query is invalid" becomes indistinguishable from "not paid
+     * yet". Shipped, that is a payee watching a spinner while the SOL is already in their
+     * account. Asserted on the request we actually send.
+     */
+    @Test fun `the payment query never asks for a commitment below confirmed`() {
+        val body = Chain.signaturesBody(ref)
+        assertTrue("processed is rejected by this RPC method", !body.contains("processed"))
+        assertTrue(body.contains(""""commitment":"confirmed""""))
+        assertTrue(body.contains(ref))
+    }
+
+    /** A JSON-RPC error must never be mistaken for an empty result. */
+    @Test fun `an rpc error is read as an error, not as an empty answer`() {
+        val err = """{"jsonrpc":"2.0","error":{"code":-32602,""" +
+            """"message":"Method does not support commitment below `confirmed`"},"id":1}"""
+        assertEquals(
+            "Method does not support commitment below `confirmed`",
+            Chain.rpcError(err),
+        )
+    }
+
+    @Test fun `a good response carries no error`() {
+        val ok = """{"jsonrpc":"2.0","result":[{"signature":"$SIG","err":null}],"id":1}"""
+        assertNull(Chain.rpcError(ok))
+    }
+
     private companion object {
         const val BLOCKHASH = "9zL9gmLBcnDpSLhQhgWjcTZGvtPqbRVhLgkBUoLoJgfd"
+        const val SIG = "5gN5R1etzG8tUbZGqJdG5aS47gmRbGEJ4cSb9nCrnZiqt63ySjwSNNnUUcqbENQYYvfRuBfdkLQe3RPGeY9RXS5o"
     }
 }

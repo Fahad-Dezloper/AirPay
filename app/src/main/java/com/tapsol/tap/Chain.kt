@@ -48,8 +48,13 @@ object Chain {
         recipient: String,
         lamports: Long,
         reference: String,
-        /** Test seam — production always fetches a live blockhash. */
+        /** Test seam — also skips the balance check, so tests need no network. */
         blockhashOverride: String? = null,
+        /**
+         * The blockhash carried across the tap. Using the payee's hash rather than fetching our
+         * own is what makes both phones expire on the same instant instead of two guesses.
+         */
+        sharedBlockhash: String? = null,
     ): Built {
         if (!PayRequest.isBase58Address(payer)) return Built.Bad("Your wallet address looks wrong.")
         if (!PayRequest.isBase58Address(recipient)) return Built.Bad("That destination address is not valid.")
@@ -72,7 +77,7 @@ object Chain {
             }
         }
 
-        val blockhash = blockhashOverride ?: run {
+        val blockhash = blockhashOverride ?: sharedBlockhash ?: run {
             try { conn.getLatestBlockhash() }
             catch (e: Exception) { return Built.Offline(e.message ?: "could not reach Solana") }
         }
@@ -129,14 +134,111 @@ object Chain {
      * Returns null both when unpaid and when unreachable; the caller distinguishes by whether
      * `reachable()` holds, because "not yet" and "cannot tell" must not look the same to a user.
      */
-    fun findPayment(reference: String): String? {
-        if (!PayRequest.isBase58Address(reference)) return null
-        val res = post(
-            """{"jsonrpc":"2.0","id":1,"method":"getSignaturesForAddress",
-                "params":["$reference",{"limit":10}]}"""
-        ) ?: return null
-        return Regex("\"signature\"\\s*:\\s*\"([1-9A-HJ-NP-Za-km-z]{60,})\"")
+    sealed interface Found {
+        data class Yes(val signature: String) : Found
+        data object NotYet : Found
+        data object Offline : Found
+        /** The node answered and the answer was an error. Never silently a "not yet". */
+        data class Broken(val why: String) : Found
+    }
+
+    /**
+     * The exact body we ask the node for. Pulled out so a test can assert its shape.
+     *
+     * **`confirmed` is the floor.** Asking for `processed` to shave a second off the payee's
+     * wait returns `-32602 Method does not support commitment below confirmed` — as an HTTP
+     * 200 carrying an error object. A regex hunting for a signature finds none, and the payee
+     * waits forever on a payment that already landed. Verified against devnet, not assumed.
+     */
+    fun signaturesBody(reference: String) =
+        """{"jsonrpc":"2.0","id":1,"method":"getSignaturesForAddress",
+            "params":["$reference",{"limit":10,"commitment":"confirmed"}]}"""
+
+    fun findPayment(reference: String): Found {
+        if (!PayRequest.isBase58Address(reference)) return Found.Broken("that reference is not valid")
+        val res = post(signaturesBody(reference)) ?: return Found.Offline
+        // Check for an error BEFORE hunting for a signature. A JSON-RPC error arrives with a
+        // 200, so reading "no signature in the body" as "not paid yet" hides a broken query
+        // behind a spinner — which is precisely how this went wrong.
+        rpcError(res)?.let { return Found.Broken(it) }
+        val sig = Regex("\"signature\"\\s*:\\s*\"([1-9A-HJ-NP-Za-km-z]{60,})\"")
             .find(res)?.groupValues?.get(1)
+        return if (sig != null) Found.Yes(sig) else Found.NotYet
+    }
+
+    /** The `message` from a JSON-RPC error object, or null when the call actually worked. */
+    fun rpcError(res: String): String? =
+        Regex("\"error\"\\s*:\\s*\\{[^}]*\"message\"\\s*:\\s*\"([^\"]+)\"")
+            .find(res)?.groupValues?.get(1)
+
+    sealed interface Submitted {
+        data class Ok(val signature: String) : Submitted
+        data class Rejected(val why: String) : Submitted
+        data object Offline : Submitted
+    }
+
+    /**
+     * Submits a signed transaction to OUR cluster.
+     *
+     * The wallet signs; we send. `signAndSendTransactions` would have the wallet submit, which
+     * means the wallet picks the cluster — and a wallet sitting on mainnet silently fails a
+     * devnet transaction, returning nothing useful. Submitting here makes the wallet's own
+     * network setting irrelevant, which is the difference between "works" and "works if the
+     * user configured Phantom correctly".
+     *
+     * Cost of the change: the wallet can no longer re-sign an expired blockhash on our behalf.
+     * Worth it — an expired blockhash is recoverable by tapping again; a silent failure is not.
+     */
+    fun submit(signedTx: ByteArray): Submitted {
+        val b64 = android.util.Base64.encodeToString(signedTx, android.util.Base64.NO_WRAP)
+        val res = post(
+            """{"jsonrpc":"2.0","id":1,"method":"sendTransaction",
+                "params":["$b64",{"encoding":"base64","preflightCommitment":"confirmed"}]}"""
+        ) ?: return Submitted.Offline
+
+        Regex("\"result\"\\s*:\\s*\"([1-9A-HJ-NP-Za-km-z]{60,})\"").find(res)
+            ?.let { return Submitted.Ok(it.groupValues[1]) }
+
+        val why = Regex("\"message\"\\s*:\\s*\"([^\"]+)\"").find(res)?.groupValues?.get(1)
+        return Submitted.Rejected(why ?: "the network refused the transaction")
+    }
+
+    /**
+     * The blockhash a payer building right now would use.
+     *
+     * Recorded when a request is served, so the payee has a lower bound on whatever blockhash
+     * the payer's transaction will carry — theirs is fetched moments later, a handful of slots
+     * newer than ours.
+     */
+    fun latestBlockhash(): String? {
+        val res = post(
+            """{"jsonrpc":"2.0","id":1,"method":"getLatestBlockhash",
+                "params":[{"commitment":"confirmed"}]}"""
+        ) ?: return null
+        if (rpcError(res) != null) return null
+        return Regex("\"blockhash\"\\s*:\\s*\"([1-9A-HJ-NP-Za-km-z]{32,44})\"")
+            .find(res)?.groupValues?.get(1)
+    }
+
+    /**
+     * Can a transaction built against this blockhash still be submitted at all?
+     *
+     * This is the only honest answer to "did the payer give up". Nothing about someone
+     * declining or walking away reaches the chain, so the payee can never observe it — but a
+     * blockhash dies after ~150 slots, and once it has, the payer's transaction is unable to
+     * land no matter what they do. That turns an arbitrary timer into a fact.
+     *
+     * Null means we could not ask, which must never be read as "dead".
+     */
+    fun blockhashAlive(blockhash: String): Boolean? {
+        if (!PayRequest.isBase58Address(blockhash)) return null
+        val res = post(
+            """{"jsonrpc":"2.0","id":1,"method":"isBlockhashValid",
+                "params":["$blockhash",{"commitment":"confirmed"}]}"""
+        ) ?: return null
+        if (rpcError(res) != null) return null
+        return Regex("\"value\"\\s*:\\s*(true|false)")
+            .find(res)?.groupValues?.get(1)?.equals("true")
     }
 
     /** Cheap liveness probe, so "waiting" can be told apart from "offline". */
