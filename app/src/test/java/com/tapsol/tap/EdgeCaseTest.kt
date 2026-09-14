@@ -117,6 +117,23 @@ class EdgeCaseTest {
         assertTrue(url.contains("amount=0.01"))
     }
 
+    /**
+     * The crash that shipped: Chain.balance() returns a sealed result, and the caller formatted
+     * it with %.4f as though it were a Double. That compiles, because String.format takes Any,
+     * and throws IllegalFormatConversionException the moment a wallet connects.
+     */
+    @Test fun `formatting a Balance result directly is a runtime error`() {
+        val result: Chain.Balance = Chain.Balance.Ok(1.2345)
+        try {
+            "%.4f".format(result)
+            org.junit.Assert.fail("formatting the wrapper should throw — unwrap .sol instead")
+        } catch (e: java.util.IllegalFormatConversionException) {
+            // expected
+        }
+        // The correct form.
+        assertEquals("1.2345", "%.4f".format((result as Chain.Balance.Ok).sol))
+    }
+
     private companion object {
         const val BLOCKHASH = "9zL9gmLBcnDpSLhQhgWjcTZGvtPqbRVhLgkBUoLoJgfd"
     }

@@ -170,10 +170,15 @@ class MainActivity : ComponentActivity() {
                                     is Wallet.Outcome.Ok -> {
                                         connected = r.address
                                         push("✓ wallet ${r.address.take(8)}…${r.address.takeLast(4)}")
-                                        val b = withContext(Dispatchers.IO) {
-                                            runCatching { Chain.balance(r.address) }.getOrNull()
+                                        // Chain.balance returns a typed result, not a Double.
+                                        // Formatting it with %f compiled fine and crashed at
+                                        // runtime, because String.format accepts Any.
+                                        when (val b = withContext(Dispatchers.IO) { Chain.balance(r.address) }) {
+                                            is Chain.Balance.Ok ->
+                                                push("   balance ${"%.4f".format(b.sol)} SOL")
+                                            is Chain.Balance.Offline ->
+                                                push("   balance unavailable — no connection")
                                         }
-                                        if (b != null) push("   balance ${"%.4f".format(b)} SOL")
                                         // Genesis lives on mainnet even though we pay on devnet.
                                         val g = withContext(Dispatchers.IO) {
                                             runCatching { Genesis.mintFor(r.address) }.getOrNull()
