@@ -82,6 +82,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         installCrashGuard()
         wallet = Wallet(this)
+        connected = wallet.address   // a session persisted from last launch
         contacts = Contacts(this)
         contactCount = contacts.count()
         reader = TapReader(
@@ -173,7 +174,18 @@ class MainActivity : ComponentActivity() {
                         Header(diag)
                         Spacer(Modifier.height(14.dp))
 
-                        WalletRow(connected, busy) {
+                        WalletRow(
+                            connected, busy,
+                            onDisconnect = {
+                                scope.launch {
+                                    wallet.disconnect()
+                                    connected = null
+                                    myGenesis = null
+                                    mode = Mode.IDLE
+                                    push("— wallet disconnected")
+                                }
+                            },
+                        ) {
                             scope.launch {
                                 busy = true
                                 push("opening wallet…")
@@ -379,6 +391,15 @@ class MainActivity : ComponentActivity() {
                     if (stale) "Tap again and approve a little quicker." else r.why,
                 )
             }
+            // Wallet.signAndSend retries internally and never surfaces this, but the compiler
+            // is right to insist — an unhandled branch here would be a silent dead end.
+            Wallet.SendOutcome.NeedsReconnect -> {
+                connected = null
+                status = Status.Problem(
+                    "Wallet needs reconnecting",
+                    "Tap Connect and approve again, then retry the payment.",
+                )
+            }
         }
     }
 
@@ -490,7 +511,12 @@ private fun Banner(
 }
 
 @Composable
-private fun WalletRow(address: String?, busy: Boolean, onConnect: () -> Unit) {
+private fun WalletRow(
+    address: String?,
+    busy: Boolean,
+    onDisconnect: () -> Unit,
+    onConnect: () -> Unit,
+) {
     Row(
         Modifier.fillMaxWidth().background(Panel, RoundedCornerShape(8.dp))
             .border(1.dp, if (address == null) Warn.copy(alpha = .5f) else Line, RoundedCornerShape(8.dp))
@@ -511,6 +537,12 @@ private fun WalletRow(address: String?, busy: Boolean, onConnect: () -> Unit) {
                 onClick = onConnect, enabled = !busy,
                 colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = Ink),
             ) { Text(if (busy) "…" else "Connect", fontWeight = FontWeight.SemiBold) }
+        } else {
+            // The escape hatch for a session the wallet no longer honours. Without it the only
+            // cure for a stale token is reinstalling the app.
+            TextButton(onClick = onDisconnect, enabled = !busy) {
+                Text("Disconnect", color = Dim, fontSize = 12.sp)
+            }
         }
     }
 }
