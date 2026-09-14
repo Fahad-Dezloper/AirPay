@@ -1,34 +1,47 @@
 package com.tapsol.tap
 
+import org.sol4k.AccountMeta
 import org.sol4k.Connection
 import org.sol4k.PublicKey
 import org.sol4k.RpcUrl
 import org.sol4k.Transaction
 import org.sol4k.instruction.BaseInstruction
 import org.sol4k.instruction.TransferInstruction
-import org.sol4k.AccountMeta
 import java.net.HttpURLConnection
 import java.net.URL
 
 /**
  * Everything that talks to Solana.
  *
- * Devnet for now — the flow has to be proven with worthless money before it moves real money.
+ * Nothing here throws. A payments app that crashes mid-tap is worse than one that says "no
+ * network", so every call returns a typed result and the UI decides what to say. sol4k's
+ * `Connection` and `PublicKey` both throw freely, so they are fenced off inside this file.
+ *
+ * Devnet for now — the flow is proven with worthless money before it moves real money.
  */
 object Chain {
 
     private const val RPC = "https://api.devnet.solana.com"
-    private val conn = Connection(RpcUrl.DEVNET)
+    private val conn by lazy { Connection(RpcUrl.DEVNET) }
 
     const val LAMPORTS_PER_SOL = 1_000_000_000.0
+
+    /** Solana's fee is ~5000 lamports, but leave headroom rather than land on the boundary. */
+    private const val FEE_HEADROOM_LAMPORTS = 50_000L
+
+    sealed interface Built {
+        data class Ok(val tx: ByteArray) : Built
+        data class NotEnough(val have: Double, val need: Double) : Built
+        data class Offline(val detail: String) : Built
+        data class Bad(val why: String) : Built
+    }
 
     /**
      * Builds the unsigned transfer the wallet will sign.
      *
-     * The Solana Pay `reference` is attached as an extra account on the transfer instruction —
-     * **read-only and non-signer**, so it changes nothing about the transfer itself. Its only
-     * purpose is that validators index transactions by account key, which lets the payee find
-     * this payment later without knowing its signature.
+     * The Solana Pay `reference` rides along as an extra account — **read-only and non-signer**,
+     * so it changes nothing about the transfer. Validators index by account key, which is how
+     * the payee finds this payment later without knowing its signature.
      */
     fun buildTransfer(
         payer: String,
@@ -37,27 +50,47 @@ object Chain {
         reference: String,
         /** Test seam — production always fetches a live blockhash. */
         blockhashOverride: String? = null,
-    ): ByteArray {
-        val from = PublicKey(payer)
-        val to = PublicKey(recipient)
-        val blockhash = blockhashOverride ?: conn.getLatestBlockhash()
+    ): Built {
+        if (!PayRequest.isBase58Address(payer)) return Built.Bad("Your wallet address looks wrong.")
+        if (!PayRequest.isBase58Address(recipient)) return Built.Bad("That destination address is not valid.")
+        if (!PayRequest.isBase58Address(reference)) return Built.Bad("That payment reference is not valid.")
+        if (lamports <= 0) return Built.Bad("Enter an amount greater than zero.")
 
-        val transfer = TransferInstruction(from, to, lamports)
+        val from = try { PublicKey(payer) } catch (e: Exception) { return Built.Bad("Your wallet address looks wrong.") }
+        val to = try { PublicKey(recipient) } catch (e: Exception) { return Built.Bad("That destination address is not valid.") }
+        val ref = try { PublicKey(reference) } catch (e: Exception) { return Built.Bad("That payment reference is not valid.") }
 
-        // Re-emit the same instruction with the reference appended. sol4k's TransferInstruction
-        // does not expose its account list for mutation, so the instruction is rebuilt by hand.
-        val withRef = BaseInstruction(
-            data = transfer.data,
-            keys = transfer.keys + AccountMeta(
-                publicKey = PublicKey(reference),
-                signer = false,
-                writable = false,
-            ),
-            programId = transfer.programId,
-        )
+        // Check funds before involving the wallet. A rejection inside the wallet is opaque;
+        // "you have 0.004 and need 0.01" is not.
+        if (blockhashOverride == null) {
+            when (val b = balance(payer)) {
+                is Balance.Ok -> {
+                    val need = (lamports + FEE_HEADROOM_LAMPORTS) / LAMPORTS_PER_SOL
+                    if (b.sol < need) return Built.NotEnough(b.sol, lamports / LAMPORTS_PER_SOL)
+                }
+                is Balance.Offline -> return Built.Offline(b.detail)
+            }
+        }
 
-        val tx = Transaction(blockhash, withRef, feePayer = from)
-        return reserveSignatureSlot(tx.serialize())
+        val blockhash = blockhashOverride ?: run {
+            try { conn.getLatestBlockhash() }
+            catch (e: Exception) { return Built.Offline(e.message ?: "could not reach Solana") }
+        }
+
+        return try {
+            val transfer = TransferInstruction(from, to, lamports)
+            // sol4k's TransferInstruction does not expose its account list for mutation, so the
+            // instruction is rebuilt with the reference appended.
+            val withRef = BaseInstruction(
+                data = transfer.data,
+                keys = transfer.keys + AccountMeta(publicKey = ref, signer = false, writable = false),
+                programId = transfer.programId,
+            )
+            val tx = Transaction(blockhash, withRef, feePayer = from)
+            Built.Ok(reserveSignatureSlot(tx.serialize()))
+        } catch (e: Exception) {
+            Built.Bad(e.message ?: "could not build the transaction")
+        }
     }
 
     /**
@@ -67,47 +100,48 @@ object Chain {
      * so zero slots leaves the wallet nowhere to write its signature. The rejection reads
      * "not properly formed and can't be signed", which is exactly correct.
      *
-     * A transaction that needs one signer must arrive with one zero-filled slot reserved.
-     * The wallet fills it in. Verified by TxShapeTest, which asserts the leading byte.
+     * A transaction needing one signer must arrive with one zero-filled slot reserved.
+     * Verified by TxShapeTest, which asserts the leading byte.
      */
     private fun reserveSignatureSlot(serialized: ByteArray): ByteArray {
         if (serialized.isEmpty()) return serialized
-        // Already has slots (a signed or pre-reserved transaction) — leave it alone.
+        // Already has slots (signed or pre-reserved) — leave it alone.
         if (serialized[0].toInt() != 0) return serialized
-        val message = serialized.copyOfRange(1, serialized.size)
-        return byteArrayOf(1) + ByteArray(64) + message
+        return byteArrayOf(1) + ByteArray(64) + serialized.copyOfRange(1, serialized.size)
     }
 
-    /** SOL balance, in SOL. */
-    fun balance(address: String): Double =
-        conn.getBalance(PublicKey(address)).toDouble() / LAMPORTS_PER_SOL
+    sealed interface Balance {
+        data class Ok(val sol: Double) : Balance
+        data class Offline(val detail: String) : Balance
+    }
+
+    fun balance(address: String): Balance = try {
+        Balance.Ok(conn.getBalance(PublicKey(address)).toDouble() / LAMPORTS_PER_SOL)
+    } catch (e: Exception) {
+        Balance.Offline(e.message ?: "could not reach Solana")
+    }
 
     /**
-     * The payee's half of the flow. Validators index by account key, so asking for signatures
-     * that touched `reference` finds the payment — no NFC round trip, and it works even if the
-     * payer walked away and paid five minutes later.
+     * The payee's half. Validators index by account key, so asking for signatures that touched
+     * `reference` finds the payment — nothing comes back over NFC, and it still works if the
+     * payer wandered off and paid five minutes later.
+     *
+     * Returns null both when unpaid and when unreachable; the caller distinguishes by whether
+     * `reachable()` holds, because "not yet" and "cannot tell" must not look the same to a user.
      */
     fun findPayment(reference: String): String? {
-        val body = """
-            {"jsonrpc":"2.0","id":1,"method":"getSignaturesForAddress",
-             "params":["$reference",{"limit":10}]}
-        """.trimIndent()
-        val res = post(body) ?: return null
-        // Cheap extraction — the full shape is not needed, only whether one exists.
-        val m = Regex("\"signature\"\\s*:\\s*\"([1-9A-HJ-NP-Za-km-z]+)\"").find(res)
-        return m?.groupValues?.get(1)
+        if (!PayRequest.isBase58Address(reference)) return null
+        val res = post(
+            """{"jsonrpc":"2.0","id":1,"method":"getSignaturesForAddress",
+                "params":["$reference",{"limit":10}]}"""
+        ) ?: return null
+        return Regex("\"signature\"\\s*:\\s*\"([1-9A-HJ-NP-Za-km-z]{60,})\"")
+            .find(res)?.groupValues?.get(1)
     }
 
-    /** Has this transaction been confirmed yet? */
-    fun isConfirmed(signature: String): Boolean {
-        val body = """
-            {"jsonrpc":"2.0","id":1,"method":"getSignatureStatuses",
-             "params":[["$signature"],{"searchTransactionHistory":true}]}
-        """.trimIndent()
-        val res = post(body) ?: return false
-        return res.contains("\"confirmationStatus\":\"confirmed\"") ||
-            res.contains("\"confirmationStatus\":\"finalized\"")
-    }
+    /** Cheap liveness probe, so "waiting" can be told apart from "offline". */
+    fun reachable(): Boolean =
+        post("""{"jsonrpc":"2.0","id":1,"method":"getHealth"}""") != null
 
     fun explorerUrl(signature: String) =
         "https://explorer.solana.com/tx/$signature?cluster=devnet"
@@ -116,8 +150,8 @@ object Chain {
         val c = (URL(RPC).openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
             doOutput = true
-            connectTimeout = 15_000
-            readTimeout = 15_000
+            connectTimeout = 10_000
+            readTimeout = 10_000
             setRequestProperty("Content-Type", "application/json")
         }
         c.outputStream.use { it.write(json.toByteArray()) }

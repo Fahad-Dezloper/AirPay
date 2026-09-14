@@ -43,7 +43,11 @@ class Wallet(activity: ComponentActivity) {
         data object Declined : Outcome
     }
 
-    suspend fun connect(): Outcome = when (val r = adapter.connect(sender)) {
+    suspend fun connect(): Outcome = try { connectInner() } catch (e: Exception) {
+        Outcome.Failed(e.message ?: "the wallet could not be reached")
+    }
+
+    private suspend fun connectInner(): Outcome = when (val r = adapter.connect(sender)) {
         is TransactionResult.Success -> {
             val acct = r.authResult.accounts.firstOrNull()
             if (acct == null) Outcome.Failed("wallet returned no account")
@@ -70,7 +74,13 @@ class Wallet(activity: ComponentActivity) {
      * is better placed to handle the blockhash race: if it expires between signing and
      * submission, the wallet can re-sign, and we cannot.
      */
-    suspend fun signAndSend(unsignedTx: ByteArray): SendOutcome =
+    suspend fun signAndSend(unsignedTx: ByteArray): SendOutcome = try {
+        signAndSendInner(unsignedTx)
+    } catch (e: Exception) {
+        SendOutcome.Failed(e.message ?: "the wallet could not be reached")
+    }
+
+    private suspend fun signAndSendInner(unsignedTx: ByteArray): SendOutcome =
         when (val r = adapter.transact(sender) { auth ->
             signAndSendTransactions(arrayOf(unsignedTx))
         }) {

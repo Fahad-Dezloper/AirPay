@@ -40,4 +40,7 @@ dependencies {
     implementation("androidx.activity:activity-compose:1.9.2")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.6")
     testImplementation("junit:junit:4.13.2")
+    // Android stubs org.json in unit tests, so JSONObject.put() throws "not mocked".
+    // The real implementation makes the wire-format tests run on the JVM.
+    testImplementation("org.json:json:20240303")
 }

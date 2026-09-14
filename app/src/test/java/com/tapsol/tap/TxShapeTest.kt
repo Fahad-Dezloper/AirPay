@@ -25,13 +25,15 @@ class TxShapeTest {
 
     /** The regression: a transaction handed to a wallet must reserve a slot to sign into. */
     @Test fun `unsigned transfer reserves one signature slot`() {
-        val tx = Chain.buildTransfer(
+        val built = Chain.buildTransfer(
             payer = payer.toBase58(),
             recipient = payee.toBase58(),
             lamports = 10_000_000L,
             reference = reference.toBase58(),
             blockhashOverride = blockhash,
         )
+        org.junit.Assert.assertTrue("expected a built transaction, got $built", built is Chain.Built.Ok)
+        val tx = (built as Chain.Built.Ok).tx
         org.junit.Assert.assertEquals(
             "signature count must be 1, or the wallet has nowhere to sign", 1, tx[0].toInt())
         org.junit.Assert.assertTrue(

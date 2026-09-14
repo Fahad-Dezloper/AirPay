@@ -76,7 +76,13 @@ class TapReader(
 
             val req = PayRequest.fromBytes(body)
             if (req == null) {
-                onLog("✗ could not parse request")
+                onLog("✗ that phone sent something we could not read")
+                return
+            }
+            // Reject at the boundary. Anything past this point is treated as well-formed.
+            val problem = req.validate()
+            if (problem != null) {
+                onLog("✗ $problem")
                 return
             }
             onLog("✓ ${req.label} wants ${req.amount} ${req.token}")

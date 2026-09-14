@@ -62,8 +62,21 @@ class MainActivity : ComponentActivity() {
     private var watching by mutableStateOf<String?>(null)
     private var paidSignature by mutableStateOf<String?>(null)
 
+    /**
+     * One place for "what should the user be told right now". Without this every failure ends
+     * up as a grey line in a debug log, which is fine for us and useless for anyone else.
+     */
+    sealed interface Status {
+        data object Idle : Status
+        data class Working(val what: String) : Status
+        data class Problem(val title: String, val detail: String) : Status
+        data class Sent(val signature: String) : Status
+    }
+    private var status by mutableStateOf<Status>(Status.Idle)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        installCrashGuard()
         wallet = Wallet(this)
         contacts = Contacts(this)
         contactCount = contacts.count()
@@ -104,13 +117,37 @@ class MainActivity : ComponentActivity() {
                 // The payee's half — runs with the phones long since parted.
                 LaunchedEffect(watching) {
                     val ref = watching ?: return@LaunchedEffect
+                    val startedAt = System.currentTimeMillis()
+                    var offlineStreak = 0
                     while (watching == ref) {
                         val sig = withContext(Dispatchers.IO) { Chain.findPayment(ref) }
                         if (sig != null) {
                             paidSignature = sig
+                            status = Status.Idle
                             push("✓ PAID — $sig")
                             // Retire it: a served-and-paid reference must never be payable
                             // twice, and we already saw one request served on two taps.
+                            TapHostApduService.pending.value = null
+                            mode = Mode.IDLE
+                            watching = null
+                            break
+                        }
+                        // "Not yet" and "can't tell" must not look the same to a user.
+                        if (!withContext(Dispatchers.IO) { Chain.reachable() }) {
+                            if (++offlineStreak >= 3) {
+                                status = Status.Problem(
+                                    "Can't reach Solana",
+                                    "Still waiting, but we cannot check right now.",
+                                )
+                            }
+                        } else offlineStreak = 0
+
+                        // Never wait forever. A request nobody paid becomes stale, not eternal.
+                        if (System.currentTimeMillis() - startedAt > WATCH_TIMEOUT_MS) {
+                            status = Status.Problem(
+                                "No payment yet",
+                                "This request expired. Start a new one when you are ready.",
+                            )
                             TapHostApduService.pending.value = null
                             mode = Mode.IDLE
                             watching = null
@@ -157,11 +194,22 @@ class MainActivity : ComponentActivity() {
                         Spacer(Modifier.height(14.dp))
 
                         if (mode == Mode.REQUEST) {
+                            val amountProblem = when {
+                                amount.isBlank() -> "Enter an amount"
+                                amount.toDoubleOrNull() == null -> "That is not a number"
+                                amount.toDouble() <= 0 -> "Must be more than zero"
+                                amount.toDouble() > PayRequest.MAX_AMOUNT -> "Too large for a tap"
+                                else -> null
+                            }
                             OutlinedTextField(
                                 value = amount,
-                                onValueChange = { amount = it },
+                                // Filter at the keystroke so an unparseable value never reaches
+                                // the wire in the first place.
+                                onValueChange = { v -> if (v.length <= 12 && v.all { it.isDigit() || it == '.' }) amount = v },
                                 label = { Text("Amount (SOL, devnet)") },
                                 singleLine = true,
+                                isError = amountProblem != null,
+                                supportingText = amountProblem?.let { { Text(it, color = Warn) } },
                                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                                 modifier = Modifier.fillMaxWidth(),
                             )
@@ -192,14 +240,20 @@ class MainActivity : ComponentActivity() {
 
                         paidSignature?.let { sig ->
                             Spacer(Modifier.height(10.dp))
-                            Column(
-                                Modifier.fillMaxWidth()
-                                    .background(Accent.copy(alpha = .12f), RoundedCornerShape(8.dp))
-                                    .border(1.dp, Accent, RoundedCornerShape(8.dp)).padding(12.dp)
-                            ) {
-                                Text("✓ Paid", color = Accent, fontSize = 16.sp, fontWeight = FontWeight.Bold)
-                                Text(sig, color = Dim, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
+                            Banner("✓ Paid", sig, Accent, mono = true)
+                        }
+                        when (val st = status) {
+                            is Status.Working -> { Spacer(Modifier.height(10.dp)); Banner("…", st.what, Dim) }
+                            is Status.Problem -> {
+                                Spacer(Modifier.height(10.dp))
+                                Banner(st.title, st.detail, Warn, onDismiss = { status = Status.Idle })
                             }
+                            is Status.Sent -> {
+                                Spacer(Modifier.height(10.dp))
+                                Banner("✓ Sent", st.signature, Accent, mono = true,
+                                    onDismiss = { status = Status.Idle })
+                            }
+                            Status.Idle -> Unit
                         }
 
                         if (contactCount > 0) {
@@ -238,18 +292,35 @@ class MainActivity : ComponentActivity() {
     /** The payer's half. Runs entirely with the phones already apart. */
     private suspend fun pay(payer: String, req: PayRequest) {
         val lamports = ((req.amount.toDoubleOrNull() ?: 0.0) * Chain.LAMPORTS_PER_SOL).toLong()
-        if (lamports <= 0) { push("✗ bad amount"); return }
 
-        push("building transfer…")
-        val tx = withContext(Dispatchers.IO) {
-            runCatching { Chain.buildTransfer(payer, req.recipient, lamports, req.reference) }
-                .onFailure { push("✗ build failed: ${it.message}") }
-                .getOrNull()
-        } ?: return
+        status = Status.Working("Checking your balance…")
+        val built = withContext(Dispatchers.IO) {
+            Chain.buildTransfer(payer, req.recipient, lamports, req.reference)
+        }
 
-        push("→ wallet: sign ${req.amount} SOL to ${req.recipient.take(8)}…")
+        val tx = when (built) {
+            is Chain.Built.Ok -> built.tx
+            is Chain.Built.NotEnough -> {
+                status = Status.Problem(
+                    "Not enough SOL",
+                    "You have ${"%.4f".format(built.have)} and this needs ${"%.4f".format(built.need)} plus fees.",
+                )
+                return
+            }
+            is Chain.Built.Offline -> {
+                status = Status.Problem("Can't reach Solana", "Check your connection and try again.")
+                return
+            }
+            is Chain.Built.Bad -> {
+                status = Status.Problem("Can't pay this request", built.why)
+                return
+            }
+        }
+
+        status = Status.Working("Waiting for your wallet…")
         when (val r = wallet.signAndSend(tx)) {
             is Wallet.SendOutcome.Sent -> {
+                status = Status.Sent(r.signature)
                 push("✓ SENT — ${r.signature}")
                 push("   ${Chain.explorerUrl(r.signature)}")
                 contacts.record(
@@ -258,7 +329,15 @@ class MainActivity : ComponentActivity() {
                 )
                 contactCount = contacts.count()
             }
-            is Wallet.SendOutcome.Failed -> push("✗ ${r.why}")
+            is Wallet.SendOutcome.Failed -> {
+                // A blockhash that expired while the user was deciding is the common case,
+                // and "expired" is meaningless to a person.
+                val stale = r.why.contains("blockhash", true) || r.why.contains("expired", true)
+                status = Status.Problem(
+                    if (stale) "That took too long" else "Payment not sent",
+                    if (stale) "Tap again and approve a little quicker." else r.why,
+                )
+            }
         }
     }
 
@@ -293,7 +372,37 @@ class MainActivity : ComponentActivity() {
         if (log.size > 200) log.removeAt(0)
     }
 
+    /**
+     * Last resort. Everything above is written not to throw, but a crash on camera during a
+     * three-minute demo is unrecoverable, and a background thread dying takes the app with it.
+     * This keeps the UI alive and says something honest instead of vanishing.
+     *
+     * Not a substitute for handling errors where they happen — it is the net under the net.
+     */
+    private fun installCrashGuard() {
+        val previous = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, error ->
+            android.util.Log.e("Tap", "uncaught on ${thread.name}", error)
+            if (thread == mainLooper.thread) {
+                // The main thread is unrecoverable; let the platform handle it.
+                previous?.uncaughtException(thread, error)
+            } else {
+                runOnUiThread {
+                    status = Status.Problem(
+                        "Something went wrong",
+                        "That step failed unexpectedly. Nothing was sent — try the tap again.",
+                    )
+                }
+            }
+        }
+    }
+
     private enum class Mode { IDLE, REQUEST, PAY }
+
+    private companion object {
+        /** How long a served request stays payable before it is retired. */
+        const val WATCH_TIMEOUT_MS = 5 * 60 * 1000L
+    }
 }
 
 private val Ink = Color(0xFF0B0D10)
@@ -303,6 +412,37 @@ private val Fg = Color(0xFFE8EDF3)
 private val Dim = Color(0xFF8A96A4)
 private val Accent = Color(0xFF14F195)
 private val Warn = Color(0xFFE5534B)
+
+/** One shape for every piece of news the app has to deliver. */
+@Composable
+private fun Banner(
+    title: String,
+    detail: String,
+    tone: Color,
+    mono: Boolean = false,
+    onDismiss: (() -> Unit)? = null,
+) {
+    Row(
+        Modifier.fillMaxWidth()
+            .background(tone.copy(alpha = .10f), RoundedCornerShape(8.dp))
+            .border(1.dp, tone.copy(alpha = .55f), RoundedCornerShape(8.dp))
+            .padding(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(title, color = tone, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+            if (detail.isNotBlank()) {
+                Spacer(Modifier.height(2.dp))
+                Text(detail, color = Dim, fontSize = if (mono) 9.sp else 12.sp,
+                    fontFamily = if (mono) FontFamily.Monospace else FontFamily.Default,
+                    lineHeight = 16.sp)
+            }
+        }
+        if (onDismiss != null) {
+            TextButton(onClick = onDismiss) { Text("OK", color = tone, fontSize = 12.sp) }
+        }
+    }
+}
 
 @Composable
 private fun WalletRow(address: String?, busy: Boolean, onConnect: () -> Unit) {

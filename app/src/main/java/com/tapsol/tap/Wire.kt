@@ -60,8 +60,32 @@ data class PayRequest(
         append("&label=").append(java.net.URLEncoder.encode(label, "UTF-8"))
     }
 
+    /**
+     * Everything arriving over the radio is untrusted. `PublicKey(...)` throws on malformed
+     * base58, so an unvalidated payload from a hostile or buggy peer would crash the payer's
+     * app at the worst possible moment — mid-tap, in front of someone.
+     */
+    fun validate(): String? = when {
+        !isBase58Address(recipient) -> "The request has an invalid destination address."
+        !isBase58Address(reference) -> "The request has an invalid reference."
+        genesis != null && !isBase58Address(genesis) -> "The request has an invalid Genesis token."
+        amount.isNotBlank() && amount.toDoubleOrNull() == null -> "The request has an unreadable amount."
+        (amount.toDoubleOrNull() ?: 0.0) < 0 -> "The request asks for a negative amount."
+        (amount.toDoubleOrNull() ?: 0.0) > MAX_AMOUNT -> "That amount looks wrong — refusing it."
+        label.length > 64 -> "The request has an oversized label."
+        else -> null
+    }
+
     companion object {
         const val WIRE_VERSION = 2
+
+        /** A sanity ceiling. A tap should never carry a life-changing sum by accident. */
+        const val MAX_AMOUNT = 1_000.0
+
+        private val B58 = Regex("^[1-9A-HJ-NP-Za-km-z]{32,44}$")
+
+        /** Shape check only — cheap, and enough to stop PublicKey() from throwing. */
+        fun isBase58Address(s: String?): Boolean = s != null && B58.matches(s)
 
         fun fromBytes(b: ByteArray): PayRequest? = try {
             val o = JSONObject(String(b, Charsets.UTF_8))
