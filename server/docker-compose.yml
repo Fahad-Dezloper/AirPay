@@ -13,6 +13,8 @@ services:
       TAP_DB: /data/tap.db
       # The key is mounted, never copied into the image, so the image is safe to push anywhere.
       GOOGLE_APPLICATION_CREDENTIALS: /secrets/fcm.json
+      # DEBUG shows every request the phones make (set LOG_LEVEL in server/.env)
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
     volumes:
       - tap-data:/data
       # Path to your Firebase service-account JSON, set as FCM_KEY_FILE in server/.env (gitignored).

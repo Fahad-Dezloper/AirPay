@@ -83,12 +83,15 @@ object Payments {
         log("✓ SENT — $signature")
 
         stage("Confirming on Solana…")
-        return when (val c = Chain.confirm(signature)) {
+        return when (val c = Chain.confirm(signature, req.reference, req.recipient, lamports)) {
             Chain.Confirmation.Confirmed -> PayResult.Sent(signature)
             is Chain.Confirmation.Failed -> PayResult.Failed("Transaction failed", "It reached Solana but ${c.why}.", signature)
+            // Submitted, and we could not get an answer — usually the public RPC refusing us,
+            // not a failed payment. Say that, rather than implying it went wrong.
             Chain.Confirmation.Unknown -> PayResult.Failed(
-                "Not confirmed yet",
-                "It was sent but hasn't confirmed. Check the explorer before paying again.",
+                "Sent, still confirming",
+                if (Chain.rateLimited) "Solana's public node is rate-limiting us. The payment is very likely fine — check the explorer."
+                else "It was sent but we couldn't confirm it yet. Check the explorer before paying again.",
                 signature,
             )
         }

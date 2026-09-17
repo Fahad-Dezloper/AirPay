@@ -36,6 +36,27 @@ class Rpc:
             raise RpcError(doc["error"].get("message", "rpc error"))
         return doc.get("result")
 
+    #: Read-and-send methods the phones are allowed to proxy through this server. Anything
+    #: outside this list is refused, so an open proxy cannot be pointed at arbitrary RPC.
+    PROXYABLE = {
+        "getLatestBlockhash", "getBalance", "sendTransaction", "getSignaturesForAddress",
+        "getTransaction", "getSignatureStatuses", "getHealth", "isBlockhashValid",
+    }
+
+    def forward(self, payload: dict) -> dict:
+        """Pass a phone's JSON-RPC call to our provider and hand back the raw answer."""
+        method = payload.get("method")
+        if method not in self.PROXYABLE:
+            raise ValueError(f"method not allowed: {method}")
+        body = json.dumps({"jsonrpc": "2.0", "id": payload.get("id", 1),
+                           "method": method, "params": payload.get("params", [])}).encode()
+        req = urllib.request.Request(self.url, body, {"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as r:
+                return json.loads(r.read())
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError) as e:
+            raise Offline(str(e)) from e
+
     def signatures(self, address: str) -> list[str]:
         # `confirmed` is the floor for this method; `processed` is refused.
         res = self.call("getSignaturesForAddress", [address, {"limit": 10, "commitment": "confirmed"}])

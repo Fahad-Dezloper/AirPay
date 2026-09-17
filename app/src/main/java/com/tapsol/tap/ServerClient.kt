@@ -29,6 +29,9 @@ object ServerClient {
 
     val enabled get() = base.isNotBlank()
 
+    /** Solana reads and sends, borrowed from the server's provider. See Chain.post. */
+    val rpcUrl get() = "$base/v1/rpc"
+
     sealed interface Event
     data class Paid(val reference: String, val signature: String) : Event
     data class Requested(val request: PayRequest) : Event

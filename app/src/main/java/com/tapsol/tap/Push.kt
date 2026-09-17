@@ -150,11 +150,13 @@ class TapMessagingService : FirebaseMessagingService() {
     // See Push.token for why the deprecated token callback is still the one used.
     @Deprecated("Tokens are deprecated in firebase-messaging 25.1; see Push.token")
     override fun onNewToken(token: String) {
+        android.util.Log.i("TapPush", "new push token")
         getSharedPreferences("push", Context.MODE_PRIVATE).edit().putString("token", token).apply()
     }
 
     override fun onMessageReceived(message: RemoteMessage) {
         val d = message.data
+        android.util.Log.i("TapPush", "push received: ${d["type"]} ${d["reference"]?.take(8) ?: ""}")
         when (d["type"]) {
             "paid" -> {
                 val ref = d["reference"]?.takeIf { PayRequest.isBase58Address(it) } ?: return

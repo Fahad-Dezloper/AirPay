@@ -1,9 +1,7 @@
 package com.tapsol.tap
 
 import org.sol4k.AccountMeta
-import org.sol4k.Connection
 import org.sol4k.PublicKey
-import org.sol4k.RpcUrl
 import org.sol4k.Transaction
 import org.sol4k.instruction.BaseInstruction
 import org.sol4k.instruction.TransferInstruction
@@ -21,8 +19,7 @@ import java.net.URL
  */
 object Chain {
 
-    private const val RPC = "https://api.devnet.solana.com"
-    private val conn by lazy { Connection(RpcUrl.DEVNET) }
+    private const val PUBLIC_RPC = "https://api.devnet.solana.com"
 
     const val LAMPORTS_PER_SOL = 1_000_000_000.0
 
@@ -75,10 +72,8 @@ object Chain {
         // Fetched now, at the moment Pay is pressed — never carried in the request. A request is
         // good forever; only the transaction built from it has a clock, and that clock should
         // start when the person decides to pay, not when the phones touched.
-        val blockhash = blockhashOverride ?: run {
-            try { conn.getLatestBlockhash() }
-            catch (e: Exception) { return Built.Offline(e.message ?: "could not reach Solana") }
-        }
+        val blockhash = blockhashOverride ?: latestBlockhash()
+            ?: return Built.Offline("could not reach Solana")
 
         return try {
             val transfer = TransferInstruction(from, to, lamports)
@@ -118,10 +113,25 @@ object Chain {
         data class Offline(val detail: String) : Balance
     }
 
-    fun balance(address: String): Balance = try {
-        Balance.Ok(conn.getBalance(PublicKey(address)).toDouble() / LAMPORTS_PER_SOL)
-    } catch (e: Exception) {
-        Balance.Offline(e.message ?: "could not reach Solana")
+    fun balance(address: String): Balance {
+        if (!PayRequest.isBase58Address(address)) return Balance.Offline("that address is not valid")
+        val res = post("""{"jsonrpc":"2.0","id":1,"method":"getBalance","params":["$address"]}""")
+            ?: return Balance.Offline("could not reach Solana")
+        if (rpcError(res) != null) return Balance.Offline("could not reach Solana")
+        val lamports = Regex("\"value\"\\s*:\\s*(\\d+)").find(res)?.groupValues?.get(1)?.toLongOrNull()
+            ?: return Balance.Offline("could not read the balance")
+        return Balance.Ok(lamports.toDouble() / LAMPORTS_PER_SOL)
+    }
+
+    /** The blockhash a transaction is built against, fetched when the payer presses Pay. */
+    /** The blockhash a transaction is built against, fetched when the payer presses Pay. */
+    fun latestBlockhash(): String? {
+        val res = post(
+            """{"jsonrpc":"2.0","id":1,"method":"getLatestBlockhash","params":[{"commitment":"confirmed"}]}"""
+        ) ?: return null
+        if (rpcError(res) != null) return null
+        return Regex("\"blockhash\"\\s*:\\s*\"([1-9A-HJ-NP-Za-km-z]{32,44})\"")
+            .find(res)?.groupValues?.get(1)
     }
 
     sealed interface Found {
@@ -303,12 +313,28 @@ object Chain {
      * and it can still fail on-chain or never land. The popup's success state waits for this, so
      * a green tick means the money actually moved.
      */
-    suspend fun confirm(signature: String, timeoutMs: Long = 45_000): Confirmation {
+    suspend fun confirm(
+        signature: String,
+        /** The request being paid. Its reference is the second, sturdier way to confirm. */
+        reference: String? = null,
+        recipient: String? = null,
+        lamports: Long = 0,
+        timeoutMs: Long = 60_000,
+    ): Confirmation {
         val until = System.currentTimeMillis() + timeoutMs
+        var round = 0
         while (System.currentTimeMillis() < until) {
-            val res = post(
-                """{"jsonrpc":"2.0","id":1,"method":"getSignatureStatuses","params":[["$signature"]]}"""
-            )
+            round++
+            // searchTransactionHistory, because the default only looks in a short-lived status
+            // cache: api.devnet.solana.com answered `null` for a transaction one minute old that
+            // Helius reported as finalized, and the payer was told "not confirmed yet" for money
+            // that had already arrived.
+            val res = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                post(
+                    """{"jsonrpc":"2.0","id":1,"method":"getSignatureStatuses",
+                        "params":[["$signature"],{"searchTransactionHistory":true}]}"""
+                )
+            }
             if (res != null && rpcError(res) == null) {
                 val v = try {
                     org.json.JSONObject(res).getJSONObject("result").getJSONArray("value").opt(0)
@@ -319,7 +345,17 @@ object Chain {
                     if (level == "confirmed" || level == "finalized") return Confirmation.Confirmed
                 }
             }
-            kotlinx.coroutines.delay(1_000)
+            // The same evidence the payee accepts: the money is on-chain, under this request's
+            // reference, in full. Independent of whether the status cache has heard of us.
+            if (reference != null && recipient != null && lamports > 0) {
+                val found = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    findPayment(reference, recipient, lamports)
+                }
+                if (found is Found.Yes) return Confirmation.Confirmed
+            }
+            // Public RPC starts refusing after roughly eight calls in two seconds, and a refusal
+            // looks exactly like "not yet". Ask less often the longer this goes on.
+            kotlinx.coroutines.delay(if (round < 10) 2_000 else 4_000)
         }
         return Confirmation.Unknown
     }
@@ -339,8 +375,29 @@ object Chain {
     fun explorerUrl(signature: String) =
         "https://explorer.solana.com/tx/$signature?cluster=devnet"
 
-    private fun post(json: String): String? = try {
-        val c = (URL(RPC).openConnection() as HttpURLConnection).apply {
+    /** Set when the node refused us for asking too often, so callers can say so honestly. */
+    @Volatile var rateLimited = false
+        private set
+
+    /**
+     * Every call to Solana, tried through the Tap server's provider first when one is
+     * configured, then the public endpoint.
+     *
+     * The public devnet endpoint refuses after roughly eight calls in two seconds and answers
+     * from whichever node a load balancer picks — which is how a payer ended up unable to
+     * confirm money that had already landed. The server holds a provider key; the phone does
+     * not, and should not ship one. The fallback keeps the app working with no server at all.
+     */
+    private fun post(json: String): String? {
+        val endpoints = if (ServerClient.enabled) listOf(ServerClient.rpcUrl, PUBLIC_RPC) else listOf(PUBLIC_RPC)
+        for (url in endpoints) {
+            postTo(url, json)?.let { return it }
+        }
+        return null
+    }
+
+    private fun postTo(url: String, json: String): String? = try {
+        val c = (URL(url).openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
             doOutput = true
             connectTimeout = 10_000
@@ -348,8 +405,19 @@ object Chain {
             setRequestProperty("Content-Type", "application/json")
         }
         c.outputStream.use { it.write(json.toByteArray()) }
-        if (c.responseCode == 200) c.inputStream.bufferedReader().use { it.readText() } else null
+        val code = c.responseCode
+        rateLimited = code == 429
+        if (code == 429) android.util.Log.i("TapChain", "RPC rate limited (429)")
+        if (code == 200) c.inputStream.bufferedReader().use { it.readText() } else null
     } catch (e: Exception) {
+        // Android throws NetworkOnMainThreadException for a call made on the UI thread. Swallowing
+        // it returned null, which every caller reads as "no answer from the node" — so a payment
+        // that had already confirmed looked like one that would not confirm, for a whole minute.
+        if (e is android.os.NetworkOnMainThreadException) {
+            android.util.Log.e("TapChain", "RPC attempted on the main thread — this is a bug", e)
+        } else {
+            android.util.Log.i("TapChain", "RPC to ${url.substringAfter("//").substringBefore("/")} failed: ${e.message}")
+        }
         null
     }
 }

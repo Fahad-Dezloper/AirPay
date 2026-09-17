@@ -243,6 +243,30 @@ class DeliveryTest(unittest.TestCase):
             svc.relay_tap(TO, TO, "self")
 
 
+class ProxyTest(unittest.TestCase):
+    """The phones borrow the server's Solana provider; it must not become an open relay."""
+
+    class RecordingRpc(FakeRpc):
+        def __init__(self):
+            super().__init__()
+            self.forwarded = []
+        PROXYABLE = chain.Rpc.PROXYABLE
+        def forward(self, payload):
+            return chain.Rpc.forward(self, payload)
+
+    def test_only_listed_methods_are_forwarded(self):
+        rpc = self.RecordingRpc()
+        with self.assertRaises(ValueError):
+            rpc.forward({"method": "getProgramAccounts", "params": []})
+        with self.assertRaises(ValueError):
+            rpc.forward({"method": "requestAirdrop", "params": []})
+
+    def test_the_methods_the_app_needs_are_allowed(self):
+        for m in ["getLatestBlockhash", "sendTransaction", "getSignaturesForAddress",
+                  "getTransaction", "getSignatureStatuses", "getBalance"]:
+            self.assertIn(m, chain.Rpc.PROXYABLE, m)
+
+
 class HeliusTest(unittest.TestCase):
     def test_signatures_are_extracted_from_either_payload_shape(self):
         self.assertEqual([SIG], signatures_in([{"signature": SIG}]))
@@ -319,6 +343,11 @@ class HttpTest(unittest.TestCase):
         stream.close()
         self.assertEqual(b"event: request\n", kind)
         self.assertEqual(REF, json.loads(data.decode().removeprefix("data: "))["reference"])
+
+    def test_rpc_proxy_refuses_unlisted_methods(self):
+        code, body = self.post("/v1/rpc", {"method": "getProgramAccounts", "params": []})
+        self.assertEqual(400, code)
+        self.assertIn("not allowed", body["error"])
 
     def test_tap_relay_endpoint(self):
         code, body = self.post("/v1/taps", {"to": TO, "address": PAYER, "label": "CPH2401"})

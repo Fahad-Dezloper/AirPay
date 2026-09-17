@@ -11,6 +11,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
+from .chain import Rpc
 from .store import Conflict
 
 log = logging.getLogger("tap.web")
@@ -96,6 +97,21 @@ def make_handler(service, helius_auth: str | None, limiter: RateLimit | None = N
                                            body.get("amount"), body.get("label", ""),
                                            payer=body.get("payer") or None, genesis=body.get("genesis") or None)
                     return self._json(200, {"status": out["status"], "signature": out.get("signature")})
+                if path == "/v1/rpc":
+                    # The phones share one public Solana endpoint that rate-limits after a
+                    # handful of calls and answers from whichever node the load balancer picks,
+                    # which left a payer unable to confirm money that had already arrived.
+                    # Borrowing the server's provider makes reads dependable; the app still
+                    # falls back to the public endpoint when this server is unreachable.
+                    # Checked here, at the edge, rather than trusting whichever RPC client is
+                    # wired in: an unlisted method must be refused even if the client would
+                    # happily forward it.
+                    if body.get("method") not in Rpc.PROXYABLE:
+                        return self._json(400, {"error": f"method not allowed: {body.get('method')}"})
+                    try:
+                        return self._json(200, service.rpc.forward(body))
+                    except Exception:
+                        return self._json(502, {"error": "upstream unavailable"})
                 if path == "/v1/taps":
                     heard = service.relay_tap(body.get("to"), body.get("address"), body.get("label", ""),
                                               genesis=body.get("genesis") or None)

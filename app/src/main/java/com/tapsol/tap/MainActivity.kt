@@ -192,7 +192,7 @@ class MainActivity : ComponentActivity() {
                             checkOwed(e)
                             val age = now - e.createdAt
                             next[e.reference] = now + when {
-                                age < 60_000 -> 1_000L
+                                age < 60_000 -> 2_000L
                                 age < 10 * 60_000 -> 8_000L
                                 else -> 60_000L
                             }
