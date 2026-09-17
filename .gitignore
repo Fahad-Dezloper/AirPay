@@ -8,3 +8,10 @@ captures/
 .externalNativeBuild
 .cxx
 *.apk
+
+# Secrets — never committed
+.env
+app/google-services.json
+server/service-account*.json
+*firebase-adminsdk*.json
+server/.venv/

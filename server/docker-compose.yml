@@ -1,0 +1,23 @@
+# Local, always-on Tap server: restarts itself, keeps its database across restarts.
+#   docker compose up -d --build        start
+#   docker compose logs -f              watch
+#   docker compose down                 stop (data stays in the volume)
+services:
+  tap:
+    build: .
+    ports:
+      - "8787:8787"
+    # Helius key and Firebase project id, from the gitignored tap/.env.
+    env_file: ../.env
+    environment:
+      TAP_DB: /data/tap.db
+      # The key is mounted, never copied into the image, so the image is safe to push anywhere.
+      GOOGLE_APPLICATION_CREDENTIALS: /secrets/fcm.json
+    volumes:
+      - tap-data:/data
+      # Path to your Firebase service-account JSON, set as FCM_KEY_FILE in server/.env (gitignored).
+      - ${FCM_KEY_FILE:?set FCM_KEY_FILE in server/.env to your Firebase service-account JSON}:/secrets/fcm.json:ro
+    restart: unless-stopped
+
+volumes:
+  tap-data:
