@@ -1,0 +1,3 @@
+- ui 
+-- modal with big by defautl white screen waiting for txn if someone is sending. 
+-- send and request button only for sending or requesting money from the other connected phone

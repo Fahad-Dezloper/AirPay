@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.Tap" parent="android:Theme.Material.NoActionBar">
+    <style name="Theme.Duffle" parent="android:Theme.Material.NoActionBar">
         <item name="android:statusBarColor">#0B0D10</item>
         <item name="android:navigationBarColor">#0B0D10</item>
         <item name="android:windowBackground">#0B0D10</item>
@@ -9,7 +9,7 @@
     <!-- The tap popup: drawn over whatever app is on screen, with Compose providing the scrim.
          Translucent so the other app stays visible behind it — it should feel like a sheet
          that slid up, not like Tap launching. -->
-    <style name="Theme.Tap.Popup" parent="android:Theme.Material.NoActionBar">
+    <style name="Theme.Duffle.Popup" parent="android:Theme.Material.NoActionBar">
         <item name="android:windowIsTranslucent">true</item>
         <item name="android:windowBackground">@android:color/transparent</item>
         <item name="android:windowNoTitle">true</item>

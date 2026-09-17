@@ -1,5 +1,5 @@
 """
-Offline tests for the Tap server. The RPC is faked with the REAL devnet payment the Android
+Offline tests for the Duffle server. The RPC is faked with the REAL devnet payment the Android
 tests also use, so the Kotlin and Python verifiers are held to the same transaction.
 """
 from __future__ import annotations
@@ -13,11 +13,11 @@ import unittest
 import urllib.error
 import urllib.request
 
-from tapserver import chain, verify
-from tapserver.helius import AddressSync, signatures_in, webhook_body
-from tapserver.service import Service, next_check_after
-from tapserver.store import Conflict, Store
-from tapserver.web import serve
+from duffleserver import chain, verify
+from duffleserver.helius import AddressSync, signatures_in, webhook_body
+from duffleserver.service import Service, next_check_after
+from duffleserver.store import Conflict, Store
+from duffleserver.web import serve
 
 FIX = pathlib.Path(__file__).parent / "fixtures"
 TX = json.loads((FIX / "devnet_tap_payment.json").read_text())["result"]

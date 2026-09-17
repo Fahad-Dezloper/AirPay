@@ -5,7 +5,7 @@ One-time: create the Helius devnet webhook that points at this server.
         python3 setup_helius_webhook.py
 
 Prints the webhook id; set it as HELIUS_WEBHOOK_ID on the server, which from then on keeps the
-webhook's address list equal to the set of Tap recipients by itself.
+webhook's address list equal to the set of Duffle recipients by itself.
 """
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ import sys
 import urllib.error
 import urllib.request
 
-from tapserver.helius import API, webhook_body
+from duffleserver.helius import API, webhook_body
 
 
 def main() -> None:

@@ -1,6 +1,6 @@
-# Tap server
+# Duffle server
 
-Optional backend for Tap. It watches the chain for payment requests and tells the payee the
+Optional backend for Duffle. It watches the chain for payment requests and tells the payee the
 moment one is paid — live over SSE while the app is open, by push notification while it is
 closed. The app works without it; the server makes confirmation instant and reachable.
 
@@ -15,14 +15,14 @@ Python 3.10+, standard library only.
 
 ```sh
 cd server
-python3 -m tapserver            # http://0.0.0.0:8787, chain polling, no push
+python3 -m duffleserver            # http://0.0.0.0:8787, chain polling, no push
 python3 -m unittest discover -s tests -t .
 ```
 
-Point a debug build of the app at it by adding to `tap/local.properties`:
+Point a debug build of the app at it by adding to `duffle/local.properties`:
 
 ```
-tap.server=http://<your-lan-ip>:8787
+duffle.server=http://<your-lan-ip>:8787
 ```
 
 Debug builds allow plain HTTP to reach a LAN server; release builds require HTTPS.
@@ -32,8 +32,8 @@ Debug builds allow plain HTTP to reach a LAN server; release builds require HTTP
 | Variable | Default | |
 |---|---|---|
 | `PORT`, `HOST` | `8787`, `0.0.0.0` | |
-| `TAP_DB` | `tap.db` | SQLite file |
-| `TAP_RPC_URL` | `https://api.devnet.solana.com` | Use a Helius devnet RPC URL for real rate limits |
+| `DUFFLE_DB` | `duffle.db` | SQLite file |
+| `DUFFLE_RPC_URL` | `https://api.devnet.solana.com` | Use a Helius devnet RPC URL for real rate limits |
 | `PUBLIC_URL` | — | The server's public https URL, for the webhook |
 | `HELIUS_API_KEY` | — | Enables webhook address sync |
 | `HELIUS_WEBHOOK_ID` | — | From `setup_helius_webhook.py` |
@@ -66,11 +66,11 @@ HELIUS_API_KEY=… PUBLIC_URL=https://your-server HELIUS_AUTH=$(openssl rand -he
 ## Enabling push
 
 1. Create a Firebase project and add an Android app with package `com.tapsol.tap`.
-2. Put its values in `tap/local.properties`: `firebase.appId`, `firebase.apiKey`,
+2. Put its values in `duffle/local.properties`: `firebase.appId`, `firebase.apiKey`,
    `firebase.projectId`, `firebase.senderId`. No `google-services.json` is needed.
 3. Download a service-account key (Project settings → Service accounts). Running directly, set
    `FCM_PROJECT_ID` and `GOOGLE_APPLICATION_CREDENTIALS`. With Docker, put `FCM_PROJECT_ID` in
-   `tap/.env` and `FCM_KEY_FILE=<path to the key>` in `server/.env`; the key is mounted read-only,
+   `duffle/.env` and `FCM_KEY_FILE=<path to the key>` in `server/.env`; the key is mounted read-only,
    never copied into the image.
 
 ## Docker

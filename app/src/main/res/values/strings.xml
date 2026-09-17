@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Tap</string>
-    <string name="aid_group_desc">Tap to pay in Solana</string>
+    <string name="app_name">Duffle</string>
+    <string name="aid_group_desc">Duffle — tap to pay on Solana</string>
 </resources>

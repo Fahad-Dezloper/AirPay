@@ -14,7 +14,7 @@
     <aid-group
         android:description="@string/aid_group_desc"
         android:category="other">
-        <aid-filter android:name="F0536F6C616E61546170" />
+        <aid-filter android:name="F0447566666C65" />
         <!-- NFC Forum Type 4 NDEF tag application: lets a phone with Tap closed read us. -->
         <aid-filter android:name="D2760000850101" />
     </aid-group>

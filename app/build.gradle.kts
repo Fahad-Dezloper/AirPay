@@ -18,17 +18,17 @@ kotlin {
 }
 
 android {
-    namespace = "com.tapsol.tap"
+    namespace = "so.duffle.app"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.tapsol.tap"
+        applicationId = "so.duffle.app"
         minSdk = 31
         targetSdk = 36
         versionCode = 1
         versionName = "0.1"
 
-        buildConfigField("String", "TAP_SERVER_URL", local("tap.server"))
+        buildConfigField("String", "TAP_SERVER_URL", local("duffle.server"))
         buildConfigField("String", "FIREBASE_APP_ID", local("firebase.appId"))
         buildConfigField("String", "FIREBASE_API_KEY", local("firebase.apiKey"))
         buildConfigField("String", "FIREBASE_PROJECT_ID", local("firebase.projectId"))
