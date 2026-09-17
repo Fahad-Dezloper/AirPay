@@ -23,8 +23,11 @@ class Inbox(context: Context) {
         val readAt: Long,
         val signature: String? = null,
         val paidAt: Long? = null,
+        /** The person who asked took it back. Kept visible, greyed, rather than vanishing. */
+        val withdrawn: Boolean = false,
     ) {
         val paid get() = signature != null
+        val payable get() = !paid && !withdrawn
     }
 
     /** Adds a freshly read request. Returns false if this exact request is already here. */
@@ -43,6 +46,14 @@ class Inbox(context: Context) {
         })
     }
 
+    /**
+     * The requester took it back. Not deleted: a row disappearing while someone is inside their
+     * wallet — or has just approved — is worse than one that stays and explains itself.
+     */
+    fun markWithdrawn(reference: String) {
+        save(all().map { if (it.request.reference == reference && !it.paid) it.copy(withdrawn = true) else it })
+    }
+
     fun remove(reference: String) = save(all().filter { it.request.reference != reference })
 
     fun get(reference: String): Item? = all().firstOrNull { it.request.reference == reference }
@@ -59,6 +70,7 @@ class Inbox(context: Context) {
                 readAt = o.optLong("t"),
                 signature = o.optString("s").takeIf { it.isNotBlank() },
                 paidAt = o.optLong("p").takeIf { it > 0 },
+                withdrawn = o.optBoolean("w"),
             )
         }
     } catch (e: Exception) {
@@ -76,6 +88,7 @@ class Inbox(context: Context) {
                 put("t", item.readAt)
                 item.signature?.let { put("s", it) }
                 item.paidAt?.let { put("p", it) }
+                if (item.withdrawn) put("w", true)
             })
         }
         prefs.edit().putString(KEY, arr.toString()).apply()

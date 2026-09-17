@@ -70,6 +70,30 @@ class Service:
                                       "amount": str(amount).strip(), "label": label, "genesis": genesis or ""})
         return result
 
+    def withdraw(self, reference: str) -> int:
+        """The requester took their request back; tell the phone that was asked."""
+        if not verify.is_address(reference):
+            raise ValueError("invalid reference")
+        row = self.store.withdraw(reference)
+        if row is None:
+            raise KeyError("unknown reference")
+        if not row["payer"] or row["status"] != "open":
+            return 0
+        return self._deliver(row["payer"], {"type": "withdrawn", "reference": reference,
+                                            "label": row["label"] or ""})
+
+    def reject(self, reference: str, label: str = "") -> int:
+        """The payer declined; tell the phone that asked."""
+        if not verify.is_address(reference):
+            raise ValueError("invalid reference")
+        row = self.store.reject(reference, str(label or "")[:64])
+        if row is None:
+            raise KeyError("unknown reference")
+        if row["status"] != "open":
+            return 0
+        return self._deliver(row["recipient"], {"type": "rejected", "reference": reference,
+                                                "label": str(label or "")[:64]})
+
     def relay_tap(self, to: str, address: str, label: str = "", genesis: str | None = None) -> int:
         """An introduction the radio could not deliver because the phones parted before HELLO."""
         if not verify.is_address(to) or not verify.is_address(address) or to == address:

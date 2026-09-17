@@ -36,6 +36,8 @@ object ServerClient {
     data class Paid(val reference: String, val signature: String) : Event
     data class Requested(val request: PayRequest) : Event
     data class Tapped(val card: TapCard) : Event
+    data class Withdrawn(val reference: String) : Event
+    data class Rejected(val reference: String, val label: String) : Event
 
     /**
      * Tells the server to watch a request. Idempotent — both phones call it, the payee when
@@ -55,6 +57,21 @@ object ServerClient {
         payer?.let { put("payer", it) }
         genesis?.let { put("genesis", it) }
     })
+
+    /**
+     * Takes a request back. Advisory by design: nothing can stop someone sending SOL to an
+     * address, so this only stops the other phone asking — and the request stays watched, in
+     * case they were already approving when it was withdrawn.
+     */
+    suspend fun withdraw(reference: String): Boolean =
+        post("/v1/withdrawals", JSONObject().apply { put("reference", reference) })
+
+    /** The payer declined. The asker's phone stops showing it as expected money. */
+    suspend fun reject(reference: String, label: String): Boolean =
+        post("/v1/rejections", JSONObject().apply {
+            put("reference", reference)
+            put("label", label)
+        })
 
     /** Relays an introduction the radio could not deliver, because the phones parted first. */
     suspend fun relayTap(from: TapCard, to: String): Boolean = post("/v1/taps", JSONObject().apply {
@@ -125,6 +142,14 @@ object ServerClient {
                 label = o.optString("label"), reference = o.getString("reference"),
                 genesis = o.optString("genesis").takeIf { it.isNotBlank() },
             ).takeIf { it.validate() == null && it.lamports() != null }?.let { Requested(it) }
+        } catch (e: Exception) { null }
+        "withdrawn" -> try {
+            JSONObject(json).getString("reference").takeIf { PayRequest.isBase58Address(it) }?.let { Withdrawn(it) }
+        } catch (e: Exception) { null }
+        "rejected" -> try {
+            val o = JSONObject(json)
+            o.getString("reference").takeIf { PayRequest.isBase58Address(it) }
+                ?.let { Rejected(it, o.optString("label")) }
         } catch (e: Exception) { null }
         "tap" -> try {
             val o = JSONObject(json)

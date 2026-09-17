@@ -54,9 +54,10 @@ class Store:
         # Databases created before requests could be addressed to a payer.
         with self._lock, self._db:
             cols = {r[1] for r in self._db.execute("PRAGMA table_info(requests)")}
-            for col in ("payer", "genesis"):
+            for col, kind in (("payer", "TEXT"), ("genesis", "TEXT"), ("withdrawn", "INTEGER"),
+                              ("rejected", "INTEGER"), ("rejected_by", "TEXT")):
                 if col not in cols:
-                    self._db.execute(f"ALTER TABLE requests ADD COLUMN {col} TEXT")
+                    self._db.execute(f"ALTER TABLE requests ADD COLUMN {col} {kind}")
             self._db.execute("CREATE INDEX IF NOT EXISTS by_payer ON requests(payer, status)")
 
     # -- requests ---------------------------------------------------------------------------
@@ -75,10 +76,37 @@ class Store:
                 return {"status": "open", "created": True}
             if row["recipient"] != recipient or row["lamports"] != lamports:
                 raise Conflict("that reference is already registered with different details")
+            # Fill in a payer we did not know. A request made by tapping is registered by the
+            # phone ASKING for money, which cannot know who will pay; the paying phone registers
+            # the same reference moments later and does know. Without this the server has nobody
+            # to tell when the request is withdrawn. Never overwrites a payer already recorded.
+            if payer and not row["payer"]:
+                self._db.execute("UPDATE requests SET payer=? WHERE reference=?", (payer, reference))
             # A repeat registration is a nudge: look now rather than on the next sweep.
             if row["status"] == "open":
                 self._db.execute("UPDATE requests SET next_check=0 WHERE reference=?", (reference,))
             return {"status": row["status"], "signature": row["signature"], "created": False}
+
+    def reject(self, reference: str, by: str) -> dict | None:
+        """The payer declined. Like a withdrawal, it stays OPEN: they may change their mind, and
+        money sent anyway must still be recognised."""
+        with self._lock, self._db:
+            row = self._db.execute("SELECT * FROM requests WHERE reference=?", (reference,)).fetchone()
+            if row is None:
+                return None
+            self._db.execute("UPDATE requests SET rejected=1, rejected_by=? WHERE reference=?", (by, reference))
+        return dict(row)
+
+    def withdraw(self, reference: str) -> dict | None:
+        """Mark a request as taken back. It stays OPEN on purpose: withdrawing means "stop
+        asking", not "refuse money", and a payer already inside their wallet may land a payment
+        a second later. That payment must still be noticed."""
+        with self._lock, self._db:
+            row = self._db.execute("SELECT * FROM requests WHERE reference=?", (reference,)).fetchone()
+            if row is None:
+                return None
+            self._db.execute("UPDATE requests SET withdrawn=1 WHERE reference=?", (reference,))
+        return dict(row)
 
     def get(self, reference: str) -> dict | None:
         with self._lock:

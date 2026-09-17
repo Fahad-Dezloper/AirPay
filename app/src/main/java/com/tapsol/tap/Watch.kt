@@ -27,8 +27,11 @@ class Watch(context: Context) {
         val createdAt: Long,
         val signature: String? = null,
         val paidAt: Long? = null,
+        /** The payer declined. Kept and greyed, since they may still pay or tap again. */
+        val rejectedBy: String? = null,
     ) {
         val paid get() = signature != null
+        val rejected get() = rejectedBy != null
         fun lamports(): Long? = PayRequest(recipient, amount, "SOL", "", reference).lamports()
     }
 
@@ -52,6 +55,10 @@ class Watch(context: Context) {
         return true
     }
 
+    fun markRejected(reference: String, by: String) {
+        save(all().map { if (it.reference == reference && !it.paid) it.copy(rejectedBy = by.ifBlank { "They" }) else it })
+    }
+
     fun remove(reference: String) = save(all().filter { it.reference != reference })
 
     fun all(): List<Entry> = try {
@@ -68,6 +75,7 @@ class Watch(context: Context) {
                 createdAt = o.optLong("t"),
                 signature = o.optString("s").takeIf { it.isNotBlank() },
                 paidAt = o.optLong("p").takeIf { it > 0 },
+                rejectedBy = o.optString("rb").takeIf { it.isNotBlank() },
             )
         }
     } catch (e: Exception) {
@@ -86,6 +94,7 @@ class Watch(context: Context) {
                 put("t", e.createdAt)
                 e.signature?.let { put("s", it) }
                 e.paidAt?.let { put("p", it) }
+                e.rejectedBy?.let { put("rb", it) }
             })
         }
         prefs.edit().putString(KEY, arr.toString()).apply()

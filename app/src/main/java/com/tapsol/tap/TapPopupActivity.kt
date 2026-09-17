@@ -91,13 +91,18 @@ class TapPopupActivity : ComponentActivity() {
                     onConnect = ::connect,
                     onPay = ::pay,
                     onRequest = ::request,
+                    onDecline = ::decline,
                     onRetry = { phase = Phase.Ready },
                     onExplorer = { sig -> runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(Chain.explorerUrl(sig)))) } },
                 )
-                // The requester's half: watch for their payment while the popup is open.
+                // A request ends three ways, and the popup has to notice all of them: they pay,
+                // they decline, or — when we are the one being asked — they take it back.
                 LaunchedEffect(phase) {
-                    val w = phase as? Phase.Waiting ?: return@LaunchedEffect
-                    watchForPayment(w)
+                    when (val ph = phase) {
+                        is Phase.Waiting -> watchForPayment(ph)
+                        Phase.Ready -> watchForWithdrawal()
+                        else -> Unit
+                    }
                 }
             }
         }
@@ -135,7 +140,10 @@ class TapPopupActivity : ComponentActivity() {
             // Saved before anything else, so "Later" — or closing the popup — never loses it.
             Inbox(this).add(payload.request)
             lifecycleScope.launch {
-                ServerClient.register(payload.request.reference, payload.request.recipient, payload.request.amount, payload.request.label)
+                // As payer: a request received by tapping was registered by the phone asking,
+                // which cannot know who will pay — so a withdrawal would reach nobody.
+                ServerClient.register(payload.request.reference, payload.request.recipient,
+                    payload.request.amount, payload.request.label, payer = address)
             }
         }
 
@@ -196,7 +204,10 @@ class TapPopupActivity : ComponentActivity() {
             phase = Phase.Working("Getting ready…")
             // Registered before paying so the server is already watching and can tell the other
             // phone the instant it lands.
-            launch { ServerClient.register(req.reference, req.recipient, req.amount, Identity.label(this@TapPopupActivity)) }
+            launch {
+                ServerClient.register(req.reference, req.recipient, req.amount,
+                    Identity.label(this@TapPopupActivity), payer = payer)
+            }
             val result = try {
                 Payments.pay(wallet, payer, req, stage = { phase = Phase.Working(it) }, log = { Log.i(TAG, it) })
             } catch (e: Exception) {
@@ -217,6 +228,20 @@ class TapPopupActivity : ComponentActivity() {
                 is PayResult.Failed -> { Haptics.failure(this@TapPopupActivity); Phase.Failed(result.title, result.detail, result.signature) }
             }
         }
+    }
+
+    /**
+     * "No thanks" — an answer, unlike "Later", which is only a delay. The person who asked is
+     * standing there waiting, so they are told; without this their phone would show the request
+     * as still expected until they gave up on it themselves.
+     */
+    private fun decline() {
+        val p = peer as? TapPayload.Request ?: return finish()
+        val req = p.request
+        Inbox(this).remove(req.reference)
+        lifecycleScope.launch { ServerClient.reject(req.reference, Identity.label(this@TapPopupActivity)) }
+        Log.i(TAG, "declined ${req.reference.take(8)}…")
+        finish()
     }
 
     private fun request(amount: String) {
@@ -253,12 +278,34 @@ class TapPopupActivity : ComponentActivity() {
         val me = address ?: return
         val lamports = PayRequest(me, w.amount, "SOL", "", w.reference).lamports() ?: return
         while (phase == w) {
+            // They may answer instead of paying. A refusal arrives over the live stream or as a
+            // push, and both write it to the watch list — so reading that covers either route,
+            // including when this popup is the only part of the app on screen.
+            val entry = Watch(this).all().firstOrNull { it.reference == w.reference }
+            if (entry?.rejected == true) {
+                Haptics.failure(this)
+                phase = Phase.Error("${entry.rejectedBy} declined", "Nothing was paid. You can ask again.")
+                return
+            }
             val found = withContext(Dispatchers.IO) { Chain.findPayment(w.reference, me, lamports) }
             if (found is Chain.Found.Yes) {
                 if (Watch(this).markPaid(w.reference, found.signature)) {
                     Haptics.success(this)
                     phase = Phase.Success("Received", "${w.amount} SOL from ${peer?.label ?: "them"}", found.signature)
                 }
+                return
+            }
+            delay(2_000)
+        }
+    }
+
+    /** The other side of the same coin: a request we were asked to pay, taken back. */
+    private suspend fun watchForWithdrawal() {
+        val req = (peer as? TapPayload.Request)?.request ?: return
+        while (phase == Phase.Ready) {
+            if (Inbox(this).get(req.reference)?.withdrawn == true) {
+                Haptics.failure(this)
+                phase = Phase.Error("Request withdrawn", "${req.label} took this request back.")
                 return
             }
             delay(2_000)
@@ -289,6 +336,7 @@ private fun PopupScreen(
     onConnect: () -> Unit,
     onPay: (String) -> Unit,
     onRequest: (String) -> Unit,
+    onDecline: () -> Unit,
     onRetry: () -> Unit,
     onExplorer: (String) -> Unit,
 ) {
@@ -316,7 +364,7 @@ private fun PopupScreen(
             AnimatedContent(targetState = phase, label = "phase") { ph ->
                 Column {
                     when (ph) {
-                        TapPopupActivity.Phase.Ready -> ReadyBody(peer, connected, onConnect, onPay, onRequest, onDismiss)
+                        TapPopupActivity.Phase.Ready -> ReadyBody(peer, connected, onConnect, onPay, onRequest, onDecline, onDismiss)
                         is TapPopupActivity.Phase.Working -> WorkingBody(ph.text, null)
                         is TapPopupActivity.Phase.Waiting -> {
                             WorkingBody("Waiting for ${peer.label} to pay ${ph.amount} SOL", "You can close this — it stays in Requests.")
@@ -391,6 +439,7 @@ private fun ReadyBody(
     onConnect: () -> Unit,
     onPay: (String) -> Unit,
     onRequest: (String) -> Unit,
+    onDecline: () -> Unit,
     onLater: () -> Unit,
 ) {
     if (!connected) {
@@ -405,7 +454,12 @@ private fun ReadyBody(
         Spacer(Modifier.height(16.dp))
         PrimaryButton("Pay ${peer.request.amount} SOL", { onPay(peer.request.amount) })
         Spacer(Modifier.height(8.dp))
-        SecondaryButton("Later", onLater)
+        // Two different answers: "Later" keeps it in Requests and tells them nothing; "Decline"
+        // is a no, and their phone is told so they stop waiting.
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            SecondaryButton("Decline", onDecline, Modifier.weight(1f), tone = Warn)
+            SecondaryButton("Later", onLater, Modifier.weight(1f))
+        }
         return
     }
 
@@ -490,9 +544,15 @@ private fun PrimaryButton(text: String, onClick: () -> Unit, modifier: Modifier 
 }
 
 @Composable
-private fun SecondaryButton(text: String, onClick: () -> Unit, modifier: Modifier = Modifier.fillMaxWidth(), enabled: Boolean = true) {
+private fun SecondaryButton(
+    text: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier.fillMaxWidth(),
+    enabled: Boolean = true,
+    tone: Color = Fg,
+) {
     OutlinedButton(
         onClick = onClick, enabled = enabled, modifier = modifier.height(52.dp), shape = RoundedCornerShape(12.dp),
-        colors = ButtonDefaults.outlinedButtonColors(contentColor = Fg, disabledContentColor = Dim),
+        colors = ButtonDefaults.outlinedButtonColors(contentColor = tone, disabledContentColor = Dim),
     ) { Text(text, fontWeight = FontWeight.SemiBold, fontSize = 16.sp) }
 }

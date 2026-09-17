@@ -234,6 +234,59 @@ class DeliveryTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 svc.register(REF, TO, "0.01", "", payer=payer)
 
+    def test_withdrawing_tells_the_payer_but_still_watches_for_a_late_payment(self):
+        svc = Service(Store(), FakeRpc())
+        q = svc.hub.subscribe(PAYER)
+        svc.register(REF, TO, "0.01", "Seeker", payer=PAYER)
+        q.get(timeout=1)  # the request itself
+        self.assertEqual(1, svc.withdraw(REF))
+        self.assertEqual({"type": "withdrawn", "reference": REF, "label": "Seeker"}, q.get(timeout=1))
+        # Withdrawing is "stop asking", not "refuse money": a payment landing a second later
+        # must still be recognised, because the payer may already be inside their wallet.
+        self.assertEqual("paid", svc.check_reference(REF))
+        self.assertEqual("paid", svc.store.get(REF)["status"])
+
+    def test_the_paying_phone_can_fill_in_a_payer_the_asker_never_knew(self):
+        """A request made by tapping is registered by the phone asking for money, which cannot
+        know who will pay. Without the paying phone filling that in, a withdrawal reaches nobody
+        — which is exactly what happened on real hardware."""
+        svc = Service(Store(), FakeRpc())
+        svc.register(REF, TO, "0.01", "Seeker")                    # the asker, no payer known
+        self.assertIsNone(svc.store.get(REF)["payer"])
+        svc.register(REF, TO, "0.01", "Seeker", payer=PAYER)       # the payer, registering to watch
+        self.assertEqual(PAYER, svc.store.get(REF)["payer"])
+        q = svc.hub.subscribe(PAYER)
+        self.assertEqual(1, svc.withdraw(REF))
+        self.assertEqual("withdrawn", q.get(timeout=1)["type"])
+
+    def test_a_known_payer_is_never_overwritten(self):
+        svc = Service(Store(), FakeRpc())
+        svc.register(REF, TO, "0.01", "", payer=PAYER)
+        svc.register(REF, TO, "0.01", "", payer="8eYAaFEyuwxKwpa9qSbCTWj8VStg5MeAE9GPMyyMTfSn")
+        self.assertEqual(PAYER, svc.store.get(REF)["payer"])
+
+    def test_rejecting_tells_the_asker_and_keeps_watching(self):
+        svc = Service(Store(), FakeRpc())
+        q = svc.hub.subscribe(TO)
+        svc.register(REF, TO, "0.01", "Seeker", payer=PAYER)
+        self.assertEqual(1, svc.reject(REF, "CPH2401"))
+        self.assertEqual({"type": "rejected", "reference": REF, "label": "CPH2401"}, q.get(timeout=1))
+        self.assertTrue(svc.store.get(REF)["rejected"])
+        # Declining is not a refusal of money already on its way.
+        self.assertEqual("paid", svc.check_reference(REF))
+
+    def test_rejecting_something_unknown_is_an_error(self):
+        svc = Service(Store(), FakeRpc())
+        with self.assertRaises(KeyError):
+            svc.reject(REF, "x")
+
+    def test_withdrawing_something_unknown_is_an_error_not_a_silent_ok(self):
+        svc = Service(Store(), FakeRpc())
+        with self.assertRaises(KeyError):
+            svc.withdraw(REF)
+        with self.assertRaises(ValueError):
+            svc.withdraw("nope")
+
     def test_a_tap_is_relayed_when_hello_could_not_cross(self):
         svc = Service(Store(), FakeRpc())
         q = svc.hub.subscribe(TO)
@@ -348,6 +401,16 @@ class HttpTest(unittest.TestCase):
         code, body = self.post("/v1/rpc", {"method": "getProgramAccounts", "params": []})
         self.assertEqual(400, code)
         self.assertIn("not allowed", body["error"])
+
+    def test_withdrawal_endpoint(self):
+        self.post("/v1/requests", {"reference": REF, "recipient": TO, "amount": "0.01", "payer": PAYER})
+        self.assertEqual((200, {"told": 0}), self.post("/v1/withdrawals", {"reference": REF}))
+        self.assertEqual(404, self.post("/v1/withdrawals", {"reference": PAYER})[0])
+
+    def test_rejection_endpoint(self):
+        self.post("/v1/requests", {"reference": REF, "recipient": TO, "amount": "0.01", "payer": PAYER})
+        self.assertEqual((200, {"told": 0}), self.post("/v1/rejections", {"reference": REF, "label": "CPH2401"}))
+        self.assertEqual(404, self.post("/v1/rejections", {"reference": PAYER, "label": "x"})[0])
 
     def test_tap_relay_endpoint(self):
         code, body = self.post("/v1/taps", {"to": TO, "address": PAYER, "label": "CPH2401"})

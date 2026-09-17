@@ -102,6 +102,17 @@ object Push {
         )
     }
 
+    /** They said no. The asker is probably still holding their phone out. */
+    fun showRejected(context: Context, who: String) {
+        notify(
+            context, CHANNEL_TAPS, "Taps", tapId("rejected$who"),
+            title = "$who declined your request",
+            text = "Nothing was paid.",
+            open = Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            publicText = "A request was declined",
+        )
+    }
+
     fun cancel(context: Context, key: String) {
         context.getSystemService(NotificationManager::class.java)?.cancel(tapId(key))
     }
@@ -173,6 +184,20 @@ class TapMessagingService : FirebaseMessagingService() {
                 if (req.validate() != null || req.lamports() == null) return
                 Inbox(this).add(req)
                 Push.showRequested(this, req)
+            }
+            // The requester took it back. Marked quietly: the row explains itself when the
+            // app is next opened, and a notification for something being cancelled is noise.
+            "withdrawn" -> {
+                val ref = d["reference"]?.takeIf { PayRequest.isBase58Address(it) } ?: return
+                Inbox(this).markWithdrawn(ref)
+                Push.cancel(this, ref)
+            }
+            // The payer declined. Worth a notification: the asker is probably still waiting.
+            "rejected" -> {
+                val ref = d["reference"]?.takeIf { PayRequest.isBase58Address(it) } ?: return
+                val who = d["label"].orEmpty().ifBlank { "They" }
+                Watch(this).markRejected(ref, who)
+                Push.showRejected(this, who)
             }
             // An introduction relayed because the phones parted before HELLO could cross.
             "tap" -> {

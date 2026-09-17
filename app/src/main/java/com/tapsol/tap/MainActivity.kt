@@ -224,6 +224,15 @@ class MainActivity : ComponentActivity() {
                                     push("server: ${ev.request.label} requests ${ev.request.amount} SOL")
                                     startActivity(TapPopupActivity.intent(this@MainActivity, TapPayload.Request(ev.request), cameFrom = "server"))
                                 }
+                                is ServerClient.Withdrawn -> {
+                                    inbox.markWithdrawn(ev.reference); refreshLists()
+                                    push("— ${ev.reference.take(8)}… was withdrawn by the requester")
+                                }
+                                is ServerClient.Rejected -> {
+                                    watch.markRejected(ev.reference, ev.label); refreshLists()
+                                    push("— ${ev.label.ifBlank { "They" }} declined ${ev.reference.take(8)}…")
+                                    Haptics.failure(this@MainActivity)
+                                }
                                 is ServerClient.Tapped -> {
                                     push("server: ${ev.card.label} tapped you")
                                     startActivity(TapPopupActivity.intent(this@MainActivity, TapPayload.Card(ev.card), cameFrom = "server"))
@@ -266,12 +275,24 @@ class MainActivity : ComponentActivity() {
                                 paying = paying,
                                 onPay = { item -> incoming = item.request },
                                 onDismissToPay = { item ->
-                                    inbox.remove(item.request.reference); refreshLists()
-                                    push("— removed request from ${item.request.label}")
+                                    val req = item.request
+                                    inbox.remove(req.reference); refreshLists()
+                                    push("— declined ${req.amount} SOL from ${req.label}")
+                                    // Only a live request is a rejection; one they already took
+                                    // back, or already paid, is just tidying up.
+                                    if (item.payable) {
+                                        lifecycleScope.launch {
+                                            ServerClient.reject(req.reference, Identity.label(this@MainActivity))
+                                        }
+                                    }
                                 },
                                 onDismissOwed = { e ->
                                     watch.remove(e.reference); refreshLists()
-                                    push("— stopped watching ${e.reference.take(8)}…")
+                                    push("— withdrew ${e.amount} SOL request ${e.reference.take(8)}…")
+                                    // Tell the phone we asked, so it stops offering a Pay button
+                                    // for something we took back. Advisory: money sent anyway
+                                    // still arrives, and the server keeps watching for it.
+                                    lifecycleScope.launch { ServerClient.withdraw(e.reference) }
                                 },
                             )
                             return@Column
@@ -411,6 +432,14 @@ class MainActivity : ComponentActivity() {
                             incoming = null
                             push("— saved ${req.amount} SOL for ${req.label} in Requests")
                         },
+                        onDecline = {
+                            incoming = null
+                            inbox.remove(req.reference); refreshLists()
+                            push("— declined ${req.amount} SOL from ${req.label}")
+                            lifecycleScope.launch {
+                                ServerClient.reject(req.reference, Identity.label(this@MainActivity))
+                            }
+                        },
                     )
                 }
             }
@@ -424,6 +453,10 @@ class MainActivity : ComponentActivity() {
         Haptics.contact(this)
 
         val known = inbox.get(req.reference)
+        if (known?.withdrawn == true) {
+            status = Status.Problem("Request withdrawn", "${req.label} took this request back.")
+            return
+        }
         if (known?.paid == true) {
             status = Status.Problem("Already paid", "You paid this request ${ago(known.paidAt ?: 0)}.")
             return
@@ -438,7 +471,12 @@ class MainActivity : ComponentActivity() {
             push(if (isNew) "+ new contact ${req.label}" else "— known contact ${req.label}")
             // The payer registers too, so the server watches this request even if the payee's
             // phone happened to be offline when it served it.
-            lifecycleScope.launch { ServerClient.register(req.reference, req.recipient, req.amount, req.label) }
+            // With our own address as payer: a request received by tapping was registered by
+            // the phone ASKING, which cannot know who will pay, so the server had nobody to
+            // tell when it was withdrawn.
+            lifecycleScope.launch {
+                ServerClient.register(req.reference, req.recipient, req.amount, req.label, payer = connected)
+            }
         }
 
         // Never swap the request under a sheet someone is reading — they might approve a
@@ -825,7 +863,13 @@ private fun LogView(log: List<String>) {
 }
 
 @Composable
-private fun ConfirmSheet(req: PayRequest, busy: Boolean, onPay: () -> Unit, onLater: () -> Unit) {
+private fun ConfirmSheet(
+    req: PayRequest,
+    busy: Boolean,
+    onPay: () -> Unit,
+    onLater: () -> Unit,
+    onDecline: () -> Unit,
+) {
     AlertDialog(
         // Tapping outside is "later", never "gone": the request is already saved.
         onDismissRequest = onLater,
@@ -851,7 +895,12 @@ private fun ConfirmSheet(req: PayRequest, busy: Boolean, onPay: () -> Unit, onLa
                 Text(if (busy) "…" else "Pay", color = Accent, fontWeight = FontWeight.Bold)
             }
         },
-        dismissButton = { TextButton(onClick = onLater) { Text("Later", color = Dim) } },
+        dismissButton = {
+            Row {
+                TextButton(onClick = onDecline, enabled = !busy) { Text("Decline", color = Warn) }
+                TextButton(onClick = onLater) { Text("Later", color = Dim) }
+            }
+        },
     )
 }
 
@@ -911,24 +960,41 @@ private fun RequestsTab(
         if (openToPay.isNotEmpty()) {
             SectionLabel("TO PAY")
             openToPay.forEach { item ->
+                // A withdrawn request is greyed and explained rather than deleted. Removing the
+                // row under someone who is mid-payment — or has just approved in their wallet —
+                // is more confusing than leaving it with a reason.
+                val gone = item.withdrawn
                 Row(RowStyle, verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("${item.request.amount} SOL", color = Fg, fontSize = 16.sp, fontWeight = FontWeight.Bold)
-                            if (item.request.genesis != null) {
+                            Text("${item.request.amount} SOL", color = if (gone) Dim else Fg,
+                                fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                            if (gone) {
+                                Spacer(Modifier.width(8.dp))
+                                Text("WITHDRAWN BY ${item.request.label.uppercase()}", color = Warn,
+                                    fontSize = 8.sp, letterSpacing = 1.sp, fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.background(Warn.copy(alpha = .12f), RoundedCornerShape(4.dp))
+                                        .padding(horizontal = 6.dp, vertical = 2.dp))
+                            } else if (item.request.genesis != null) {
                                 Spacer(Modifier.width(6.dp))
                                 Text("SEEKER", color = Accent, fontSize = 8.sp, letterSpacing = 1.sp, fontWeight = FontWeight.Bold)
                             }
                         }
-                        Text("${item.request.label} · tapped ${ago(item.readAt)}", color = Dim, fontSize = 11.sp)
+                        Text(
+                            if (gone) "${item.request.label} took this back"
+                            else "${item.request.label} · tapped ${ago(item.readAt)}",
+                            color = Dim, fontSize = 11.sp,
+                        )
                     }
                     TextButton(onClick = { onDismissToPay(item) }, enabled = paying == null) {
                         Text("Remove", color = Dim, fontSize = 12.sp)
                     }
-                    Button(
-                        onClick = { onPay(item) }, enabled = paying == null,
-                        colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = Ink),
-                    ) { Text(if (paying == item.request.reference) "…" else "Pay", fontWeight = FontWeight.SemiBold) }
+                    if (!gone) {
+                        Button(
+                            onClick = { onPay(item) }, enabled = paying == null,
+                            colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = Ink),
+                        ) { Text(if (paying == item.request.reference) "…" else "Pay", fontWeight = FontWeight.SemiBold) }
+                    }
                 }
             }
             Spacer(Modifier.height(16.dp))
@@ -937,11 +1003,27 @@ private fun RequestsTab(
         if (openOwed.isNotEmpty()) {
             SectionLabel("WAITING FOR PAYMENT")
             openOwed.forEach { e ->
+                // Declined requests stay, greyed: they may still tap again or pay anyway, and a
+                // row that vanishes tells the asker nothing about what happened.
+                val no = e.rejected
                 Row(RowStyle, verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
-                        Text("${e.amount} SOL", color = Fg, fontSize = 16.sp, fontWeight = FontWeight.Bold)
-                        Text("requested ${ago(e.createdAt)} · ${e.reference.take(8)}…", color = Dim, fontSize = 11.sp,
-                            fontFamily = FontFamily.Monospace)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("${e.amount} SOL", color = if (no) Dim else Fg, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                            if (no) {
+                                Spacer(Modifier.width(8.dp))
+                                Text("DECLINED BY ${e.rejectedBy!!.uppercase()}", color = Warn, fontSize = 8.sp,
+                                    letterSpacing = 1.sp, fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.background(Warn.copy(alpha = .12f), RoundedCornerShape(4.dp))
+                                        .padding(horizontal = 6.dp, vertical = 2.dp))
+                            }
+                        }
+                        Text(
+                            if (no) "${e.rejectedBy} said no · nothing was paid"
+                            else "requested ${ago(e.createdAt)} · ${e.reference.take(8)}…",
+                            color = Dim, fontSize = 11.sp,
+                            fontFamily = if (no) FontFamily.Default else FontFamily.Monospace,
+                        )
                     }
                     TextButton(onClick = { onDismissOwed(e) }) { Text("Remove", color = Dim, fontSize = 12.sp) }
                 }

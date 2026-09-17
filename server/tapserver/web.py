@@ -112,6 +112,16 @@ def make_handler(service, helius_auth: str | None, limiter: RateLimit | None = N
                         return self._json(200, service.rpc.forward(body))
                     except Exception:
                         return self._json(502, {"error": "upstream unavailable"})
+                if path == "/v1/withdrawals":
+                    try:
+                        return self._json(200, {"told": service.withdraw(body.get("reference"))})
+                    except KeyError:
+                        return self._json(404, {"error": "unknown reference"})
+                if path == "/v1/rejections":
+                    try:
+                        return self._json(200, {"told": service.reject(body.get("reference"), body.get("label", ""))})
+                    except KeyError:
+                        return self._json(404, {"error": "unknown reference"})
                 if path == "/v1/taps":
                     heard = service.relay_tap(body.get("to"), body.get("address"), body.get("label", ""),
                                               genesis=body.get("genesis") or None)
