@@ -73,6 +73,9 @@ class MainActivity : ComponentActivity() {
     private var lastAmount = "0.01"
     private var connected by mutableStateOf<String?>(null)
     private var tab by mutableStateOf(Tab.TAP)
+    /** What the other phone shows when you tap them. A model number is not a name. */
+    private var myName by mutableStateOf("")
+    private var renaming by mutableStateOf(false)
 
     /** UI mirrors of the two on-disk lists. Disk is the truth; these are re-read after writes. */
     private val toPay = mutableStateListOf<Inbox.Item>()
@@ -110,6 +113,7 @@ class MainActivity : ComponentActivity() {
         contactCount = contacts.count()
         inbox = Inbox(this)
         watch = Watch(this)
+        myName = Identity.label(this)
         refreshLists()
         Push.init(this)
 
@@ -338,7 +342,15 @@ class MainActivity : ComponentActivity() {
                             }
                         }
 
-                        Spacer(Modifier.height(14.dp))
+                        Spacer(Modifier.height(10.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("They see you as ", color = Dim, fontSize = 12.sp)
+                            TextButton(onClick = { renaming = true }, contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)) {
+                                Text(myName, color = Accent, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                            }
+                        }
+
+                        Spacer(Modifier.height(6.dp))
 
                         if (mode == Mode.REQUEST) {
                             val amountProblem = when {
@@ -401,6 +413,22 @@ class MainActivity : ComponentActivity() {
                         Spacer(Modifier.height(6.dp))
                         LogView(log)
                     }
+                }
+
+                if (renaming) {
+                    NameDialog(
+                        current = myName,
+                        onDismiss = { renaming = false },
+                        onSave = { name ->
+                            Identity.setLabel(this@MainActivity, name)
+                            myName = Identity.label(this@MainActivity)
+                            renaming = false
+                            // The armed request carries the old name until it is rebuilt.
+                            TapHostApduService.pending.value = null
+                            applyMode(amount)
+                            push("— you now appear as $myName")
+                        },
+                    )
                 }
 
                 incoming?.let { req ->
@@ -605,7 +633,7 @@ class MainActivity : ComponentActivity() {
             recipient = addr,
             amount = amount,
             token = "SOL",
-            label = android.os.Build.MODEL,
+            label = Identity.label(this),
             reference = PayRequest.newReference(),
             genesis = myGenesis,
         )
@@ -1057,3 +1085,37 @@ private val RowStyle = Modifier.fillMaxWidth().padding(vertical = 4.dp)
     .background(Panel, RoundedCornerShape(8.dp))
     .border(1.dp, Line, RoundedCornerShape(8.dp))
     .padding(horizontal = 12.dp, vertical = 8.dp)
+
+/**
+ * Naming yourself. Until someone does, they are a phone model to everybody they tap — and
+ * "CPH2401 wants 0.5 SOL" is a worse thing to approve than "Fahad wants 0.5 SOL".
+ */
+@Composable
+private fun NameDialog(current: String, onDismiss: () -> Unit, onSave: (String) -> Unit) {
+    var text by rememberSaveable { mutableStateOf(current) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Panel,
+        title = { Text("Your name", color = Fg) },
+        text = {
+            Column {
+                Text("Shown on the other phone when you tap someone.", color = Dim, fontSize = 13.sp)
+                Spacer(Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { if (it.length <= 40) text = it },
+                    singleLine = true,
+                    placeholder = { Text(android.os.Build.MODEL, color = Dim) },
+                    supportingText = { Text("${text.trim().length}/40", color = Dim) },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onSave(text) }, enabled = text.isNotBlank()) {
+                Text("Save", color = Accent, fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel", color = Dim) } },
+    )
+}
