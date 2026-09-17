@@ -37,20 +37,25 @@ data class PayRequest(
     val reference: String,
     /** Genesis Token mint if the requester is on a verified Seeker, else null. */
     val genesis: String? = null,
-    /**
-     * The blockhash the payer must build against — and therefore the moment this request dies.
-     *
-     * Both phones need to agree on when a payment is no longer possible, and each fetching its
-     * own blockhash does not achieve that: the payee's is taken when the request is served, the
-     * payer's when they press Pay, so the payee's is always older and always expires first. It
-     * would announce "expired" while the payer's transaction was still perfectly valid.
-     *
-     * Carrying one hash across the tap makes the deadline a shared fact rather than two
-     * estimates. Both sides poll `isBlockhashValid` on this exact value and get the same answer
-     * at the same instant. The payee keeps it fresh while the request waits to be tapped.
-     */
-    val blockhash: String? = null,
 ) {
+    /**
+     * The amount in lamports, exactly — or null when it is blank or unreadable.
+     *
+     * Never through a Double. `0.00013 * 1e9` is 129999.99999999999, which truncates to one
+     * lamport short — and 1,710 of the 99,999 five-decimal amounts below 1 SOL do the same. The
+     * payer would send a lamport less than asked and a verifier doing the arithmetic properly
+     * would call it underpaid. The server uses Python's Decimal, so both agree to the lamport.
+     */
+    fun lamports(): Long? = try {
+        java.math.BigDecimal(amount.trim())
+            .movePointRight(9)
+            .setScale(0, java.math.RoundingMode.UNNECESSARY)
+            .longValueExact()
+            .takeIf { it > 0 }
+    } catch (e: Exception) {
+        null
+    }
+
     fun toBytes(): ByteArray = JSONObject().apply {
         put("v", WIRE_VERSION)
         put("r", recipient)
@@ -59,7 +64,6 @@ data class PayRequest(
         put("l", label)
         put("f", reference)
         genesis?.let { put("g", it) }
-        blockhash?.let { put("b", it) }
     }.toString().toByteArray(Charsets.UTF_8)
 
     /**
@@ -83,18 +87,21 @@ data class PayRequest(
         !isBase58Address(recipient) -> "The request has an invalid destination address."
         !isBase58Address(reference) -> "The request has an invalid reference."
         genesis != null && !isBase58Address(genesis) -> "The request has an invalid Genesis token."
-        blockhash != null && !isBase58Address(blockhash) -> "The request has an invalid blockhash."
         amount.isNotBlank() && amount.toDoubleOrNull() == null -> "The request has an unreadable amount."
         (amount.toDoubleOrNull() ?: 0.0) < 0 -> "The request asks for a negative amount."
         (amount.toDoubleOrNull() ?: 0.0) > MAX_AMOUNT -> "That amount looks wrong — refusing it."
+        // Readable and in range but not expressible in lamports, e.g. "0.0000000001" or "0".
+        amount.isNotBlank() && lamports() == null -> "That amount can't be paid in SOL."
         label.length > 64 -> "The request has an oversized label."
         else -> null
     }
 
     companion object {
-        // 3 carries the shared blockhash. A v2 peer is refused rather than paid against a
-        // deadline only one side knows about.
-        const val WIRE_VERSION = 3
+        // 4: requests no longer expire. v3 carried a blockhash so both phones shared a
+        // deadline; v4 drops it, because the payer fetches a fresh one only when they press Pay
+        // and a request is otherwise good forever. A v3 phone would still be running timers
+        // against a hash this side never sends, so it is refused rather than half-understood.
+        const val WIRE_VERSION = 4
 
         /** A sanity ceiling. A tap should never carry a life-changing sum by accident. */
         const val MAX_AMOUNT = 1_000.0
@@ -115,7 +122,6 @@ data class PayRequest(
                 label = o.optString("l"),
                 reference = o.getString("f"),
                 genesis = if (o.has("g")) o.getString("g") else null,
-                blockhash = if (o.has("b")) o.getString("b") else null,
             )
         } catch (e: Exception) {
             null
@@ -129,6 +135,85 @@ data class PayRequest(
             val b = ByteArray(32)
             SecureRandom().nextBytes(b)
             return Base58.encode(b)
+        }
+    }
+}
+
+/**
+ * Who a phone is, handed over on a tap when it is not asking for money.
+ *
+ * With both phones idle — nobody has pressed Request — a tap is an introduction, not a bill. Each
+ * phone learns the other's address and name, and the person then decides in the popup whether
+ * to pay or request. Deliberately small: an address, a display name, and the Genesis mint that
+ * earns the "Verified Seeker" badge. Nothing that could move money.
+ */
+data class TapCard(
+    val address: String,
+    val label: String,
+    val genesis: String? = null,
+) {
+    fun toBytes(): ByteArray = JSONObject().apply {
+        put("v", PayRequest.WIRE_VERSION)
+        put("k", KIND)
+        put("r", address)
+        put("l", label)
+        genesis?.let { put("g", it) }
+    }.toString().toByteArray(Charsets.UTF_8)
+
+    /** Untrusted like everything else that arrives by radio. */
+    fun validate(): String? = when {
+        !PayRequest.isBase58Address(address) -> "That phone sent an invalid address."
+        genesis != null && !PayRequest.isBase58Address(genesis) -> "That phone sent an invalid Genesis token."
+        label.length > 64 -> "That phone sent an oversized name."
+        else -> null
+    }
+
+    companion object {
+        const val KIND = "card"
+
+        fun fromBytes(b: ByteArray): TapCard? = try {
+            val o = JSONObject(String(b, Charsets.UTF_8))
+            if (o.optInt("v") != PayRequest.WIRE_VERSION || o.optString("k") != KIND) null
+            else TapCard(
+                address = o.getString("r"),
+                label = o.optString("l"),
+                genesis = if (o.has("g")) o.getString("g") else null,
+            ).takeIf { it.validate() == null }
+        } catch (e: Exception) {
+            null
+        }
+    }
+}
+
+/** What a tap can carry: a bill, or an introduction. */
+sealed interface TapPayload {
+    data class Request(val request: PayRequest) : TapPayload
+    data class Card(val card: TapCard) : TapPayload
+
+    val address: String get() = when (this) {
+        is Request -> request.recipient
+        is Card -> card.address
+    }
+    val label: String get() = when (this) {
+        is Request -> request.label
+        is Card -> card.label
+    }
+    val genesis: String? get() = when (this) {
+        is Request -> request.genesis
+        is Card -> card.genesis
+    }
+
+    fun toBytes(): ByteArray = when (this) {
+        is Request -> request.toBytes()
+        is Card -> card.toBytes()
+    }
+
+    companion object {
+        /** Null for anything unreadable or invalid — the caller never sees half a payload. */
+        fun parse(b: ByteArray): TapPayload? {
+            TapCard.fromBytes(b)?.let { return Card(it) }
+            val req = PayRequest.fromBytes(b) ?: return null
+            return if (req.validate() == null) Request(req) else null
         }
     }
 }
@@ -182,7 +267,42 @@ object Apdu {
         return byteArrayOf(0x00, 0xA4.toByte(), 0x04, 0x00, a.size.toByte()) + a + byteArrayOf(0x00)
     }
 
+    /**
+     * Reader → card, after SELECT: "and this is who I am". Proprietary class 0x80, so no real
+     * smartcard applet will ever mistake it for one of its own commands.
+     *
+     * It exists because a tap is otherwise one-way — the reader learns about the card, and the
+     * card learns nothing. With both phones idle, both people need a popup about the other.
+     */
+    fun hello(card: TapCard): ByteArray {
+        val data = card.toBytes()
+        return if (data.size <= 255) {
+            byteArrayOf(0x80.toByte(), INS_HELLO, 0x00, 0x00, data.size.toByte()) + data
+        } else {
+            // Extended length: Lc as 00 hi lo. A card with a long name can exceed 255 bytes.
+            byteArrayOf(0x80.toByte(), INS_HELLO, 0x00, 0x00, 0x00,
+                (data.size shr 8).toByte(), data.size.toByte()) + data
+        }
+    }
+
+    const val INS_HELLO: Byte = 0x10
+
+    fun isHello(cmd: ByteArray) = cmd.size >= 5 && cmd[0] == 0x80.toByte() && cmd[1] == INS_HELLO
+
+    /** The data field of a short or extended-length APDU, or null if the lengths do not add up. */
+    fun data(cmd: ByteArray): ByteArray? {
+        if (cmd.size < 5) return null
+        val short = cmd[4].toInt() and 0xFF
+        if (short != 0) return if (cmd.size >= 5 + short) cmd.copyOfRange(5, 5 + short) else null
+        if (cmd.size < 7) return null
+        val n = ((cmd[5].toInt() and 0xFF) shl 8) or (cmd[6].toInt() and 0xFF)
+        return if (n > 0 && cmd.size >= 7 + n) cmd.copyOfRange(7, 7 + n) else null
+    }
+
     val SW_OK = byteArrayOf(0x90.toByte(), 0x00)
+    val SW_FILE_NOT_FOUND = byteArrayOf(0x6A, 0x82.toByte())
+    val SW_WRONG_DATA = byteArrayOf(0x6A, 0x80.toByte())
+    val SW_WRONG_OFFSET = byteArrayOf(0x6B, 0x00)
     val SW_UNKNOWN_CMD = byteArrayOf(0x6D, 0x00)
     val SW_NOT_READY = byteArrayOf(0x69, 0x85.toByte())
 

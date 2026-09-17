@@ -26,8 +26,7 @@ class EdgeCaseTest {
         reference: String = ref,
         label: String = "Seeker",
         genesis: String? = null,
-        blockhash: String? = null,
-    ) = PayRequest(recipient, amount, "SOL", label, reference, genesis, blockhash)
+    ) = PayRequest(recipient, amount, "SOL", label, reference, genesis)
 
     // ---------------------------------------------------------------- must reject
 
@@ -72,38 +71,41 @@ class EdgeCaseTest {
     }
 
     /**
-     * v2 has no blockhash, so a v2 peer would have each side timing its own — the mismatch
-     * this version exists to remove. Refusing is better than paying against a deadline only
-     * one phone knows about.
+     * v3 carried a blockhash so both phones could share a deadline. A v3 phone would still be
+     * running timers against a hash this version never sends, so it is refused rather than
+     * half-understood.
      */
-    @Test fun `a v2 peer is refused, because its deadline is unknowable`() {
-        val v2 = """{"v":2,"r":"$good","a":"1","t":"SOL","l":"x","f":"$ref"}"""
-        assertNull(PayRequest.fromBytes(v2.toByteArray()))
+    @Test fun `a v3 peer is refused, because it still expects requests to expire`() {
+        val v3 = """{"v":3,"r":"$good","a":"1","t":"SOL","l":"x","f":"$ref","b":"$BLOCKHASH"}"""
+        assertNull(PayRequest.fromBytes(v3.toByteArray()))
     }
 
-    @Test fun `the shared blockhash survives the wire`() {
-        val original = req(blockhash = BLOCKHASH)
-        val back = PayRequest.fromBytes(original.toBytes())
-        assertNotNull(back)
-        assertEquals(BLOCKHASH, back!!.blockhash)
-        assertNull(back.validate())
+    @Test fun `a v4 request carries no blockhash`() {
+        assertTrue("b" !in String(req().toBytes()).let { org.json.JSONObject(it).keys().asSequence().toSet() })
     }
 
-    @Test fun `a garbage blockhash is refused rather than built against`() {
-        assertNotNull(req(blockhash = "not-a-hash").validate())
-        assertNotNull(req(blockhash = "abc").validate())
+    // ------------------------------------------------------- amounts, to the lamport
+
+    /**
+     * Through a Double, 0.00013 * 1e9 is 129999.99999999999 and truncates to one lamport
+     * short — and it is not rare: 1,710 of the 99,999 five-decimal amounts below 1 SOL do this.
+     * The payer would send one lamport less than asked, and the server, which does the same
+     * arithmetic in Python with Decimal, would call the payment underpaid.
+     */
+    @Test fun `amounts convert to lamports exactly, never through a Double`() {
+        assertEquals(130_000L, req(amount = "0.00013").lamports())
+        assertEquals(2_070_000L, req(amount = "0.00207").lamports())
+        assertEquals(10_000_000L, req(amount = "0.01").lamports())
+        assertEquals(1_000_000_000L, req(amount = "1").lamports())
+        assertEquals(1L, req(amount = "0.000000001").lamports())
+        assertEquals("the Double path really is wrong", 129_999L, (0.00013 * 1e9).toLong())
     }
 
-    /** No blockhash is still valid — the payer falls back to fetching its own. */
-    @Test fun `a request without a blockhash is still well formed`() {
-        assertNull(req(blockhash = null).validate())
-    }
-
-    /** The payer must build against the hash it was given, not one of its own choosing. */
-    @Test fun `a shared blockhash is the one actually used`() {
-        val r = Chain.buildTransfer(good, ref, 10_000, ref, blockhashOverride = BLOCKHASH)
-        assertTrue(r is Chain.Built.Ok)
-        assertEquals("the wallet needs one slot to sign into", 1, (r as Chain.Built.Ok).tx[0].toInt())
+    @Test fun `amounts that cannot be paid in lamports are refused`() {
+        assertNull(req(amount = "0.0000000001").lamports())
+        assertNull(req(amount = "0").lamports())
+        assertNull(req(amount = "").lamports())
+        assertNotNull(req(amount = "0.0000000001").validate())
     }
 
     // ---------------------------------------------------------------- must accept

@@ -1,16 +1,20 @@
 package com.tapsol.tap
 
+import android.Manifest
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -22,33 +26,42 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * Phase 2: the tap moves real money.
+ * A tap hands over a payment request. Nothing else happens while the phones touch:
  *
- * Note how little happens while the phones are touching:
- *
- *   payee   connect wallet → Request → HCE serves {recipient, amount, reference}
+ *   payee   Request → HCE serves {recipient, amount, reference}
  *   TAP     ~100ms, one direction                        ← phones part here
- *   payer   confirm → build transfer → MWA signs → submitted to devnet
- *   payee   polls getSignaturesForAddress(reference) → "Paid ✓"
+ *   payer   request lands in Requests — pay now, or whenever
+ *   payer   Pay → fresh blockhash → wallet signs → we submit
+ *   payee   the chain (or the server's doorbell) shows the reference paid in full → ✓
+ *
+ * **Requests never expire.** Only a transaction has a clock, and it starts when the payer
+ * presses Pay. An earlier design put a blockhash inside the request so both phones could share
+ * a deadline; the price was a ~28-second window to read, decide and approve, and a payer
+ * who missed it had to find the other person and tap again.
  */
 class MainActivity : ComponentActivity() {
 
     private lateinit var reader: TapReader
     private lateinit var wallet: Wallet
     private lateinit var contacts: Contacts
+    private lateinit var inbox: Inbox
+    private lateinit var watch: Watch
 
     /** Our own Genesis mint, if this phone's wallet holds one. Attached to every request. */
     private var myGenesis by mutableStateOf<String?>(null)
     private var contactCount by mutableIntStateOf(0)
     private val log = mutableStateListOf<String>()
 
+    /** The request whose confirm sheet is open, if any. It is already saved in the inbox. */
     private var incoming by mutableStateOf<PayRequest?>(null)
 
     /**
@@ -59,18 +72,14 @@ class MainActivity : ComponentActivity() {
     private var mode by mutableStateOf(Mode.IDLE)
     private var lastAmount = "0.01"
     private var connected by mutableStateOf<String?>(null)
+    private var tab by mutableStateOf(Tab.TAP)
 
-    /**
-     * Every payment handed out and not yet settled.
-     *
-     * A list because the payee should not be blocked: after serving one phone it re-arms
-     * immediately and can take the next tap while the first payer is still in their wallet.
-     * Each entry carries its own reference and its own blockhash, so they settle and expire
-     * independently of one another.
-     */
-    private val outstanding = mutableStateListOf<Watch.Armed>()
-    private lateinit var watch: Watch
+    /** UI mirrors of the two on-disk lists. Disk is the truth; these are re-read after writes. */
+    private val toPay = mutableStateListOf<Inbox.Item>()
+    private val owed = mutableStateListOf<Watch.Entry>()
+
     private var paidSignature by mutableStateOf<String?>(null)
+    private var paying by mutableStateOf<String?>(null)
 
     /**
      * One place for "what should the user be told right now". Without this every failure ends
@@ -84,8 +93,13 @@ class MainActivity : ComponentActivity() {
     }
     private var status by mutableStateOf<Status>(Status.Idle)
 
-    /** References this phone has already paid, so a repeat tap cannot pay twice. */
-    private val paidReferences = mutableSetOf<String>()
+    /** Set on resume so every open request is checked at once rather than on its schedule. */
+    @Volatile private var checkAllNow = true
+    private var offlineStreak = 0
+
+    private val askNotify = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        push(if (granted) "✓ notifications on" else "— notifications declined")
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -94,32 +108,18 @@ class MainActivity : ComponentActivity() {
         connected = wallet.address   // a session persisted from last launch
         contacts = Contacts(this)
         contactCount = contacts.count()
+        inbox = Inbox(this)
         watch = Watch(this)
-        // A request that outlived the app. The payer may have settled it while we were gone,
-        // so resume the wait rather than lose a payment that already happened.
-        // Payments that outlived the app. The payers may have settled while we were gone,
-        // so the whole queue is resumed rather than lost.
-        watch.all().forEach { a ->
-            outstanding.add(a)
-            push("resuming wait for ${a.reference.take(8)}…")
-        }
+        refreshLists()
+        Push.init(this)
+
         reader = TapReader(
             activity = this,
             onLog = { line -> runOnUiThread { push(line) } },
-            onRequest = { req ->
-                runOnUiThread {
-                    // Reader mode fires repeatedly while phones stay in contact. Swapping the
-                    // request under an open dialog could have someone approve a different one
-                    // than they read.
-                    if (incoming != null) return@runOnUiThread
-                    incoming = req
-                    // The tap itself is the introduction — record them before any payment,
-                    // because a declined payment is still a person you met.
-                    val isNew = contacts.record(req.recipient, req.label, req.genesis != null)
-                    contactCount = contacts.count()
-                    push(if (isNew) "+ new contact ${req.label}" else "— known contact ${req.label}")
-                }
-            },
+            onRequest = { req -> runOnUiThread { onRead(req) } },
+            // Their phone had no request, only its card: an introduction. The popup is where
+            // you decide to pay them or ask them for money — the same one a closed app shows.
+            onCard = { card -> runOnUiThread { startActivity(TapPopupActivity.intent(this, TapPayload.Card(card), cameFrom = "app")) } },
         )
 
         setContent {
@@ -135,150 +135,147 @@ class MainActivity : ComponentActivity() {
                 LaunchedEffect(Unit) {
                     scope.launch { TapHostApduService.events.collect { push(it) } }
                     scope.launch {
-                        TapHostApduService.served.collect { req ->
-                            // The hash we just handed over IS the payer's hash, so polling it
-                            // tells us exactly when their transaction stops being submittable.
-                            val entry = Watch.Armed(
-                                reference = req.reference,
-                                amount = req.amount,
-                                startedAt = System.currentTimeMillis(),
-                                blockhash = req.blockhash,
-                                // The tap is one-way: the payee is read, and never learns
-                                // who read it. The amount is the only honest label we have.
-                                label = req.amount,
-                            )
-                            outstanding.add(entry)
-                            watch.add(entry)
-                            push("watching chain for ${req.reference.take(8)}… (${outstanding.size} open)")
-                            // Re-arm straight away so the next person can tap while this payer
-                            // is still deciding. This is the whole point of a queue.
-                            applyMode(amount)
+                        TapHostApduService.served.collect { req -> onServed(req) }
+                    }
+                    scope.launch {
+                        // Re-arm for the next person only once the phones have SEPARATED, then
+                        // after a beat. Re-arming the instant a request was served meant two
+                        // phones still resting back-to-back got re-read, and the payee gained a
+                        // request nobody had actually received. A queue must never invent a payer.
+                        TapHostApduService.parted.collect {
+                            delay(REARM_AFTER_PART_MS)
+                            if (mode == Mode.REQUEST && TapHostApduService.pending.value == null) {
+                                applyMode(amount)
+                            }
                         }
                     }
                 }
 
                 LaunchedEffect(mode, amount, connected) { applyMode(amount) }
 
-                // The blockhash inside an armed request is the deadline BOTH phones will bind
-                // to, so it has to be fresh at the moment of the tap — not at the moment
-                // Request was pressed.
-                //
-                // The interval is the payer's whole budget. A hash lives ~60s, so whatever age
-                // it has when handed over is time the payer does not get: refreshing every 20s
-                // meant serving a hash up to 20s old, leaving as little as 40s to read the
-                // sheet, press Pay, wait for the wallet to launch, and approve. That is not
-                // enough, and it read as "the sender keeps getting stuck". Five seconds costs
-                // a request per five seconds while the Request screen is open — only while it
-                // is open — and hands the payer very nearly the full window.
-                LaunchedEffect(mode, connected) {
-                    if (mode != Mode.REQUEST || connected == null) return@LaunchedEffect
-                    while (true) {
-                        val bh = withContext(Dispatchers.IO) { Chain.latestBlockhash() }
-                        val live = TapHostApduService.pending.value
-                        if (bh != null && live != null && live.blockhash != bh) {
-                            TapHostApduService.pending.value = live.copy(blockhash = bh)
-                            android.util.Log.i("TapUI", "armed hash ${bh.take(8)}…")
+                // Everything that depends on WHICH wallet is connected. Runs for a session
+                // restored at launch as well as a fresh connect — the Genesis lookup used to
+                // live only in the Connect button, so a relaunched app silently lost its
+                // "Verified Seeker" badge. It was visible in a real tap's payload: no "g".
+                LaunchedEffect(connected) {
+                    val addr = connected ?: return@LaunchedEffect
+                    if (myGenesis == null) {
+                        val g = withContext(Dispatchers.IO) {
+                            runCatching { Genesis.mintFor(addr) }.getOrNull()
                         }
-                        delay(5_000)
+                        myGenesis = g
+                        // Cached for the HCE service, which answers taps with the app closed and
+                        // has no time for a network call inside one.
+                        Identity.rememberGenesis(this@MainActivity, addr, g)
+                        push(if (g != null) "✓ Verified Seeker — genesis ${g.take(8)}…"
+                             else "   no Genesis Token on this wallet")
+                    }
+                    // Needed without a server too: a tap on a locked phone arrives as a notification.
+                    if (!Push.canNotify(this@MainActivity)) askNotify.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    if (ServerClient.enabled && Push.configured) {
+                        Push.token(this@MainActivity)?.let { t ->
+                            push(if (ServerClient.registerDevice(addr, t)) "✓ push registered" else "✗ push registration failed")
+                        }
                     }
                 }
 
-                // The payee's half — runs with the phones long since parted, over EVERY
-                // outstanding payment at once. A single blocking wait meant the second person
-                // in a queue could not tap until the first had paid; there is no reason for
-                // that, since each payment is tracked by its own reference on the chain.
+                // The payee's half, for every open request at once and with no deadline. A
+                // young request is checked every second — its payer is probably in their
+                // wallet right now — and an old one rarely, since it may be paid tomorrow.
                 LaunchedEffect(Unit) {
-                    val offline = mutableMapOf<String, Int>()
-                    val lastHashCheck = mutableMapOf<String, Long>()
+                    val next = mutableMapOf<String, Long>()
                     while (true) {
+                        if (checkAllNow) { next.clear(); checkAllNow = false }
                         val now = System.currentTimeMillis()
-                        val queue = outstanding.toList()
-                        if (queue.isEmpty()) {
-                            delay(400)
-                            continue
+                        for (e in owed.filter { !it.paid }) {
+                            if (now < (next[e.reference] ?: 0L)) continue
+                            checkOwed(e)
+                            val age = now - e.createdAt
+                            next[e.reference] = now + when {
+                                age < 60_000 -> 1_000L
+                                age < 10 * 60_000 -> 8_000L
+                                else -> 60_000L
+                            }
                         }
-                        for (p in queue) {
-                            if (outstanding.none { it.reference == p.reference }) continue
-                            val waited = now - p.startedAt
-                            android.util.Log.i(
-                                "TapUI", "poll ref=${p.reference.take(8)} waited=${waited}ms",
-                            )
-                            val found = withContext(Dispatchers.IO) { Chain.findPayment(p.reference) }
-                            android.util.Log.i("TapUI", "poll -> $found")
+                        delay(500)
+                    }
+                }
 
-                            if (found is Chain.Found.Yes) {
-                                settle(p, found.signature)
-                                continue
-                            }
-
-                            // "Not yet", "can't tell" and "our question was wrong" must not
-                            // look the same. The last is the dangerous one: it wears the same
-                            // spinner as patience while the payment has already arrived.
-                            when (found) {
-                                is Chain.Found.Broken -> status = Status.Problem(
-                                    "Can't check for payment",
-                                    "Solana rejected our query: ${found.why}",
-                                )
-                                Chain.Found.Offline -> {
-                                    val n = (offline[p.reference] ?: 0) + 1
-                                    offline[p.reference] = n
-                                    if (n >= 3) status = Status.Problem(
-                                        "Can't reach Solana",
-                                        "Still waiting, but we cannot check right now.",
-                                    )
-                                }
-                                else -> offline[p.reference] = 0
-                            }
-
-                            // Is this payer's attempt still able to land at all? Their
-                            // transaction is bound to the blockhash we handed them, and once
-                            // that dies their signature is worthless. Checked on the payer's
-                            // own cadence so both phones conclude it within a poll of each
-                            // other; null — "could not ask" — is never read as dead.
-                            val bh = p.blockhash
-                            val due = now - (lastHashCheck[p.reference] ?: 0L) > 4_000
-                            var dead = false
-                            if (bh != null && waited > EXPIRY_FLOOR_MS && due) {
-                                lastHashCheck[p.reference] = now
-                                if (withContext(Dispatchers.IO) { Chain.blockhashAlive(bh) } == false) {
-                                    // One last look: it could have landed as the hash died.
-                                    val late = withContext(Dispatchers.IO) { Chain.findPayment(p.reference) }
-                                    if (late is Chain.Found.Yes) {
-                                        settle(p, late.signature)
-                                        continue
+                // The server's doorbell: while the app is on screen, a payment to us is
+                // announced the moment the server sees it. The announcement is only a reason
+                // to look — checkOwed verifies it on-chain before anything turns green.
+                LaunchedEffect(connected) {
+                    val addr = connected ?: return@LaunchedEffect
+                    if (!ServerClient.enabled) return@LaunchedEffect
+                    lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                        ServerClient.events(addr).collect { ev ->
+                            when (ev) {
+                                is ServerClient.Paid -> {
+                                    val e = owed.firstOrNull { it.reference == ev.reference && !it.paid }
+                                    if (e != null) {
+                                        push("server: ${ev.reference.take(8)}… paid — verifying")
+                                        checkOwed(e)
                                     }
-                                    dead = true
-                                    push("— ${p.reference.take(8)}… can no longer land")
+                                }
+                                // Someone asked us for money from their popup, after the phones
+                                // parted. With the app open, show it straight away.
+                                is ServerClient.Requested -> {
+                                    inbox.add(ev.request); refreshLists()
+                                    push("server: ${ev.request.label} requests ${ev.request.amount} SOL")
+                                    startActivity(TapPopupActivity.intent(this@MainActivity, TapPayload.Request(ev.request), cameFrom = "server"))
+                                }
+                                is ServerClient.Tapped -> {
+                                    push("server: ${ev.card.label} tapped you")
+                                    startActivity(TapPopupActivity.intent(this@MainActivity, TapPayload.Card(ev.card), cameFrom = "server"))
                                 }
                             }
-
-                            if (dead || waited > WATCH_TIMEOUT_MS) {
-                                // Stop watching, but do NOT forget unless it is truly old: a
-                                // payer who took six minutes still moved real SOL, and the
-                                // payee has to find out eventually. Each launch buys the
-                                // reference one more look at the chain.
-                                val abandoned = waited > Watch.ABANDON_MS
-                                if (abandoned) watch.remove(p.reference)
-                                outstanding.removeAll { it.reference == p.reference }
-                                push("— expired, nobody paid ${p.reference.take(8)}…")
-                                status = Status.Problem(
-                                    if (abandoned) "Never paid" else "Payment not sent",
-                                    if (abandoned) "That ${p.amount} SOL request was never paid."
-                                    else "That ${p.amount} SOL request was not approved in time.",
-                                )
-                            }
                         }
-                        // Tight while payers are plausibly still in their wallets, relaxed
-                        // after that. Scaled by queue size so a long queue is not a flood.
-                        val youngest = outstanding.minOfOrNull { now - it.startedAt } ?: 0
-                        delay(if (youngest < 30_000) 600L else 2_000L)
                     }
                 }
 
                 Surface(Modifier.fillMaxSize(), color = Ink) {
                     Column(Modifier.fillMaxSize().padding(20.dp)) {
                         Header(diag)
-                        Spacer(Modifier.height(14.dp))
+                        Spacer(Modifier.height(12.dp))
+                        val openCount = toPay.count { !it.paid } + owed.count { !it.paid }
+                        TabBar(tab, openCount) { tab = it }
+                        Spacer(Modifier.height(12.dp))
+
+                        when (val st = status) {
+                            is Status.Working -> { Banner("…", st.what, Dim); Spacer(Modifier.height(10.dp)) }
+                            is Status.Problem -> {
+                                Banner(st.title, st.detail, Warn, onDismiss = { status = Status.Idle })
+                                Spacer(Modifier.height(10.dp))
+                            }
+                            is Status.Sent -> {
+                                Banner("✓ Sent", st.signature, Accent, mono = true,
+                                    onDismiss = { status = Status.Idle })
+                                Spacer(Modifier.height(10.dp))
+                            }
+                            Status.Idle -> Unit
+                        }
+                        paidSignature?.let { sig ->
+                            Banner("✓ Paid", sig, Accent, mono = true, onDismiss = { paidSignature = null })
+                            Spacer(Modifier.height(10.dp))
+                        }
+
+                        if (tab == Tab.REQUESTS) {
+                            RequestsTab(
+                                toPay = toPay,
+                                owed = owed,
+                                paying = paying,
+                                onPay = { item -> incoming = item.request },
+                                onDismissToPay = { item ->
+                                    inbox.remove(item.request.reference); refreshLists()
+                                    push("— removed request from ${item.request.label}")
+                                },
+                                onDismissOwed = { e ->
+                                    watch.remove(e.reference); refreshLists()
+                                    push("— stopped watching ${e.reference.take(8)}…")
+                                },
+                            )
+                            return@Column
+                        }
 
                         WalletRow(
                             connected, busy,
@@ -292,39 +289,28 @@ class MainActivity : ComponentActivity() {
                                 }
                             },
                         ) {
-                            // Same shape as paying: connecting opens the wallet app and
-                            // suspends there, so it outlives the composition and must clear
-                            // `busy` even when cancelled.
+                            // Connecting opens the wallet app and suspends there, so it must
+                            // outlive the composition and clear `busy` even when cancelled.
                             lifecycleScope.launch {
                                 busy = true
                                 try {
-                                push("opening wallet…")
-                                when (val r = wallet.connect()) {
-                                    is Wallet.Outcome.Ok -> {
-                                        connected = r.address
-                                        push("✓ wallet ${r.address.take(8)}…${r.address.takeLast(4)}")
-                                        // Chain.balance returns a typed result, not a Double.
-                                        // Formatting it with %f compiled fine and crashed at
-                                        // runtime, because String.format accepts Any.
-                                        when (val b = withContext(Dispatchers.IO) { Chain.balance(r.address) }) {
-                                            is Chain.Balance.Ok ->
-                                                push("   balance ${"%.4f".format(b.sol)} SOL")
-                                            is Chain.Balance.Offline ->
-                                                push("   balance unavailable — no connection")
+                                    push("opening wallet…")
+                                    when (val r = wallet.connect()) {
+                                        is Wallet.Outcome.Ok -> {
+                                            myGenesis = null
+                                            connected = r.address
+                                            push("✓ wallet ${r.address.take(8)}…${r.address.takeLast(4)}")
+                                            // Chain.balance returns a typed result, not a Double.
+                                            // Formatting it with %f compiled fine and crashed at
+                                            // runtime, because String.format accepts Any.
+                                            when (val b = withContext(Dispatchers.IO) { Chain.balance(r.address) }) {
+                                                is Chain.Balance.Ok -> push("   balance ${"%.4f".format(b.sol)} SOL")
+                                                is Chain.Balance.Offline -> push("   balance unavailable — no connection")
+                                            }
                                         }
-                                        // Genesis lives on mainnet even though we pay on devnet.
-                                        val g = withContext(Dispatchers.IO) {
-                                            runCatching { Genesis.mintFor(r.address) }.getOrNull()
-                                        }
-                                        myGenesis = g
-                                        push(
-                                            if (g != null) "✓ Verified Seeker — genesis ${g.take(8)}…"
-                                            else "   no Genesis Token on this wallet"
-                                        )
+                                        is Wallet.Outcome.Failed -> push("✗ ${r.why}")
+                                        Wallet.Outcome.Declined -> push("— wallet declined")
                                     }
-                                    is Wallet.Outcome.Failed -> push("✗ ${r.why}")
-                                    Wallet.Outcome.Declined -> push("— wallet declined")
-                                }
                                 } finally {
                                     busy = false
                                 }
@@ -339,6 +325,7 @@ class MainActivity : ComponentActivity() {
                                 amount.toDoubleOrNull() == null -> "That is not a number"
                                 amount.toDouble() <= 0 -> "Must be more than zero"
                                 amount.toDouble() > PayRequest.MAX_AMOUNT -> "Too large for a tap"
+                                PayRequest("", amount, "SOL", "", "").lamports() == null -> "At most 9 decimal places"
                                 else -> null
                             }
                             OutlinedTextField(
@@ -365,62 +352,23 @@ class MainActivity : ComponentActivity() {
                                     paidSignature = null
                                 }
                             }
-                            ModeButton("Pay", mode == Mode.PAY, connected != null, Modifier.weight(1f)) {
-                                mode = if (mode == Mode.PAY) Mode.IDLE else Mode.PAY
+                            ModeButton("Pay", mode != Mode.REQUEST, connected != null, Modifier.weight(1f)) {
+                                mode = Mode.PAY
                             }
                         }
 
                         Spacer(Modifier.height(12.dp))
+                        val waiting = owed.count { !it.paid }
                         Text(
                             when {
                                 connected == null -> "Connect a wallet first."
-                                mode == Mode.REQUEST && outstanding.isNotEmpty() ->
-                                    "Ready for the next tap — ${outstanding.size} still to pay."
-                                mode == Mode.REQUEST -> "Hold the other phone against the back of this one."
-                                mode == Mode.PAY -> "Hold this phone against the one requesting."
-                                outstanding.isNotEmpty() -> "Waiting on ${outstanding.size} payment(s)…"
-                                else -> "Pick a side. One requests, one pays."
+                                mode == Mode.REQUEST && waiting > 0 ->
+                                    "Touch the backs of the phones together · $waiting waiting in Requests"
+                                mode == Mode.REQUEST -> "Touch the backs of the phones together."
+                                else -> "Ready. Touch backs with someone's phone to pay them."
                             },
-                            color = if (outstanding.isNotEmpty()) Accent else Dim, fontSize = 13.sp,
+                            color = Dim, fontSize = 13.sp,
                         )
-
-                        if (outstanding.isNotEmpty()) {
-                            Spacer(Modifier.height(10.dp))
-                            OutstandingList(outstanding) { ref ->
-                                push("— stopped waiting on ${ref.take(8)}…")
-                                watch.remove(ref)
-                                outstanding.removeAll { it.reference == ref }
-                            }
-                        }
-
-                        // The payer can abandon a payment — decline it, close the wallet, walk
-                        // away — and nothing about that reaches us over the chain. Without this
-                        // the payee is pinned to a countdown for a payment that is never coming.
-                        if (outstanding.size > 1) {
-                            Spacer(Modifier.height(8.dp))
-                            OutlinedButton(
-                                onClick = { cancelWait("stopped waiting") },
-                                modifier = Modifier.fillMaxWidth(),
-                            ) { Text("Stop waiting on all", color = Warn, fontSize = 13.sp) }
-                        }
-
-                        paidSignature?.let { sig ->
-                            Spacer(Modifier.height(10.dp))
-                            Banner("✓ Paid", sig, Accent, mono = true)
-                        }
-                        when (val st = status) {
-                            is Status.Working -> { Spacer(Modifier.height(10.dp)); Banner("…", st.what, Dim) }
-                            is Status.Problem -> {
-                                Spacer(Modifier.height(10.dp))
-                                Banner(st.title, st.detail, Warn, onDismiss = { status = Status.Idle })
-                            }
-                            is Status.Sent -> {
-                                Spacer(Modifier.height(10.dp))
-                                Banner("✓ Sent", st.signature, Accent, mono = true,
-                                    onDismiss = { status = Status.Idle })
-                            }
-                            Status.Idle -> Unit
-                        }
 
                         if (contactCount > 0) {
                             Spacer(Modifier.height(14.dp))
@@ -437,256 +385,180 @@ class MainActivity : ComponentActivity() {
                 incoming?.let { req ->
                     ConfirmSheet(
                         req = req,
-                        busy = busy,
+                        busy = paying != null,
                         onPay = {
                             val payer = connected
                             incoming = null
-                            if (payer == null) push("✗ connect a wallet first")
-                            // lifecycleScope, not the composition's scope: paying suspends
-                            // inside the wallet for as long as the user takes — a minute and a
-                            // half of Phantom is normal — and a composition disposed behind
-                            // that dialog would cancel the payment mid-flight.
-                            //
-                            // finally, not a trailing assignment: cancellation skips the line
-                            // after a suspend point, which left `busy` stuck true and the
-                            // confirm button reading "…" instead of "Pay" for the rest of the
-                            // session, with no way back short of restarting the app.
-                            else lifecycleScope.launch {
-                                busy = true
-                                try {
-                                    pay(payer, req)
-                                } finally {
-                                    busy = false
+                            if (payer == null) {
+                                status = Status.Problem("Connect a wallet first", "It's saved in Requests — pay it after connecting.")
+                            } else {
+                                // lifecycleScope, not the composition's scope: paying suspends
+                                // inside the wallet for as long as the user takes, and a
+                                // composition disposed behind that dialog would cancel the
+                                // payment between signing and submitting. `finally`, because
+                                // cancellation skips the line after a suspend point.
+                                lifecycleScope.launch {
+                                    paying = req.reference
+                                    try {
+                                        pay(payer, req)
+                                    } finally {
+                                        paying = null
+                                    }
                                 }
                             }
                         },
-                        onCancel = { push("— declined"); incoming = null },
+                        onLater = {
+                            incoming = null
+                            push("— saved ${req.amount} SOL for ${req.label} in Requests")
+                        },
                     )
                 }
             }
         }
     }
 
-    /** The payer's half. Runs entirely with the phones already apart. */
-    private suspend fun pay(payer: String, req: PayRequest) {
-        // The confirm sheet renders req.token, but buildTransfer only ever makes a SystemProgram
-        // transfer. A request denominated in USDC would have displayed "5 USDC" and sent 5 SOL.
-        // Refusing is the only honest option until SPL transfers exist.
-        if (!req.token.equals("SOL", ignoreCase = true)) {
-            status = Status.Problem(
-                "Can't pay in ${req.token}",
-                "This version only sends SOL. Ask them to request SOL instead.",
+    /** A request just arrived over the radio. */
+    private fun onRead(req: PayRequest) {
+        // Reader mode fires repeatedly while the phones stay in contact.
+        if (incoming?.reference == req.reference) return
+        Haptics.contact(this)
+
+        val known = inbox.get(req.reference)
+        if (known?.paid == true) {
+            status = Status.Problem("Already paid", "You paid this request ${ago(known.paidAt ?: 0)}.")
+            return
+        }
+        // Saved first, before anything can go wrong: from here the request survives a
+        // declined sheet, a closed app, or a phone switched off.
+        if (known == null) {
+            inbox.add(req)
+            refreshLists()
+            val isNew = contacts.record(req.recipient, req.label, req.genesis != null)
+            contactCount = contacts.count()
+            push(if (isNew) "+ new contact ${req.label}" else "— known contact ${req.label}")
+            // The payer registers too, so the server watches this request even if the payee's
+            // phone happened to be offline when it served it.
+            lifecycleScope.launch { ServerClient.register(req.reference, req.recipient, req.amount, req.label) }
+        }
+
+        // Never swap the request under a sheet someone is reading — they might approve a
+        // different one than they read. The new one waits in Requests.
+        if (incoming != null) {
+            push("— another request from ${req.label} saved in Requests")
+            return
+        }
+        incoming = req
+    }
+
+    /** Our request was just handed to a payer. */
+    private fun onServed(req: PayRequest) {
+        watch.add(
+            Watch.Entry(
+                reference = req.reference,
+                recipient = req.recipient,
+                amount = req.amount,
+                createdAt = System.currentTimeMillis(),
             )
-            return
-        }
+        )
+        refreshLists()
+        checkAllNow = true
+        push("watching chain for ${req.reference.take(8)}… (${owed.count { !it.paid }} open)")
+        lifecycleScope.launch { ServerClient.register(req.reference, req.recipient, req.amount, req.label) }
+    }
 
-        // Paying yourself burns a fee and achieves nothing.
-        if (req.recipient == payer) {
-            status = Status.Problem("That's your own wallet", "Pick a different phone to pay.")
-            return
-        }
-
-        // The payee retires a reference once they see payment, but the payer can tap the same
-        // request again first. On-chain that is a second real transfer.
-        if (paidReferences.contains(req.reference)) {
-            status = Status.Problem("Already paid", "You have paid this request. Ask for a new one.")
-            return
-        }
-
-        val lamports = ((req.amount.toDoubleOrNull() ?: 0.0) * Chain.LAMPORTS_PER_SOL).toLong()
-
-        // Bind to the hash that crossed the tap. Check it is still alive first: signing
-        // against a dead blockhash wastes the user's fingerprint on a transaction the network
-        // will refuse, and the payee has already stopped waiting for it.
-        val shared = req.blockhash
-        if (shared != null) {
-            if (withContext(Dispatchers.IO) { Chain.blockhashAlive(shared) } == false) {
-                status = Status.Problem(
-                    "This request expired",
-                    "They took it back. Ask them to tap again.",
-                )
-                return
+    /** One look at the chain for one open request. The only path to ✓ Paid. */
+    private suspend fun checkOwed(e: Watch.Entry) {
+        val lamports = e.lamports() ?: 1L
+        when (val found = withContext(Dispatchers.IO) { Chain.findPayment(e.reference, e.recipient, lamports) }) {
+            is Chain.Found.Yes -> {
+                offlineStreak = 0
+                settle(e, found.signature)
             }
-        }
-
-        push("pay: building on ${shared?.take(8) ?: "own"} hash")
-        status = Status.Working("Checking your balance…")
-        val built = withContext(Dispatchers.IO) {
-            Chain.buildTransfer(payer, req.recipient, lamports, req.reference, sharedBlockhash = shared)
-        }
-
-        val tx = when (built) {
-            is Chain.Built.Ok -> built.tx
-            is Chain.Built.NotEnough -> {
-                status = Status.Problem(
-                    "Not enough SOL",
-                    "You have ${"%.4f".format(built.have)} and this needs ${"%.4f".format(built.need)} plus fees.",
-                )
-                return
-            }
-            is Chain.Built.Offline -> {
-                status = Status.Problem("Can't reach Solana", "Check your connection and try again.")
-                return
-            }
-            is Chain.Built.Bad -> {
-                status = Status.Problem("Can't pay this request", built.why)
-                return
-            }
-        }
-
-        // The wallet's approval sheet has no deadline of its own — Phantom will sit on that
-        // screen indefinitely — but the transaction underneath it does: it is bound to the
-        // blockhash just fetched, and dies with it. Without saying so, the payer stares at an
-        // approve button that has already stopped meaning anything, while the payee has
-        // already been told the payment is dead. A ticker says it on this side too.
-        //
-        // It does NOT cancel the wallet call. Aborting an MWA transact mid-flight risks
-        // leaving the session wedged, and there is nothing to gain: we submit the signature
-        // ourselves, so a late approval simply fails preflight and is reported honestly.
-        push("pay: opening wallet")
-        status = Status.Working("Waiting for your wallet…")
-        val openedAt = System.currentTimeMillis()
-        val deadline = lifecycleScope.launch {
-            if (shared == null) {
-                // No shared hash to watch — fall back to the blockhash lifetime as a bound.
-                delay(APPROVE_WINDOW_MS)
-            } else {
-                // Watch the very hash the payee is watching, so both phones give up together.
-                while (withContext(Dispatchers.IO) { Chain.blockhashAlive(shared) } != false) {
-                    delay(4_000)
+            is Chain.Found.Short -> {
+                offlineStreak = 0
+                // Shown once per signature — it will be found again on every poll.
+                val line = "✗ ${found.signature.take(8)}… used this request but ${found.why}"
+                if (log.lastOrNull() != line && line !in log) {
+                    push(line)
+                    status = Status.Problem("Payment didn't cover the request", "Still waiting — ${found.why}.")
                 }
             }
-            push("pay: approval window CLOSED after ${System.currentTimeMillis() - openedAt}ms")
-            status = Status.Problem(
-                "Payment not sent",
-                "The approval window closed before you approved. Nothing was sent — tap again.",
+            is Chain.Found.Broken -> status = Status.Problem(
+                "Can't check for payment", "Solana rejected our query: ${found.why}",
             )
-            // The wallet's own sheet has no deadline and will sit there for another minute,
-            // showing an approve button that has already stopped meaning anything. Ask to come
-            // forward so the payer sees the truth instead. Android restricts activity starts
-            // from the background, so this may be refused — the state is set either way, and
-            // is waiting whenever they come back on their own.
-            bringForward()
-        }
-        val r = wallet.signOnly(tx)
-        deadline.cancel()
-        push("pay: wallet returned after ${System.currentTimeMillis() - openedAt}ms")
-        when (r) {
-            is Wallet.SendOutcome.Signed -> {
-                // We submit, not the wallet — so the cluster is ours to choose.
-                status = Status.Working("Sending…")
-                when (val sent = withContext(Dispatchers.IO) { Chain.submit(r.tx) }) {
-                    is Chain.Submitted.Ok -> {
-                        paidReferences.add(req.reference)
-                        status = Status.Sent(sent.signature)
-                        push("✓ SENT — ${sent.signature}")
-                        push("   ${Chain.explorerUrl(sent.signature)}")
-                        contacts.record(
-                            req.recipient, req.label, req.genesis != null,
-                            paid = req.amount.toDoubleOrNull() ?: 0.0,
-                        )
-                        contactCount = contacts.count()
-                    }
-                    is Chain.Submitted.Rejected -> {
-                        val stale = sent.why.contains("blockhash", true)
-                        status = Status.Problem(
-                            if (stale) "That took too long" else "The network refused it",
-                            if (stale) "Tap again and approve a little quicker." else sent.why,
-                        )
-                    }
-                    Chain.Submitted.Offline -> status = Status.Problem(
-                        "Can't reach Solana", "Signed, but not sent. Check your connection.",
-                    )
-                }
-            }
-            is Wallet.SendOutcome.Failed -> {
-                // A blockhash that expired while the user was deciding is the common case,
-                // and "expired" is meaningless to a person.
-                val stale = r.why.contains("blockhash", true) || r.why.contains("expired", true)
-                status = Status.Problem(
-                    if (stale) "That took too long" else "Payment not sent",
-                    if (stale) "Tap again and approve a little quicker." else r.why,
-                )
-            }
-            // Wallet.signAndSend retries internally and never surfaces this, but the compiler
-            // is right to insist — an unhandled branch here would be a silent dead end.
-            Wallet.SendOutcome.NeedsReconnect -> {
-                connected = null
-                status = Status.Problem(
-                    "Wallet needs reconnecting",
-                    "Tap Connect and approve again, then retry the payment.",
-                )
-            }
+            Chain.Found.Offline -> if (++offlineStreak == 3) status = Status.Problem(
+                "Can't reach Solana", "Still waiting — we'll check again when you're back online.",
+            )
+            Chain.Found.NotYet -> offlineStreak = 0
         }
     }
 
-    /**
-     * Abandons whatever payment we were waiting for.
-     *
-     * Nothing about a payer giving up — declining, closing the wallet, letting the blockhash
-     * expire — travels back over the chain, so the payee cannot detect it and must be able to
-     * say so. Clearing the disk entry too: this is a deliberate "that one is not coming".
-     */
-    /**
-     * Ask to be the foreground app again.
-     *
-     * Best effort by design: since Android 10 a background app usually cannot start an
-     * activity, and we may well be refused. Never rely on it — it is a courtesy on top of
-     * state that is already correct.
-     */
-    private fun bringForward() {
-        val ok = runCatching {
-            startActivity(
-                android.content.Intent(this, MainActivity::class.java).addFlags(
-                    android.content.Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
-                        android.content.Intent.FLAG_ACTIVITY_NEW_TASK
-                )
-            )
-        }.isSuccess
-        push("pay: bring-to-front ${if (ok) "requested" else "refused by Android"}")
-    }
-
-    /** One payment arrived. Retire it and leave the rest of the queue running. */
-    private fun settle(p: Watch.Armed, signature: String) {
+    /** One payment arrived, in full. */
+    private fun settle(e: Watch.Entry, signature: String) {
+        if (!watch.markPaid(e.reference, signature)) {
+            // Found again on every poll, so said once.
+            val line = "✗ ${signature.take(8)}… was already counted for another request"
+            if (line !in log) push(line)
+            return
+        }
+        refreshLists()
         paidSignature = signature
-        status = Status.Idle
-        push("✓ PAID ${p.amount} SOL — $signature")
-        watch.remove(p.reference)
-        outstanding.removeAll { it.reference == p.reference }
+        if (status is Status.Problem) status = Status.Idle
+        push("✓ PAID ${e.amount} SOL — $signature")
+        Haptics.success(this)
     }
 
     /**
-     * Give up on everything outstanding.
-     *
-     * Nothing about a payer abandoning a payment reaches the chain, so the payee can never
-     * observe it directly and must be able to say so by hand. Clearing the disk entries too:
-     * this is a deliberate "those are not coming".
+     * The payer's half, from the Requests tab or a tap sheet. The work is in [Payments], shared
+     * with the tap popup so the two can never report the same payment differently.
      */
-    private fun cancelWait(why: String) {
-        if (outstanding.isEmpty()) return
-        push("— $why (dropped ${outstanding.size})")
-        watch.clear()
-        outstanding.clear()
-        TapHostApduService.pending.value = null
-        status = Status.Idle
+    private suspend fun pay(payer: String, req: PayRequest) {
+        val result = Payments.pay(wallet, payer, req, stage = { status = Status.Working(it) }, log = ::push)
+        when (result) {
+            is PayResult.Sent -> {
+                inbox.markPaid(req.reference, result.signature); refreshLists()
+                status = Status.Sent(result.signature)
+                Haptics.success(this)
+                push("✓ CONFIRMED — ${Chain.explorerUrl(result.signature)}")
+                contacts.record(req.recipient, req.label, req.genesis != null, paid = req.amount.toDoubleOrNull() ?: 0.0)
+                contactCount = contacts.count()
+                // Nudge the server to look now rather than on its next sweep.
+                lifecycleScope.launch { ServerClient.register(req.reference, req.recipient, req.amount, req.label) }
+            }
+            is PayResult.AlreadyPaid -> {
+                inbox.markPaid(req.reference, result.signature); refreshLists()
+                status = Status.Problem("Already paid", "This request was paid before — nothing new was sent.")
+            }
+            is PayResult.Error -> {
+                status = Status.Problem(result.title, "${result.detail} It's still in Requests.")
+                Haptics.failure(this)
+            }
+            is PayResult.Failed -> {
+                status = Status.Problem(result.title, "${result.detail} It's still in Requests.")
+                Haptics.failure(this)
+            }
+        }
+    }
+
+    private fun refreshLists() {
+        toPay.clear(); toPay.addAll(inbox.all())
+        owed.clear(); owed.addAll(watch.all())
     }
 
     private fun applyMode(amount: String = lastAmount) {
         lastAmount = amount
-        if (mode == Mode.PAY) reader.start() else reader.stop()
+        // Ready to pay whenever a wallet is connected and this phone is not requesting. Making
+        // someone press "Pay" before a tap was a step with no information in it.
+        if (mode != Mode.REQUEST && connected != null) reader.start() else reader.stop()
         val addr = connected
         if (mode != Mode.REQUEST || addr == null) {
             TapHostApduService.pending.value = null
             return
         }
-        // Deliberately NOT blocked by outstanding payments any more. Each one is tracked by
-        // its own reference, so arming the next request cannot be confused with the last —
-        // and refusing to arm was what made the second person in a queue wait on the first.
         val live = TapHostApduService.pending.value
         // Keep the same reference across a pause/resume. This runs again on every onResume,
         // and minting a fresh reference each time meant a notification — or the screen simply
-        // sleeping — silently swapped the key under a request already on screen. The payer
-        // would then pay a reference we had stopped watching, and ✓ Paid would never arrive.
+        // sleeping — silently swapped the key under a request already on screen.
         if (live != null &&
             live.recipient == addr && live.amount == amount && live.genesis == myGenesis
         ) return
@@ -707,7 +579,10 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         resumeTick++
-        if (mode != Mode.IDLE) applyMode()
+        // Back from the wallet, or back after hours away: anything could have been paid.
+        checkAllNow = true
+        refreshLists()
+        applyMode()
     }
 
     override fun onPause() {
@@ -725,22 +600,18 @@ class MainActivity : ComponentActivity() {
     /**
      * Last resort. Everything above is written not to throw, but a crash on camera during a
      * three-minute demo is unrecoverable, and a background thread dying takes the app with it.
-     * This keeps the UI alive and says something honest instead of vanishing.
-     *
-     * Not a substitute for handling errors where they happen — it is the net under the net.
      */
     private fun installCrashGuard() {
         val previous = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, error ->
             android.util.Log.e("Tap", "uncaught on ${thread.name}", error)
             if (thread == mainLooper.thread) {
-                // The main thread is unrecoverable; let the platform handle it.
                 previous?.uncaughtException(thread, error)
             } else {
                 runOnUiThread {
                     status = Status.Problem(
                         "Something went wrong",
-                        "That step failed unexpectedly. Nothing was sent — try the tap again.",
+                        "That step failed unexpectedly. Nothing was sent — try again from Requests.",
                     )
                 }
             }
@@ -751,48 +622,26 @@ class MainActivity : ComponentActivity() {
 
     private companion object {
         /**
-         * How long the payee actively waits before calling a payment expired.
-         *
-         * Nothing about a payer giving up reaches the chain, so absence of a transaction is
-         * the only evidence the payee ever gets — and absence looks identical to slowness.
-         * The one real bound is Solana's: a transaction is built against a blockhash that
-         * dies after ~150 slots, roughly 60–90 seconds. Once that window plus a margin has
-         * passed, the payer's transaction cannot land, and waiting longer is just a spinner
-         * pretending to be patience.
-         *
-         * Two minutes, not five. The payer could of course tap again and build afresh, which
-         * is why the reference stays on disk for a late look rather than being deleted here.
+         * Pause between the phones separating and offering a request to the next person —
+         * long enough that a wobble in two phones still resting together is not read as a
+         * second tap, short enough that the next person in line never notices it.
          */
-        const val WATCH_TIMEOUT_MS = 2 * 60 * 1000L
-
-        /**
-         * No expiry is declared before this, however the chain answers — insurance against a
-         * hash that was already stale when armed, or a bad answer from the node.
-         *
-         * It was 40s, from when each side timed its own hash and the payee's was the older
-         * one. Both now watch the SAME hash, so the guard no longer protects against anything
-         * the payer is not equally exposed to — it only made the payee announce expiry seven
-         * seconds after the payer had already given up on the very same fact. Measured: payer
-         * saw the hash die at 33s, payee was gagged until 40s.
-         */
-        const val EXPIRY_FLOOR_MS = 12 * 1000L
-
-        /**
-         * How long the payer's signature is worth having. A transaction is only submittable
-         * while its blockhash lives (~150 slots), and the blockhash is fetched immediately
-         * before the wallet is opened, so this is that window less a little slack.
-         */
-        const val APPROVE_WINDOW_MS = 55 * 1000L
+        const val REARM_AFTER_PART_MS = 1_200L
     }
 }
 
-private val Ink = Color(0xFF0B0D10)
-private val Panel = Color(0xFF14181E)
-private val Line = Color(0xFF262E38)
-private val Fg = Color(0xFFE8EDF3)
-private val Dim = Color(0xFF8A96A4)
-private val Accent = Color(0xFF14F195)
-private val Warn = Color(0xFFE5534B)
+enum class Tab { TAP, REQUESTS }
+
+fun ago(at: Long, now: Long = System.currentTimeMillis()): String {
+    val s = ((now - at) / 1000).coerceAtLeast(0)
+    return when {
+        s < 45 -> "just now"
+        s < 3600 -> "${(s + 30) / 60}m ago"
+        s < 86_400 -> "${s / 3600}h ago"
+        else -> "${s / 86_400}d ago"
+    }
+}
+
 
 /** One shape for every piece of news the app has to deliver. */
 @Composable
@@ -976,9 +825,10 @@ private fun LogView(log: List<String>) {
 }
 
 @Composable
-private fun ConfirmSheet(req: PayRequest, busy: Boolean, onPay: () -> Unit, onCancel: () -> Unit) {
+private fun ConfirmSheet(req: PayRequest, busy: Boolean, onPay: () -> Unit, onLater: () -> Unit) {
     AlertDialog(
-        onDismissRequest = onCancel,
+        // Tapping outside is "later", never "gone": the request is already saved.
+        onDismissRequest = onLater,
         containerColor = Panel,
         title = { Text("Pay ${req.label}?", color = Fg) },
         text = {
@@ -988,13 +838,12 @@ private fun ConfirmSheet(req: PayRequest, busy: Boolean, onPay: () -> Unit, onCa
                 Spacer(Modifier.height(8.dp))
                 Text("to ${req.recipient.take(8)}…${req.recipient.takeLast(6)}",
                     color = Dim, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
-                Spacer(Modifier.height(4.dp))
-                Text("ref ${req.reference.take(12)}…", color = Dim.copy(alpha = .6f),
-                    fontSize = 10.sp, fontFamily = FontFamily.Monospace)
                 if (req.genesis != null) {
                     Spacer(Modifier.height(6.dp))
                     Text("✓ Verified Seeker", color = Accent, fontSize = 12.sp)
                 }
+                Spacer(Modifier.height(10.dp))
+                Text("No rush — this stays in Requests until you pay it.", color = Dim, fontSize = 11.sp)
             }
         },
         confirmButton = {
@@ -1002,37 +851,127 @@ private fun ConfirmSheet(req: PayRequest, busy: Boolean, onPay: () -> Unit, onCa
                 Text(if (busy) "…" else "Pay", color = Accent, fontWeight = FontWeight.Bold)
             }
         },
-        dismissButton = { TextButton(onClick = onCancel) { Text("Cancel", color = Dim) } },
+        dismissButton = { TextButton(onClick = onLater) { Text("Later", color = Dim) } },
     )
 }
 
+@Composable
+private fun TabBar(current: Tab, openCount: Int, onSelect: (Tab) -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().background(Panel, RoundedCornerShape(10.dp))
+            .border(1.dp, Line, RoundedCornerShape(10.dp)).padding(4.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        listOf(Tab.TAP to "Tap", Tab.REQUESTS to if (openCount > 0) "Requests · $openCount" else "Requests")
+            .forEach { (t, label) ->
+                val on = t == current
+                TextButton(
+                    onClick = { onSelect(t) },
+                    modifier = Modifier.weight(1f)
+                        .background(if (on) Line else Color.Transparent, RoundedCornerShape(8.dp)),
+                ) {
+                    Text(label, color = if (on) Fg else Dim, fontSize = 13.sp,
+                        fontWeight = if (on) FontWeight.SemiBold else FontWeight.Normal)
+                }
+            }
+    }
+}
+
 /**
- * The payments handed out and not yet settled.
+ * Everything waiting on someone, in one place: requests this phone can still pay, requests
+ * others still owe it, and what has already settled.
  *
- * Visible as a list rather than a single line because the payee can now be owed by several
- * people at once, and "waiting" without saying who for is not information. Each row can be
- * dropped on its own — one payer walking away should not cost the others their place.
+ * Nothing here counts down. A request is good until its reference is used, so the list is
+ * ordered by what needs attention, not by what is about to vanish.
  */
 @Composable
-private fun OutstandingList(items: List<Watch.Armed>, onDrop: (String) -> Unit) {
-    Column(Modifier.fillMaxWidth()) {
-        Text("AWAITING PAYMENT", color = Dim, fontSize = 10.sp, letterSpacing = 2.sp)
-        Spacer(Modifier.height(6.dp))
-        items.forEach { p ->
-            val age = ((System.currentTimeMillis() - p.startedAt) / 1000).toInt()
-            Row(
-                Modifier.fillMaxWidth().padding(vertical = 3.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text("${p.amount} SOL", color = Accent, fontSize = 13.sp,
-                    fontWeight = FontWeight.Bold)
-                Spacer(Modifier.width(8.dp))
-                Text("${p.reference.take(8)}… · ${age}s", color = Dim, fontSize = 11.sp,
-                    fontFamily = FontFamily.Monospace, modifier = Modifier.weight(1f))
-                TextButton(onClick = { onDrop(p.reference) }) {
-                    Text("Drop", color = Warn, fontSize = 11.sp)
+private fun RequestsTab(
+    toPay: List<Inbox.Item>,
+    owed: List<Watch.Entry>,
+    paying: String?,
+    onPay: (Inbox.Item) -> Unit,
+    onDismissToPay: (Inbox.Item) -> Unit,
+    onDismissOwed: (Watch.Entry) -> Unit,
+) {
+    val openToPay = toPay.filter { !it.paid }
+    val openOwed = owed.filter { !it.paid }
+    val history = (toPay.filter { it.paid }.map { Triple(it.paidAt ?: 0L, "Paid ${it.request.amount} SOL to ${it.request.label}", it.signature!!) } +
+        owed.filter { it.paid }.map { Triple(it.paidAt ?: 0L, "Received ${it.amount} SOL", it.signature!!) })
+        .sortedByDescending { it.first }
+
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+        if (openToPay.isEmpty() && openOwed.isEmpty() && history.isEmpty()) {
+            Spacer(Modifier.height(40.dp))
+            Text("Nothing here yet", color = Fg, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(6.dp))
+            Text("Requests you tap land here, and stay until they're paid.", color = Dim, fontSize = 13.sp)
+            return@Column
+        }
+
+        if (openToPay.isNotEmpty()) {
+            SectionLabel("TO PAY")
+            openToPay.forEach { item ->
+                Row(RowStyle, verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("${item.request.amount} SOL", color = Fg, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                            if (item.request.genesis != null) {
+                                Spacer(Modifier.width(6.dp))
+                                Text("SEEKER", color = Accent, fontSize = 8.sp, letterSpacing = 1.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                        Text("${item.request.label} · tapped ${ago(item.readAt)}", color = Dim, fontSize = 11.sp)
+                    }
+                    TextButton(onClick = { onDismissToPay(item) }, enabled = paying == null) {
+                        Text("Remove", color = Dim, fontSize = 12.sp)
+                    }
+                    Button(
+                        onClick = { onPay(item) }, enabled = paying == null,
+                        colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = Ink),
+                    ) { Text(if (paying == item.request.reference) "…" else "Pay", fontWeight = FontWeight.SemiBold) }
+                }
+            }
+            Spacer(Modifier.height(16.dp))
+        }
+
+        if (openOwed.isNotEmpty()) {
+            SectionLabel("WAITING FOR PAYMENT")
+            openOwed.forEach { e ->
+                Row(RowStyle, verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("${e.amount} SOL", color = Fg, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                        Text("requested ${ago(e.createdAt)} · ${e.reference.take(8)}…", color = Dim, fontSize = 11.sp,
+                            fontFamily = FontFamily.Monospace)
+                    }
+                    TextButton(onClick = { onDismissOwed(e) }) { Text("Remove", color = Dim, fontSize = 12.sp) }
+                }
+            }
+            Spacer(Modifier.height(16.dp))
+        }
+
+        if (history.isNotEmpty()) {
+            SectionLabel("DONE")
+            history.forEach { (at, what, sig) ->
+                Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("✓", color = Accent, fontSize = 13.sp)
+                    Spacer(Modifier.width(10.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(what, color = Fg, fontSize = 13.sp)
+                        Text("${ago(at)} · ${sig.take(10)}…", color = Dim, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                    }
                 }
             }
         }
     }
 }
+
+@Composable
+private fun SectionLabel(text: String) {
+    Text(text, color = Dim, fontSize = 10.sp, letterSpacing = 2.sp)
+    Spacer(Modifier.height(6.dp))
+}
+
+private val RowStyle = Modifier.fillMaxWidth().padding(vertical = 4.dp)
+    .background(Panel, RoundedCornerShape(8.dp))
+    .border(1.dp, Line, RoundedCornerShape(8.dp))
+    .padding(horizontal = 12.dp, vertical = 8.dp)

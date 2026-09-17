@@ -1,14 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- requireDeviceUnlock=true: a payment request should not be served from a locked phone.
-     Category "other" rather than "payment" — we are not an EMV payment applet and must not
-     compete for the default-payment slot. -->
+<!-- requireDeviceUnlock=false: a locked phone (screen on) still answers a tap, so its owner gets
+     a notification to unlock and act on. Safe because nothing served here can move money — only
+     a phone's public card, or a request the owner armed with the app open. Paying always needs
+     the unlocked phone and the wallet's own approval. Secure NFC, if switched on in settings,
+     still blocks card emulation on the lock screen regardless of this flag.
+
+     Category "other" rather than "payment" — we are not an EMV applet and must not compete for
+     the default-payment slot. -->
 <host-apdu-service xmlns:android="http://schemas.android.com/apk/res/android"
     android:description="@string/aid_group_desc"
-    android:requireDeviceUnlock="true"
+    android:requireDeviceUnlock="false"
     android:apduServiceBanner="@null">
     <aid-group
         android:description="@string/aid_group_desc"
         android:category="other">
         <aid-filter android:name="F0536F6C616E61546170" />
+        <!-- NFC Forum Type 4 NDEF tag application: lets a phone with Tap closed read us. -->
+        <aid-filter android:name="D2760000850101" />
     </aid-group>
 </host-apdu-service>

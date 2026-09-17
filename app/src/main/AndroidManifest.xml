@@ -3,6 +3,8 @@
 
     <uses-permission android:name="android.permission.NFC" />
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- NFC is required to pay; HCE only to be paid. Not required, so the app still
          installs on a phone that can only read. -->
     <uses-feature android:name="android.hardware.nfc" android:required="false" />
@@ -23,6 +25,25 @@
             </intent-filter>
         </activity>
 
+        <!-- The popup that appears when phones touch. Exported because Android's NFC stack
+             launches it after reading the other phone's NDEF tag; everything it receives is
+             validated like radio input, and paying still needs the wallet's own approval.
+             Its own task, so it slides over whatever app is open instead of pulling up Tap. -->
+        <activity
+            android:name=".TapPopupActivity"
+            android:exported="true"
+            android:theme="@style/Theme.Tap.Popup"
+            android:taskAffinity="com.tapsol.tap.popup"
+            android:launchMode="singleTask"
+            android:excludeFromRecents="true"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.nfc.action.NDEF_DISCOVERED" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="application/vnd.com.tapsol.tap" />
+            </intent-filter>
+        </activity>
+
         <service
             android:name=".TapHostApduService"
             android:exported="true"
@@ -34,6 +55,14 @@
             <meta-data
                 android:name="android.nfc.cardemulation.host_apdu_service"
                 android:resource="@xml/apduservice" />
+        </service>
+
+        <service
+            android:name=".TapMessagingService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
         </service>
     </application>
 </manifest>

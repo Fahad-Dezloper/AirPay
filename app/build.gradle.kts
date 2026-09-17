@@ -1,8 +1,17 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
 }
+
+// Deployment-specific values live in local.properties (never committed), so a fresh clone builds
+// and runs with the backend and push simply switched off.
+val localProps = Properties().apply {
+    rootProject.file("local.properties").takeIf { it.exists() }?.inputStream()?.use { load(it) }
+}
+fun local(key: String) = "\"" + (localProps.getProperty(key) ?: "").replace("\"", "") + "\""
 
 kotlin {
     compilerOptions { jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17) }
@@ -18,12 +27,21 @@ android {
         targetSdk = 36
         versionCode = 1
         versionName = "0.1"
+
+        buildConfigField("String", "TAP_SERVER_URL", local("tap.server"))
+        buildConfigField("String", "FIREBASE_APP_ID", local("firebase.appId"))
+        buildConfigField("String", "FIREBASE_API_KEY", local("firebase.apiKey"))
+        buildConfigField("String", "FIREBASE_PROJECT_ID", local("firebase.projectId"))
+        buildConfigField("String", "FIREBASE_SENDER_ID", local("firebase.senderId"))
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    buildFeatures { compose = true }
+    buildFeatures {
+        compose = true
+        buildConfig = true
+    }
 }
 
 dependencies {
@@ -39,6 +57,9 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.activity:activity-compose:1.9.2")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.6")
+    // Push for payments that land while the app is closed. Initialised by hand from
+    // local.properties, so no google-services plugin and no build break without Firebase.
+    implementation("com.google.firebase:firebase-messaging:25.1.3")
     testImplementation("junit:junit:4.13.2")
     // Android stubs org.json in unit tests, so JSONObject.put() throws "not mocked".
     // The real implementation makes the wire-format tests run on the JVM.

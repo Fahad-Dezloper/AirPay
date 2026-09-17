@@ -3,9 +3,7 @@ package com.tapsol.tap
 import android.app.Activity
 import android.nfc.NfcAdapter
 import android.nfc.Tag
-import android.nfc.tech.IsoDep
 import android.os.Bundle
-import android.util.Log
 
 /**
  * The "reader" half of a tap. This phone is paying, so it drives the exchange.
@@ -22,6 +20,8 @@ class TapReader(
     private val activity: Activity,
     private val onLog: (String) -> Unit,
     private val onRequest: (PayRequest) -> Unit,
+    /** The other phone had no request, only its card: an introduction. */
+    private val onCard: (TapCard) -> Unit = {},
 ) : NfcAdapter.ReaderCallback {
 
     private val adapter: NfcAdapter? = NfcAdapter.getDefaultAdapter(activity)
@@ -30,8 +30,12 @@ class TapReader(
     val enabled: Boolean get() = adapter?.isEnabled == true
 
     fun start() {
+        // NFC-A only. Android's card emulation is required to answer on NFC-A, so a phone
+        // running Tap is always found there; polling B as well only lengthens each poll cycle,
+        // which is felt as having to press the phones together and hold still before anything
+        // happens. A shorter cycle does not add distance — that is fixed by the hardware — but
+        // it catches the phones the moment they come within range.
         val flags = NfcAdapter.FLAG_READER_NFC_A or
-            NfcAdapter.FLAG_READER_NFC_B or
             // The platform's own NDEF handling would grab the tag before we see it.
             NfcAdapter.FLAG_READER_SKIP_NDEF_CHECK or
             NfcAdapter.FLAG_READER_NO_PLATFORM_SOUNDS
@@ -49,59 +53,21 @@ class TapReader(
     }
 
     override fun onTagDiscovered(tag: Tag?) {
-        val iso = IsoDep.get(tag ?: return)
-        if (iso == null) {
-            onLog("✗ tag is not IsoDep — not a phone")
-            return
-        }
-        try {
-            iso.connect()
-            // Only one command crosses the link, so a short timeout is right — if the phones
-            // are too far apart we want to fail fast and let the user try again.
-            iso.timeout = 2000
-            onLog("connected (maxTransceive=${iso.maxTransceiveLength}B)")
-
-            val sel = Apdu.select()
-            Log.i(TAG, "→ ${sel.toHex()}")
-            onLog("→ SELECT ${Apdu.AID}")
-            val resp = iso.transceive(sel)
-            Log.i(TAG, "← ${resp.toHex()}")
-
-            if (!Apdu.isOk(resp)) {
-                // 6985 is the other phone's own Tap service answering honestly: it has no
-                // request to give. That is a state — they are in Pay mode, or their request
-                // was already taken — not a fault, and a raw status word says none of that.
-                val nothingPending = resp.size >= 2 &&
-                    resp[resp.size - 2] == 0x69.toByte() && resp[resp.size - 1] == 0x85.toByte()
-                onLog(
-                    if (nothingPending) "— that phone is not requesting anything right now"
-                    else "✗ that phone refused the tap (${resp.toHex()})"
-                )
-                return
+        val t = tag ?: return
+        when (val out = TapExchange.run(t, Identity.card(activity), onLog)) {
+            is TapExchange.Outcome.Got -> when (val p = out.payload) {
+                is TapPayload.Request -> {
+                    onLog("✓ ${p.request.label} wants ${p.request.amount} ${p.request.token}")
+                    onLog("— you can separate the phones now")
+                    onRequest(p.request)
+                }
+                is TapPayload.Card -> {
+                    onLog("✓ met ${p.card.label}")
+                    onCard(p.card)
+                }
             }
-            val body = Apdu.body(resp)
-            onLog("← request ${body.size}B")
-
-            val req = PayRequest.fromBytes(body)
-            if (req == null) {
-                onLog("✗ that phone sent something we could not read")
-                return
-            }
-            // Reject at the boundary. Anything past this point is treated as well-formed.
-            val problem = req.validate()
-            if (problem != null) {
-                onLog("✗ $problem")
-                return
-            }
-            onLog("✓ ${req.label} wants ${req.amount} ${req.token}")
-            onLog("— you can separate the phones now")
-
-            // Everything after this happens with the phones apart.
-            onRequest(req)
-        } catch (e: Exception) {
-            onLog("✗ ${e.javaClass.simpleName}: ${e.message}")
-        } finally {
-            runCatching { iso.close() }
+            TapExchange.Outcome.NothingToOffer -> onLog("— that phone has no wallet connected yet")
+            is TapExchange.Outcome.Failed -> onLog("✗ ${out.why}")
         }
     }
 
