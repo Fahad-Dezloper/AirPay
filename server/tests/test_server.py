@@ -25,6 +25,7 @@ SIG = "5gN5R1etzG8tUbZGqJdG5aS47gmRbGEJ4cSb9nCrnZiqt63ySjwSNNnUUcqbENQYYvfRuBfdk
 REF = "GwQqYKapoH4mS1M4G8NFvLBWcWNQTpoJBGBDyKi92KrU"
 TO = "2qxPntVgWyxU2jQz2MLcUuCp71D9D1ZSTcbFvCcXWrUc"
 PAYER = "4WZ9hkr9h743Kufw7zHYj9YAiYHMKW8fbHBUnGohD18D"
+USDC = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
 
 
 class FakeRpc:
@@ -33,6 +34,12 @@ class FakeRpc:
         self.by_address = by_address if by_address is not None else {REF: [SIG]}
         self.offline = offline
         self.calls = 0
+        self.mints = {USDC: 6}
+
+    def mint_decimals(self, mint):
+        if self.offline:
+            raise chain.Offline("no network")
+        return self.mints.get(mint)
 
     def signatures(self, address):
         self.calls += 1
@@ -158,7 +165,7 @@ class ServiceTest(unittest.TestCase):
         svc.register(REF, TO, "0.01", "Seeker")
         self.assertEqual(1, svc.sweep())
         self.assertTrue(wait_for(lambda: svc.store.get(REF)["status"] == "paid"))
-        self.assertEqual({"type": "paid", "reference": REF, "signature": SIG, "amount": "0.01"}, q.get(timeout=1))
+        self.assertEqual({"type": "paid", "reference": REF, "signature": SIG, "amount": "0.01", "symbol": "SOL"}, q.get(timeout=1))
 
     def test_underpaid_request_stays_open(self):
         svc = self.make()
@@ -384,7 +391,7 @@ class HttpTest(unittest.TestCase):
         lines = [stream.readline(), stream.readline()]
         stream.close()
         self.assertEqual(b"event: paid\n", lines[0])
-        self.assertEqual({"reference": REF, "signature": SIG, "amount": "0.01"},
+        self.assertEqual({"reference": REF, "signature": SIG, "amount": "0.01", "symbol": "SOL"},
                          json.loads(lines[1].decode().removeprefix("data: ")))
 
     def test_a_request_made_while_the_payer_was_offline_is_replayed_on_connect(self):
@@ -424,6 +431,147 @@ class HttpTest(unittest.TestCase):
         except urllib.error.HTTPError as e:
             with e:
                 self.assertEqual(400, e.code)
+
+
+# ---------------------------------------------------------------------------------- tokens
+
+def token_tx(pre, post, owner=TO, mint=USDC, err=None, reference=REF):
+    """A token payment as getTransaction reports it. The recipient's wallet key is absent on
+    purpose: tokens land in their token account, and the check must not need the wallet."""
+    bal = lambda n: {"accountIndex": 1, "mint": mint, "owner": owner, "uiTokenAmount": {"amount": str(n), "decimals": 6}}
+    return {
+        "meta": {"err": err, "preBalances": [1, 2, 3], "postBalances": [1, 2, 3],
+                 "preTokenBalances": [] if pre is None else [bal(pre)], "postTokenBalances": [bal(post)]},
+        "transaction": {"message": {"accountKeys": [PAYER, "7dQhNaFiV579YSWeCczUgqQFzRB6YgUn8coqan8f4n7L", reference]}},
+    }
+
+
+class TokenTest(unittest.TestCase):
+    def test_amounts_convert_in_the_tokens_decimals(self):
+        self.assertEqual(500_000, verify.units("0.5", 6))
+        self.assertEqual(7, verify.units("7", 0))
+        self.assertIsNone(verify.units("0.0000001", 6))
+        self.assertIsNone(verify.units("1", 40))
+
+    def test_a_token_payment_in_full_is_paid(self):
+        self.assertEqual("paid", verify.verify_transfer(token_tx(1_000_000, 1_500_000), REF, TO, 500_000, USDC).kind)
+
+    def test_a_first_ever_token_payment_is_paid(self):
+        self.assertEqual("paid", verify.verify_transfer(token_tx(None, 500_000), REF, TO, 500_000, USDC).kind)
+
+    def test_short_wrong_token_wrong_owner_failed_and_wrong_reference_are_not_paid(self):
+        cases = {
+            "short": token_tx(0, 499_999),
+            "other mint": token_tx(0, 500_000, mint="So11111111111111111111111111111111111111112"),
+            "other owner": token_tx(0, 500_000, owner=PAYER),
+            "failed": token_tx(0, 500_000, err={"InstructionError": [0, "Custom"]}),
+            "other reference": token_tx(0, 500_000, reference="11111111111111111111111111111112"),
+        }
+        for name, tx in cases.items():
+            self.assertEqual("rejected", verify.verify_transfer(tx, REF, TO, 500_000, USDC).kind, name)
+
+    def test_tokens_dont_satisfy_a_sol_request(self):
+        self.assertEqual("rejected", verify.verify_transfer(token_tx(0, 500_000_000), REF, TO, 500_000).kind)
+
+    def test_a_token_request_is_watched_and_settled_by_token_balance(self):
+        sig = "3" * 88
+        svc = Service(Store(), FakeRpc(txs={sig: token_tx(0, 2_500_000)}, by_address={REF: [sig]}))
+        svc.register(REF, TO, "2.5", "Shop", token=USDC, decimals=6, symbol="USDC")
+        row = svc.store.get(REF)
+        self.assertEqual((USDC, 6, "USDC", 2_500_000), (row["token"], row["decimals"], row["symbol"], row["lamports"]))
+        self.assertEqual("paid", svc.check_reference(REF))
+
+    def test_the_same_amount_in_sol_does_not_settle_a_token_request(self):
+        svc = Service(Store(), FakeRpc())  # the real devnet SOL payment of 0.01 under REF
+        svc.register(REF, TO, "0.01", "", token=USDC, decimals=6, symbol="USDC")
+        self.assertNotEqual("paid", svc.check_reference(REF))
+
+    def test_decimals_that_dont_match_the_mint_are_refused(self):
+        svc = Service(Store(), FakeRpc())
+        with self.assertRaises(ValueError):
+            svc.register(REF, TO, "1", "", token=USDC, decimals=9, symbol="USDC")
+
+    def test_a_token_that_is_not_a_mint_is_refused(self):
+        svc = Service(Store(), FakeRpc())
+        with self.assertRaises(ValueError):
+            svc.register(REF, TO, "1", "", token=PAYER, decimals=6, symbol="X")
+        with self.assertRaises(ValueError):
+            svc.register(REF, TO, "1", "", token="not-an-address", decimals=6, symbol="X")
+
+    def test_a_reference_cannot_be_reregistered_as_a_different_token(self):
+        svc = Service(Store(), FakeRpc())
+        svc.register(REF, TO, "0.01", "")
+        with self.assertRaises(Conflict):
+            svc.register(REF, TO, "0.01", "", token=USDC, decimals=6, symbol="USDC")
+
+    def test_the_payer_is_told_which_token_is_asked_for(self):
+        fcm = FakeFcm()
+        svc = Service(Store(), FakeRpc(), fcm=fcm)
+        svc.add_device(PAYER, "p" * 40)
+        svc.register(REF, TO, "2.5", "Shop", payer=PAYER, token=USDC, decimals=6, symbol="USDC")
+        data = fcm.sent[0][1]
+        self.assertEqual((USDC, 6, "USDC"), (data["token"], data["decimals"], data["symbol"]))
+
+    def test_a_sol_request_ignores_whatever_decimals_the_phone_sent(self):
+        svc = Service(Store(), FakeRpc())
+        svc.register(REF, TO, "0.01", "", decimals=2, symbol="FAKE")
+        row = svc.store.get(REF)
+        self.assertEqual(("SOL", 9, "SOL", 10_000_000), (row["token"], row["decimals"], row["symbol"], row["lamports"]))
+
+    def test_token_reads_are_proxied_for_the_phones(self):
+        for m in ("getTokenAccountsByOwner", "getAccountInfo", "getTokenAccountBalance"):
+            self.assertIn(m, chain.Rpc.PROXYABLE)
+
+
+class FallbackTest(unittest.TestCase):
+    """A revoked provider key answers 401 to everything; the server must carry on without it."""
+
+    def _endpoint(self, status, doc=None):
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        class H(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_POST(self):
+                self.rfile.read(int(self.headers.get("Content-Length", 0)))
+                body = json.dumps(doc or {}).encode()
+                self.send_response(status)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.shutdown)
+        return f"http://127.0.0.1:{srv.server_address[1]}"
+
+    def test_a_refused_provider_falls_back_to_the_public_endpoint(self):
+        bad = self._endpoint(401)
+        good = self._endpoint(200, {"jsonrpc": "2.0", "id": 1, "result": {"value": 42}})
+        rpc = chain.Rpc(bad, timeout=3, fallback=good)
+        self.assertEqual({"value": 42}, rpc.call("getBalance", [PAYER]))
+        self.assertEqual({"value": 42}, rpc.forward({"method": "getBalance", "params": [PAYER]})["result"])
+
+    def test_both_down_is_offline_not_unpaid(self):
+        bad = self._endpoint(401)
+        with self.assertRaises(chain.Offline):
+            chain.Rpc(bad, timeout=3, fallback=bad).call("getBalance", [PAYER])
+
+
+class RealUsdcPaymentTest(unittest.TestCase):
+    """The first token payment Duffle made — 1 USDC, Seeker to OnePlus — as it landed."""
+    TX = json.loads((FIX / "devnet_usdc_payment.json").read_text())["result"]
+    REF = "8sRMPp6pyRP3Lq6nxmQ719CMAZXud68x1W3QmTecme38"
+
+    def test_paid_in_full(self):
+        self.assertEqual("paid", verify.verify_transfer(self.TX, self.REF, TO, 1_000_000, USDC).kind)
+
+    def test_not_more_not_sol_not_another_token(self):
+        self.assertEqual("rejected", verify.verify_transfer(self.TX, self.REF, TO, 1_000_001, USDC).kind)
+        self.assertEqual("rejected", verify.verify_transfer(self.TX, self.REF, TO, 1_000_000).kind)
+        self.assertEqual("rejected", verify.verify_transfer(
+            self.TX, self.REF, TO, 1_000_000, "HzwqbKZw8HxMN6bF2yFZNrht3c2iXXzpKcFu7uBEDKtr").kind)
 
 
 if __name__ == "__main__":

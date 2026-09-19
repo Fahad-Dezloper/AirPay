@@ -29,10 +29,17 @@ class Watch(context: Context) {
         val paidAt: Long? = null,
         /** The payer declined. Kept and greyed, since they may still pay or tap again. */
         val rejectedBy: String? = null,
+        /** "SOL" or the SPL mint asked for — with its decimals and name, as in [PayRequest]. */
+        val token: String = "SOL",
+        val decimals: Int = 9,
+        val symbol: String = "SOL",
     ) {
         val paid get() = signature != null
         val rejected get() = rejectedBy != null
-        fun lamports(): Long? = PayRequest(recipient, amount, "SOL", "", reference).lamports()
+        val mint: String? get() = if (token == "SOL") null else token
+        /** The amount in the token's smallest unit. */
+        fun units(): Long? = PayRequest.baseUnits(amount, decimals)
+        fun lamports(): Long? = units()
     }
 
     fun add(e: Entry) {
@@ -76,6 +83,9 @@ class Watch(context: Context) {
                 signature = o.optString("s").takeIf { it.isNotBlank() },
                 paidAt = o.optLong("p").takeIf { it > 0 },
                 rejectedBy = o.optString("rb").takeIf { it.isNotBlank() },
+                token = o.optString("k", "SOL").ifBlank { "SOL" },
+                decimals = o.optInt("d", 9),
+                symbol = o.optString("y", "SOL").ifBlank { "SOL" },
             )
         }
     } catch (e: Exception) {
@@ -95,6 +105,9 @@ class Watch(context: Context) {
                 e.signature?.let { put("s", it) }
                 e.paidAt?.let { put("p", it) }
                 e.rejectedBy?.let { put("rb", it) }
+                put("k", e.token)
+                put("d", e.decimals)
+                put("y", e.symbol)
             })
         }
         prefs.edit().putString(KEY, arr.toString()).apply()

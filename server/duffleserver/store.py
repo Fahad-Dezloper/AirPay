@@ -55,7 +55,11 @@ class Store:
         with self._lock, self._db:
             cols = {r[1] for r in self._db.execute("PRAGMA table_info(requests)")}
             for col, kind in (("payer", "TEXT"), ("genesis", "TEXT"), ("withdrawn", "INTEGER"),
-                              ("rejected", "INTEGER"), ("rejected_by", "TEXT")):
+                              ("rejected", "INTEGER"), ("rejected_by", "TEXT"),
+                              # What was asked for: "SOL" or an SPL mint. `lamports` then holds
+                              # the amount in that token's smallest unit.
+                              ("token", "TEXT NOT NULL DEFAULT 'SOL'"), ("decimals", "INTEGER NOT NULL DEFAULT 9"),
+                              ("symbol", "TEXT NOT NULL DEFAULT 'SOL'")):
                 if col not in cols:
                     self._db.execute(f"ALTER TABLE requests ADD COLUMN {col} {kind}")
             self._db.execute("CREATE INDEX IF NOT EXISTS by_payer ON requests(payer, status)")
@@ -63,18 +67,19 @@ class Store:
     # -- requests ---------------------------------------------------------------------------
 
     def register(self, reference: str, recipient: str, amount: str, lamports: int, label: str,
-                 payer: str | None = None, genesis: str | None = None) -> dict:
+                 payer: str | None = None, genesis: str | None = None,
+                 token: str = "SOL", decimals: int = 9, symbol: str = "SOL") -> dict:
         now = time.time()
         with self._lock, self._db:
             row = self._db.execute("SELECT * FROM requests WHERE reference=?", (reference,)).fetchone()
             if row is None:
                 self._db.execute(
-                    "INSERT INTO requests(reference,recipient,amount,lamports,label,created_at,next_check,payer,genesis)"
-                    " VALUES (?,?,?,?,?,?,0,?,?)",
-                    (reference, recipient, amount, lamports, label[:64], now, payer, genesis),
+                    "INSERT INTO requests(reference,recipient,amount,lamports,label,created_at,next_check,payer,genesis,"
+                    "token,decimals,symbol) VALUES (?,?,?,?,?,?,0,?,?,?,?,?)",
+                    (reference, recipient, amount, lamports, label[:64], now, payer, genesis, token, decimals, symbol[:12]),
                 )
                 return {"status": "open", "created": True}
-            if row["recipient"] != recipient or row["lamports"] != lamports:
+            if row["recipient"] != recipient or row["lamports"] != lamports or row["token"] != token:
                 raise Conflict("that reference is already registered with different details")
             # Fill in a payer we did not know. A request made by tapping is registered by the
             # phone ASKING for money, which cannot know who will pay; the paying phone registers

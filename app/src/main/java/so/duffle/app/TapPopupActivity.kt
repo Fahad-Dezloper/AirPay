@@ -35,6 +35,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.IntentCompat
+import androidx.core.view.WindowCompat
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -59,7 +60,7 @@ class TapPopupActivity : ComponentActivity() {
     sealed interface Phase {
         data object Ready : Phase
         data class Working(val text: String) : Phase
-        data class Waiting(val amount: String, val reference: String) : Phase
+        data class Waiting(val amount: String, val reference: String, val symbol: String = "SOL") : Phase
         data class Success(val title: String, val detail: String, val signature: String?) : Phase
         data class Error(val title: String, val detail: String) : Phase
         data class Failed(val title: String, val detail: String, val signature: String?) : Phase
@@ -70,6 +71,10 @@ class TapPopupActivity : ComponentActivity() {
     private var phase by mutableStateOf<Phase>(Phase.Ready)
     private var address by mutableStateOf<String?>(null)
     private var shownAt = 0L
+    /** What the connected wallet holds — the token list. Null until the first read lands. */
+    private var holdings by mutableStateOf<List<Tokens.Holding>?>(null)
+    /** Debug preview only: the amount to show in the "working" state. */
+    private var previewAmount by mutableStateOf<String?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -79,13 +84,16 @@ class TapPopupActivity : ComponentActivity() {
             finish()
             return
         }
+        // The sheet is white, so the navigation bar's handle has to be dark to show on it.
+        WindowCompat.getInsetsController(window, window.decorView).isAppearanceLightNavigationBars = true
         setContent {
-            MaterialTheme(colorScheme = darkColorScheme(background = Ink, surface = Panel)) {
+            MaterialTheme(colorScheme = lightColorScheme(primary = D.Blue, background = D.White, surface = D.White, onSurface = D.Black)) {
                 val p = peer ?: return@MaterialTheme
                 PopupScreen(
                     peer = p,
                     phase = phase,
                     connected = address != null,
+                    me = Identity.label(this).take(1).uppercase().ifBlank { "Y" },
                     history = Contacts(this).all().firstOrNull { it.address == p.address },
                     onDismiss = { if (phase !is Phase.Working) finish() },
                     onConnect = ::connect,
@@ -94,7 +102,15 @@ class TapPopupActivity : ComponentActivity() {
                     onDecline = ::decline,
                     onRetry = { phase = Phase.Ready },
                     onExplorer = { sig -> runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(Chain.explorerUrl(sig)))) } },
+                    previewAmount = previewAmount,
+                    holdings = holdings,
                 )
+                // Balances are read every time the sheet opens: they change with every payment.
+                LaunchedEffect(address) {
+                    val me = address ?: return@LaunchedEffect
+                    holdings = withContext(Dispatchers.IO) { Tokens.holdings(this@TapPopupActivity, me) }
+                    Log.i(TAG, "holdings: ${holdings?.let { Tokens.describe(it) } ?: "unreachable"}")
+                }
                 // A request ends three ways, and the popup has to notice all of them: they pay,
                 // they decline, or — when we are the one being asked — they take it back.
                 LaunchedEffect(phase) {
@@ -120,6 +136,12 @@ class TapPopupActivity : ComponentActivity() {
         val payload = when (intent.action) {
             NfcAdapter.ACTION_NDEF_DISCOVERED -> fromNdef(intent)
             else -> intent.getByteArrayExtra(EXTRA_PAYLOAD)?.let { TapPayload.parse(it) }
+                // Debug builds only: open the popup from the Mac with a JSON payload, so the
+                // screen can be designed without two phones and a tap every time. `adb am start`
+                // can pass strings but not the byte array a real tap delivers. Parsed and
+                // validated exactly like radio input.
+                ?: intent.getStringExtra(EXTRA_PAYLOAD_JSON)?.takeIf { BuildConfig.DEBUG }
+                    ?.let { TapPayload.parse(it.toByteArray()) }
         } ?: return false
 
         // The same person can arrive twice in a moment — our NDEF read of them and their HELLO
@@ -130,6 +152,24 @@ class TapPopupActivity : ComponentActivity() {
         peer = payload
         phase = Phase.Ready
         shownAt = System.currentTimeMillis()
+
+        // Debug builds only: jump straight to a state, so every screen can be looked at on a real
+        // phone without paying anyone. No side effects — nothing is recorded or registered.
+        intent.getStringExtra(EXTRA_PREVIEW)?.takeIf { BuildConfig.DEBUG }?.let { state ->
+            val amount = (payload as? TapPayload.Request)?.request?.amount ?: "0.5"
+            phase = when (state) {
+                "working" -> Phase.Working("Approve in your wallet…")
+                "waiting" -> Phase.Waiting(amount, "preview")
+                "success" -> Phase.Success("Sent", "$amount SOL to ${payload.label}", "67WKe2RHq4Z8vY1pXbT5mN3cJdedqWM5")
+                "received" -> Phase.Success("Received", "$amount SOL from ${payload.label}", "67WKe2RHq4Z8vY1pXbT5mN3cJdedqWM5")
+                "error" -> Phase.Error("Nothing was sent", "You closed the wallet before approving. Tap again when you're ready.")
+                "failed" -> Phase.Failed("Payment failed", "Solana refused the transaction. Your SOL is still in your wallet.", "67WKe2RHq4Z8vY1pXbT5mN3cJdedqWM5")
+                "connect" -> { address = null; Phase.Ready }
+                else -> Phase.Ready
+            }
+            if (state == "working") previewAmount = amount
+            return true
+        }
         Log.i(TAG, "popup for ${payload.label} via ${intent.getStringExtra(EXTRA_FROM) ?: intent.action}")
         Push.cancel(this, payload.address)
         Haptics.contact(this)
@@ -193,12 +233,14 @@ class TapPopupActivity : ComponentActivity() {
         }
     }
 
-    private fun pay(amount: String) {
+    private fun pay(amount: String, token: Tokens.Holding?) {
         val p = peer ?: return
         val payer = address ?: return connect()
+        val t = token ?: SOL
         val req = when (p) {
             is TapPayload.Request -> p.request
-            is TapPayload.Card -> PayRequest(p.card.address, amount.trim(), "SOL", p.card.label, PayRequest.newReference(), p.card.genesis)
+            is TapPayload.Card -> PayRequest(p.card.address, amount.trim(), t.token, p.card.label, PayRequest.newReference(),
+                p.card.genesis, decimals = t.decimals, symbol = t.symbol)
         }
         lifecycleScope.launch {
             phase = Phase.Working("Getting ready…")
@@ -206,7 +248,8 @@ class TapPopupActivity : ComponentActivity() {
             // phone the instant it lands.
             launch {
                 ServerClient.register(req.reference, req.recipient, req.amount,
-                    Identity.label(this@TapPopupActivity), payer = payer)
+                    Identity.label(this@TapPopupActivity), payer = payer,
+                    token = req.token, decimals = req.decimals, symbol = req.symbol)
             }
             val result = try {
                 Payments.pay(wallet, payer, req, stage = { phase = Phase.Working(it) }, log = { Log.i(TAG, it) })
@@ -216,9 +259,12 @@ class TapPopupActivity : ComponentActivity() {
             phase = when (result) {
                 is PayResult.Sent -> {
                     if (p is TapPayload.Request) Inbox(this@TapPopupActivity).markPaid(req.reference, result.signature)
-                    Contacts(this@TapPopupActivity).record(req.recipient, req.label, req.genesis != null, paid = req.amount.toDoubleOrNull() ?: 0.0)
+                    // The contact's running total is in SOL; token payments don't add to it.
+                    Contacts(this@TapPopupActivity).record(req.recipient, req.label, req.genesis != null,
+                        paid = if (req.isSol) req.amount.toDoubleOrNull() ?: 0.0 else 0.0)
                     Haptics.success(this@TapPopupActivity)
-                    Phase.Success("Sent", "${req.amount} SOL to ${req.label}", result.signature)
+                    refreshHoldings()
+                    Phase.Success("Sent", "${req.amount} ${req.symbol} to ${req.label}", result.signature)
                 }
                 is PayResult.AlreadyPaid -> {
                     if (p is TapPayload.Request) Inbox(this@TapPopupActivity).markPaid(req.reference, result.signature)
@@ -244,12 +290,13 @@ class TapPopupActivity : ComponentActivity() {
         finish()
     }
 
-    private fun request(amount: String) {
+    private fun request(amount: String, token: Tokens.Holding?) {
         val p = peer ?: return
         val me = address ?: return connect()
+        val t = token ?: SOL
         val value = amount.trim()
-        if (PayRequest(me, value, "SOL", "", "").lamports() == null) {
-            phase = Phase.Error("Enter an amount", "Amounts can have up to 9 decimal places.")
+        if (PayRequest.baseUnits(value, t.decimals) == null) {
+            phase = Phase.Error("Enter an amount", "${t.symbol} amounts can have up to ${t.decimals} decimal places.")
             return
         }
         if (!ServerClient.enabled) {
@@ -263,20 +310,23 @@ class TapPopupActivity : ComponentActivity() {
             val sent = ServerClient.register(
                 reference, me, value, Identity.label(this@TapPopupActivity),
                 payer = p.address, genesis = Identity.card(this@TapPopupActivity)?.genesis,
+                token = t.token, decimals = t.decimals, symbol = t.symbol,
             )
             if (!sent) {
                 Haptics.failure(this@TapPopupActivity)
                 phase = Phase.Error("Couldn't send the request", "Check your connection and try again.")
                 return@launch
             }
-            Watch(this@TapPopupActivity).add(Watch.Entry(reference, me, value, System.currentTimeMillis()))
-            phase = Phase.Waiting(value, reference)
+            Watch(this@TapPopupActivity).add(Watch.Entry(reference, me, value, System.currentTimeMillis(),
+                token = t.token, decimals = t.decimals, symbol = t.symbol))
+            phase = Phase.Waiting(value, reference, t.symbol)
         }
     }
 
     private suspend fun watchForPayment(w: Phase.Waiting) {
         val me = address ?: return
-        val lamports = PayRequest(me, w.amount, "SOL", "", w.reference).lamports() ?: return
+        val entry0 = Watch(this).all().firstOrNull { it.reference == w.reference } ?: return
+        val units = entry0.units() ?: return
         while (phase == w) {
             // They may answer instead of paying. A refusal arrives over the live stream or as a
             // push, and both write it to the watch list — so reading that covers either route,
@@ -287,11 +337,12 @@ class TapPopupActivity : ComponentActivity() {
                 phase = Phase.Error("${entry.rejectedBy} declined", "Nothing was paid. You can ask again.")
                 return
             }
-            val found = withContext(Dispatchers.IO) { Chain.findPayment(w.reference, me, lamports) }
+            val found = withContext(Dispatchers.IO) { Chain.findPayment(w.reference, me, units, entry0.mint) }
             if (found is Chain.Found.Yes) {
                 if (Watch(this).markPaid(w.reference, found.signature)) {
                     Haptics.success(this)
-                    phase = Phase.Success("Received", "${w.amount} SOL from ${peer?.label ?: "them"}", found.signature)
+                    refreshHoldings()
+                    phase = Phase.Success("Received", "${w.amount} ${w.symbol} from ${peer?.label ?: "them"}", found.signature)
                 }
                 return
             }
@@ -312,10 +363,18 @@ class TapPopupActivity : ComponentActivity() {
         }
     }
 
+    private fun refreshHoldings() {
+        val me = address ?: return
+        lifecycleScope.launch { holdings = withContext(Dispatchers.IO) { Tokens.holdings(this@TapPopupActivity, me) } ?: holdings }
+    }
+
     companion object {
+        private val SOL = Tokens.Holding(null, "SOL", "Solana", 9, 0, null)
         private const val TAG = "TapPopup"
         private const val EXTRA_PAYLOAD = "payload"
+        private const val EXTRA_PAYLOAD_JSON = "payload_json"
         private const val EXTRA_FROM = "from"
+        private const val EXTRA_PREVIEW = "preview"
 
         fun intent(context: Context, payload: TapPayload, cameFrom: String): Intent =
             Intent(context, TapPopupActivity::class.java)
@@ -324,235 +383,3 @@ class TapPopupActivity : ComponentActivity() {
     }
 }
 
-// ---------------------------------------------------------------------------------------- UI
-
-@Composable
-private fun PopupScreen(
-    peer: TapPayload,
-    phase: TapPopupActivity.Phase,
-    connected: Boolean,
-    history: Contact?,
-    onDismiss: () -> Unit,
-    onConnect: () -> Unit,
-    onPay: (String) -> Unit,
-    onRequest: (String) -> Unit,
-    onDecline: () -> Unit,
-    onRetry: () -> Unit,
-    onExplorer: (String) -> Unit,
-) {
-    BackHandler(onBack = onDismiss)
-    Box(
-        Modifier.fillMaxSize()
-            .background(Color.Black.copy(alpha = .55f))
-            .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = onDismiss),
-        contentAlignment = Alignment.BottomCenter,
-    ) {
-        Column(
-            Modifier.fillMaxWidth()
-                .imePadding()
-                .background(Panel, RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp))
-                .border(1.dp, Line, RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp))
-                // Swallow taps so touching the card never dismisses it.
-                .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {}
-                .navigationBarsPadding()
-                .padding(horizontal = 20.dp, vertical = 16.dp),
-        ) {
-            Box(Modifier.align(Alignment.CenterHorizontally).size(40.dp, 4.dp).background(Line, CircleShape))
-            Spacer(Modifier.height(16.dp))
-            PeerHeader(peer, history)
-            Spacer(Modifier.height(20.dp))
-            AnimatedContent(targetState = phase, label = "phase") { ph ->
-                Column {
-                    when (ph) {
-                        TapPopupActivity.Phase.Ready -> ReadyBody(peer, connected, onConnect, onPay, onRequest, onDecline, onDismiss)
-                        is TapPopupActivity.Phase.Working -> WorkingBody(ph.text, null)
-                        is TapPopupActivity.Phase.Waiting -> {
-                            WorkingBody("Waiting for ${peer.label} to pay ${ph.amount} SOL", "You can close this — it stays in Requests.")
-                            Spacer(Modifier.height(16.dp))
-                            SecondaryButton("Close", onDismiss)
-                        }
-                        is TapPopupActivity.Phase.Success -> ResultBody("✓", Accent, ph.title, ph.detail, ph.signature, onExplorer) {
-                            PrimaryButton("Done", onDismiss)
-                        }
-                        is TapPopupActivity.Phase.Error -> ResultBody("!", Warn, ph.title, ph.detail, null, onExplorer) {
-                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                SecondaryButton("Close", onDismiss, Modifier.weight(1f))
-                                PrimaryButton("Try again", onRetry, Modifier.weight(1f))
-                            }
-                        }
-                        is TapPopupActivity.Phase.Failed -> ResultBody("✕", Warn, ph.title, ph.detail, ph.signature, onExplorer) {
-                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                SecondaryButton("Close", onDismiss, Modifier.weight(1f))
-                                PrimaryButton("Try again", onRetry, Modifier.weight(1f))
-                            }
-                        }
-                    }
-                }
-            }
-            Spacer(Modifier.height(8.dp))
-        }
-    }
-}
-
-@Composable
-private fun PeerHeader(peer: TapPayload, history: Contact?) {
-    val seeker = peer.genesis != null
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Box(
-            Modifier.size(52.dp)
-                .background(if (seeker) Accent.copy(alpha = .16f) else Line, CircleShape)
-                .border(1.dp, if (seeker) Accent.copy(alpha = .6f) else Line, CircleShape),
-            contentAlignment = Alignment.Center,
-        ) {
-            Text(peer.label.take(1).uppercase().ifBlank { "?" }, color = if (seeker) Accent else Fg,
-                fontSize = 22.sp, fontWeight = FontWeight.Bold)
-        }
-        Spacer(Modifier.width(14.dp))
-        Column(Modifier.weight(1f)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(peer.label.ifBlank { "Unknown phone" }, color = Fg, fontSize = 20.sp, fontWeight = FontWeight.Bold)
-                if (seeker) {
-                    Spacer(Modifier.width(8.dp))
-                    Text("✓ VERIFIED SEEKER", color = Accent, fontSize = 9.sp, letterSpacing = 1.sp,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.background(Accent.copy(alpha = .12f), RoundedCornerShape(4.dp))
-                            .padding(horizontal = 6.dp, vertical = 2.dp))
-                }
-            }
-            Text("${peer.address.take(6)}…${peer.address.takeLast(6)}", color = Dim, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
-            Text(
-                when {
-                    history == null || history.taps <= 1 -> "First time you've tapped"
-                    history.totalPaid > 0 -> "Tapped ${history.taps} times · you've paid ${"%.3f".format(history.totalPaid)} SOL"
-                    else -> "Tapped ${history.taps} times"
-                },
-                color = Dim, fontSize = 11.sp,
-            )
-        }
-    }
-}
-
-@Composable
-private fun ReadyBody(
-    peer: TapPayload,
-    connected: Boolean,
-    onConnect: () -> Unit,
-    onPay: (String) -> Unit,
-    onRequest: (String) -> Unit,
-    onDecline: () -> Unit,
-    onLater: () -> Unit,
-) {
-    if (!connected) {
-        Text("Connect a wallet to pay or request.", color = Dim, fontSize = 14.sp)
-        Spacer(Modifier.height(14.dp))
-        PrimaryButton("Connect wallet", onConnect)
-        return
-    }
-    if (peer is TapPayload.Request) {
-        Text("REQUESTS", color = Dim, fontSize = 10.sp, letterSpacing = 2.sp)
-        Text("${peer.request.amount} SOL", color = Fg, fontSize = 40.sp, fontWeight = FontWeight.Bold)
-        Spacer(Modifier.height(16.dp))
-        PrimaryButton("Pay ${peer.request.amount} SOL", { onPay(peer.request.amount) })
-        Spacer(Modifier.height(8.dp))
-        // Two different answers: "Later" keeps it in Requests and tells them nothing; "Decline"
-        // is a no, and their phone is told so they stop waiting.
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            SecondaryButton("Decline", onDecline, Modifier.weight(1f), tone = Warn)
-            SecondaryButton("Later", onLater, Modifier.weight(1f))
-        }
-        return
-    }
-
-    var amount by rememberSaveable { mutableStateOf("") }
-    val lamports = PayRequest(peer.address, amount, "SOL", "", "").lamports()
-    val problem = when {
-        amount.isBlank() -> null
-        amount.toDoubleOrNull() == null -> "That isn't a number"
-        lamports == null -> "Up to 9 decimal places"
-        (amount.toDoubleOrNull() ?: 0.0) > PayRequest.MAX_AMOUNT -> "Too large for a tap"
-        else -> null
-    }
-    val valid = lamports != null && problem == null
-    val focus = remember { FocusRequester() }
-    LaunchedEffect(Unit) { runCatching { focus.requestFocus() } }
-
-    OutlinedTextField(
-        value = amount,
-        onValueChange = { v -> if (v.length <= 12 && v.all { it.isDigit() || it == '.' }) amount = v },
-        placeholder = { Text("0.00", color = Dim, fontSize = 32.sp) },
-        suffix = { Text("SOL", color = Dim, fontSize = 18.sp) },
-        textStyle = LocalTextStyle.current.copy(fontSize = 32.sp, fontWeight = FontWeight.Bold, color = Fg),
-        singleLine = true,
-        isError = problem != null,
-        supportingText = { Text(problem ?: "devnet", color = if (problem != null) Warn else Dim) },
-        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-        modifier = Modifier.fillMaxWidth().focusRequester(focus),
-    )
-    Spacer(Modifier.height(12.dp))
-    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        SecondaryButton("Request", { onRequest(amount) }, Modifier.weight(1f), enabled = valid)
-        PrimaryButton("Pay", { onPay(amount) }, Modifier.weight(1f), enabled = valid)
-    }
-}
-
-@Composable
-private fun WorkingBody(text: String, note: String?) {
-    Column(Modifier.fillMaxWidth().padding(vertical = 18.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-        CircularProgressIndicator(color = Accent, strokeWidth = 3.dp, modifier = Modifier.size(40.dp))
-        Spacer(Modifier.height(16.dp))
-        Text(text, color = Fg, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center)
-        if (note != null) {
-            Spacer(Modifier.height(4.dp))
-            Text(note, color = Dim, fontSize = 12.sp, textAlign = TextAlign.Center)
-        }
-    }
-}
-
-@Composable
-private fun ResultBody(
-    mark: String, tone: Color, title: String, detail: String, signature: String?,
-    onExplorer: (String) -> Unit, actions: @Composable () -> Unit,
-) {
-    Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-        Box(Modifier.size(64.dp).background(tone.copy(alpha = .15f), CircleShape).border(2.dp, tone, CircleShape),
-            contentAlignment = Alignment.Center) {
-            Text(mark, color = tone, fontSize = 30.sp, fontWeight = FontWeight.Bold)
-        }
-        Spacer(Modifier.height(14.dp))
-        Text(title, color = Fg, fontSize = 20.sp, fontWeight = FontWeight.Bold)
-        Spacer(Modifier.height(4.dp))
-        Text(detail, color = Dim, fontSize = 14.sp, textAlign = TextAlign.Center)
-        if (signature != null) {
-            Spacer(Modifier.height(8.dp))
-            TextButton(onClick = { onExplorer(signature) }) {
-                Text("${signature.take(8)}…${signature.takeLast(8)} · View on explorer", color = tone, fontSize = 12.sp,
-                    fontFamily = FontFamily.Monospace)
-            }
-        }
-        Spacer(Modifier.height(14.dp))
-        actions()
-    }
-}
-
-@Composable
-private fun PrimaryButton(text: String, onClick: () -> Unit, modifier: Modifier = Modifier.fillMaxWidth(), enabled: Boolean = true) {
-    Button(
-        onClick = onClick, enabled = enabled, modifier = modifier.height(52.dp), shape = RoundedCornerShape(12.dp),
-        colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = Ink,
-            disabledContainerColor = Line, disabledContentColor = Dim),
-    ) { Text(text, fontWeight = FontWeight.SemiBold, fontSize = 16.sp) }
-}
-
-@Composable
-private fun SecondaryButton(
-    text: String,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier.fillMaxWidth(),
-    enabled: Boolean = true,
-    tone: Color = Fg,
-) {
-    OutlinedButton(
-        onClick = onClick, enabled = enabled, modifier = modifier.height(52.dp), shape = RoundedCornerShape(12.dp),
-        colors = ButtonDefaults.outlinedButtonColors(contentColor = tone, disabledContentColor = Dim),
-    ) { Text(text, fontWeight = FontWeight.SemiBold, fontSize = 16.sp) }
-}

@@ -1,6 +1,8 @@
 package so.duffle.app
 
+import android.app.Activity
 import android.content.Context
+import android.view.HapticFeedbackConstants
 import android.os.VibrationEffect
 import android.os.VibratorManager
 
@@ -20,13 +22,25 @@ object Haptics {
     fun contact(context: Context) =
         play(context, VibrationEffect.createPredefined(VibrationEffect.EFFECT_HEAVY_CLICK))
 
-    /** Money moved — sent on the payer, arrived on the payee. */
+    /** Money moved — sent on the payer, arrived on the payee. Two crisp taps, Apple Pay style. */
     fun success(context: Context) =
-        play(context, VibrationEffect.createWaveform(longArrayOf(0, 35, 70, 55), intArrayOf(0, 180, 0, 255), -1))
+        play(context, VibrationEffect.createPredefined(VibrationEffect.EFFECT_DOUBLE_CLICK))
 
-    /** Nothing moved: expired, refused, or declined. Deliberately unlike success. */
-    fun failure(context: Context) =
-        play(context, VibrationEffect.createWaveform(longArrayOf(0, 90, 60, 90), intArrayOf(0, 120, 0, 120), -1))
+    /**
+     * Nothing moved: refused, declined or withdrawn. The system's own "rejected" pattern where
+     * there is a window to play it on; the Seeker's motor has no amplitude control, so the old
+     * stepped waveforms came out as flat buzzes.
+     */
+    fun failure(context: Context) {
+        val view = (context as? Activity)?.window?.decorView
+        if (view == null || !view.performHapticFeedback(HapticFeedbackConstants.REJECT)) {
+            play(context, VibrationEffect.createPredefined(VibrationEffect.EFFECT_HEAVY_CLICK))
+        }
+    }
+
+    /** A keypad digit. Frequent, so faint. */
+    fun tick(context: Context) =
+        play(context, VibrationEffect.createPredefined(VibrationEffect.EFFECT_TICK))
 
     private fun play(context: Context, effect: VibrationEffect) {
         runCatching {

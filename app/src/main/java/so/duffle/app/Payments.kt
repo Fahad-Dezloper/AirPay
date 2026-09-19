@@ -29,19 +29,17 @@ object Payments {
         stage: (String) -> Unit,
         log: (String) -> Unit = {},
     ): PayResult {
-        // buildTransfer only makes a SystemProgram transfer; a USDC request would show "5 USDC"
-        // and send 5 SOL. Refused until SPL transfers exist.
-        if (!req.token.equals("SOL", ignoreCase = true))
-            return PayResult.Error("Can't pay in ${req.token}", "This version only sends SOL.")
         if (req.recipient == payer)
             return PayResult.Error("That's your own wallet", "Pick a different phone to pay.")
-        val lamports = req.lamports()
-            ?: return PayResult.Error("Enter an amount", "Amounts can have up to 9 decimal places.")
+        req.validate()?.let { return PayResult.Error("Can't pay this", it) }
+        // In the token's own smallest unit: lamports for SOL, 10^-6 for USDC, and so on.
+        val units = req.units()
+            ?: return PayResult.Error("Enter an amount", "${req.symbol} amounts can have up to ${req.decimals} decimal places.")
 
         // Requests never expire, so the same one can be paid twice — after a relaunch, or by a
         // second phone that tapped the same person. The chain is the only place both show.
         stage("Checking it hasn't been paid…")
-        when (val already = withContext(Dispatchers.IO) { Chain.findPayment(req.reference, req.recipient, lamports) }) {
+        when (val already = withContext(Dispatchers.IO) { Chain.findPayment(req.reference, req.recipient, units, req.mint) }) {
             is Chain.Found.Yes -> return PayResult.AlreadyPaid(already.signature)
             Chain.Found.Offline -> return PayResult.Error("You're offline", "Nothing was sent. Try again when you're connected.")
             else -> Unit
@@ -49,11 +47,16 @@ object Payments {
 
         stage("Checking your balance…")
         log("pay: building on a fresh blockhash")
-        val tx = when (val built = withContext(Dispatchers.IO) { Chain.buildTransfer(payer, req.recipient, lamports, req.reference) }) {
+        val tx = when (val built = withContext(Dispatchers.IO) {
+            val mint = req.mint
+            if (mint == null) Chain.buildTransfer(payer, req.recipient, units, req.reference)
+            else Chain.buildTokenTransfer(payer, req.recipient, mint, units, req.decimals, req.reference, req.symbol)
+        }) {
             is Chain.Built.Ok -> built.tx
             is Chain.Built.NotEnough -> return PayResult.Error(
-                "Not enough SOL",
-                "You have ${"%.4f".format(built.have)} SOL and this needs ${"%.4f".format(built.need)} plus fees.",
+                "Not enough ${built.symbol.substringBefore(' ')}",
+                "You have ${built.have} ${built.symbol} and this needs ${built.need}" +
+                    if (built.symbol == "SOL") " plus fees." else ".",
             )
             is Chain.Built.Offline -> return PayResult.Error("You're offline", "Nothing was sent. Try again when you're connected.")
             is Chain.Built.Bad -> return PayResult.Error("Can't pay this", built.why)
@@ -83,7 +86,7 @@ object Payments {
         log("✓ SENT — $signature")
 
         stage("Confirming on Solana…")
-        return when (val c = Chain.confirm(signature, req.reference, req.recipient, lamports)) {
+        return when (val c = Chain.confirm(signature, req.reference, req.recipient, units, req.mint)) {
             Chain.Confirmation.Confirmed -> PayResult.Sent(signature)
             is Chain.Confirmation.Failed -> PayResult.Failed("Transaction failed", "It reached Solana but ${c.why}.", signature)
             // Submitted, and we could not get an answer — usually the public RPC refusing us,

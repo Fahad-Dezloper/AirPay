@@ -70,10 +70,10 @@ object Push {
     fun canNotify(context: Context) =
         context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
 
-    fun showPaid(context: Context, amount: String, reference: String) {
+    fun showPaid(context: Context, amount: String, reference: String, symbol: String = "SOL") {
         notify(
             context, CHANNEL_PAID, "Payments received", reference.hashCode(),
-            title = if (amount.isNotBlank()) "Received $amount SOL" else "Payment received",
+            title = if (amount.isNotBlank()) "Received $amount $symbol" else "Payment received",
             // Worded carefully: the app confirms on-chain when opened, not on the push's word.
             text = "Tap to confirm it on-chain.",
             open = Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
@@ -95,7 +95,7 @@ object Push {
     fun showRequested(context: Context, req: PayRequest) {
         notify(
             context, CHANNEL_TAPS, "Taps", tapId(req.reference),
-            title = "${req.label} requests ${req.amount} SOL",
+            title = "${req.label} requests ${req.amount} ${req.symbol}",
             text = "Tap to pay.",
             open = TapPopupActivity.intent(context, TapPayload.Request(req), cameFrom = "notification"),
             publicText = "You have a payment request",
@@ -171,17 +171,20 @@ class TapMessagingService : FirebaseMessagingService() {
         when (d["type"]) {
             "paid" -> {
                 val ref = d["reference"]?.takeIf { PayRequest.isBase58Address(it) } ?: return
-                Push.showPaid(this, d["amount"].orEmpty(), ref)
+                Push.showPaid(this, d["amount"].orEmpty(), ref, d["symbol"]?.takeIf { it.isNotBlank() && it.length <= 12 } ?: "SOL")
             }
             // A request made in someone's popup after the phones parted. Validated like
             // anything off the radio — a push is no more trustworthy than a tap.
             "request" -> {
+                val token = d["token"]?.takeIf { it.isNotBlank() } ?: "SOL"
                 val req = PayRequest(
-                    recipient = d["recipient"].orEmpty(), amount = d["amount"].orEmpty(), token = "SOL",
+                    recipient = d["recipient"].orEmpty(), amount = d["amount"].orEmpty(), token = token,
                     label = d["label"].orEmpty(), reference = d["reference"].orEmpty(),
                     genesis = d["genesis"]?.takeIf { it.isNotBlank() },
+                    decimals = d["decimals"]?.toIntOrNull() ?: 9,
+                    symbol = d["symbol"]?.takeIf { it.isNotBlank() } ?: if (token == "SOL") "SOL" else token.take(4),
                 )
-                if (req.validate() != null || req.lamports() == null) return
+                if (req.validate() != null || req.units() == null) return
                 Inbox(this).add(req)
                 Push.showRequested(this, req)
             }

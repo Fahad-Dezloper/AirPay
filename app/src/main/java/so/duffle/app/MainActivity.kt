@@ -225,7 +225,7 @@ class MainActivity : ComponentActivity() {
                                 // parted. With the app open, show it straight away.
                                 is ServerClient.Requested -> {
                                     inbox.add(ev.request); refreshLists()
-                                    push("server: ${ev.request.label} requests ${ev.request.amount} SOL")
+                                    push("server: ${ev.request.label} requests ${ev.request.amount} ${ev.request.symbol}")
                                     startActivity(TapPopupActivity.intent(this@MainActivity, TapPayload.Request(ev.request), cameFrom = "server"))
                                 }
                                 is ServerClient.Withdrawn -> {
@@ -281,7 +281,7 @@ class MainActivity : ComponentActivity() {
                                 onDismissToPay = { item ->
                                     val req = item.request
                                     inbox.remove(req.reference); refreshLists()
-                                    push("— declined ${req.amount} SOL from ${req.label}")
+                                    push("— declined ${req.amount} ${req.symbol} from ${req.label}")
                                     // Only a live request is a rejection; one they already took
                                     // back, or already paid, is just tidying up.
                                     if (item.payable) {
@@ -292,7 +292,7 @@ class MainActivity : ComponentActivity() {
                                 },
                                 onDismissOwed = { e ->
                                     watch.remove(e.reference); refreshLists()
-                                    push("— withdrew ${e.amount} SOL request ${e.reference.take(8)}…")
+                                    push("— withdrew ${e.amount} ${e.symbol} request ${e.reference.take(8)}…")
                                     // Tell the phone we asked, so it stops offering a Pay button
                                     // for something we took back. Advisory: money sent anyway
                                     // still arrives, and the server keeps watching for it.
@@ -458,12 +458,12 @@ class MainActivity : ComponentActivity() {
                         },
                         onLater = {
                             incoming = null
-                            push("— saved ${req.amount} SOL for ${req.label} in Requests")
+                            push("— saved ${req.amount} ${req.symbol} for ${req.label} in Requests")
                         },
                         onDecline = {
                             incoming = null
                             inbox.remove(req.reference); refreshLists()
-                            push("— declined ${req.amount} SOL from ${req.label}")
+                            push("— declined ${req.amount} ${req.symbol} from ${req.label}")
                             lifecycleScope.launch {
                                 ServerClient.reject(req.reference, Identity.label(this@MainActivity))
                             }
@@ -503,7 +503,8 @@ class MainActivity : ComponentActivity() {
             // the phone ASKING, which cannot know who will pay, so the server had nobody to
             // tell when it was withdrawn.
             lifecycleScope.launch {
-                ServerClient.register(req.reference, req.recipient, req.amount, req.label, payer = connected)
+                ServerClient.register(req.reference, req.recipient, req.amount, req.label, payer = connected,
+                    token = req.token, decimals = req.decimals, symbol = req.symbol)
             }
         }
 
@@ -524,18 +525,24 @@ class MainActivity : ComponentActivity() {
                 recipient = req.recipient,
                 amount = req.amount,
                 createdAt = System.currentTimeMillis(),
+                token = req.token,
+                decimals = req.decimals,
+                symbol = req.symbol,
             )
         )
         refreshLists()
         checkAllNow = true
         push("watching chain for ${req.reference.take(8)}… (${owed.count { !it.paid }} open)")
-        lifecycleScope.launch { ServerClient.register(req.reference, req.recipient, req.amount, req.label) }
+        lifecycleScope.launch {
+            ServerClient.register(req.reference, req.recipient, req.amount, req.label,
+                token = req.token, decimals = req.decimals, symbol = req.symbol)
+        }
     }
 
     /** One look at the chain for one open request. The only path to ✓ Paid. */
     private suspend fun checkOwed(e: Watch.Entry) {
-        val lamports = e.lamports() ?: 1L
-        when (val found = withContext(Dispatchers.IO) { Chain.findPayment(e.reference, e.recipient, lamports) }) {
+        val units = e.units() ?: 1L
+        when (val found = withContext(Dispatchers.IO) { Chain.findPayment(e.reference, e.recipient, units, e.mint) }) {
             is Chain.Found.Yes -> {
                 offlineStreak = 0
                 settle(e, found.signature)
@@ -570,7 +577,7 @@ class MainActivity : ComponentActivity() {
         refreshLists()
         paidSignature = signature
         if (status is Status.Problem) status = Status.Idle
-        push("✓ PAID ${e.amount} SOL — $signature")
+        push("✓ PAID ${e.amount} ${e.symbol} — $signature")
         Haptics.success(this)
     }
 
@@ -589,7 +596,10 @@ class MainActivity : ComponentActivity() {
                 contacts.record(req.recipient, req.label, req.genesis != null, paid = req.amount.toDoubleOrNull() ?: 0.0)
                 contactCount = contacts.count()
                 // Nudge the server to look now rather than on its next sweep.
-                lifecycleScope.launch { ServerClient.register(req.reference, req.recipient, req.amount, req.label) }
+                lifecycleScope.launch {
+            ServerClient.register(req.reference, req.recipient, req.amount, req.label,
+                token = req.token, decimals = req.decimals, symbol = req.symbol)
+        }
             }
             is PayResult.AlreadyPaid -> {
                 inbox.markPaid(req.reference, result.signature); refreshLists()
@@ -972,8 +982,8 @@ private fun RequestsTab(
 ) {
     val openToPay = toPay.filter { !it.paid }
     val openOwed = owed.filter { !it.paid }
-    val history = (toPay.filter { it.paid }.map { Triple(it.paidAt ?: 0L, "Paid ${it.request.amount} SOL to ${it.request.label}", it.signature!!) } +
-        owed.filter { it.paid }.map { Triple(it.paidAt ?: 0L, "Received ${it.amount} SOL", it.signature!!) })
+    val history = (toPay.filter { it.paid }.map { Triple(it.paidAt ?: 0L, "Paid ${it.request.amount} ${it.request.symbol} to ${it.request.label}", it.signature!!) } +
+        owed.filter { it.paid }.map { Triple(it.paidAt ?: 0L, "Received ${it.amount} ${it.symbol}", it.signature!!) })
         .sortedByDescending { it.first }
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
@@ -995,7 +1005,7 @@ private fun RequestsTab(
                 Row(RowStyle, verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("${item.request.amount} SOL", color = if (gone) Dim else Fg,
+                            Text("${item.request.amount} ${item.request.symbol}", color = if (gone) Dim else Fg,
                                 fontSize = 16.sp, fontWeight = FontWeight.Bold)
                             if (gone) {
                                 Spacer(Modifier.width(8.dp))
@@ -1037,7 +1047,7 @@ private fun RequestsTab(
                 Row(RowStyle, verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("${e.amount} SOL", color = if (no) Dim else Fg, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                            Text("${e.amount} ${e.symbol}", color = if (no) Dim else Fg, fontSize = 16.sp, fontWeight = FontWeight.Bold)
                             if (no) {
                                 Spacer(Modifier.width(8.dp))
                                 Text("DECLINED BY ${e.rejectedBy!!.uppercase()}", color = Warn, fontSize = 8.sp,

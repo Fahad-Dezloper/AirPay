@@ -37,7 +37,21 @@ data class PayRequest(
     val reference: String,
     /** Genesis Token mint if the requester is on a verified Seeker, else null. */
     val genesis: String? = null,
+    /**
+     * The token's decimals — 9 for SOL. Carried so both phones agree on what "0.5" means, but
+     * never trusted for a payment: the payer reads the mint from the chain before paying, and
+     * `transferChecked` makes the chain itself refuse a transfer built on the wrong decimals.
+     */
+    val decimals: Int = 9,
+    /** What to call the token on screen, e.g. "USDC". Display only. */
+    val symbol: String = if (token == "SOL") "SOL" else token.take(4),
 ) {
+    val isSol get() = token == "SOL"
+    /** The SPL mint, or null for SOL. */
+    val mint: String? get() = if (isSol) null else token
+
+    /** The amount in the token's smallest unit — lamports for SOL. See [lamports]. */
+    fun units(): Long? = baseUnits(amount, decimals)
     /**
      * The amount in lamports, exactly — or null when it is blank or unreadable.
      *
@@ -46,15 +60,7 @@ data class PayRequest(
      * payer would send a lamport less than asked and a verifier doing the arithmetic properly
      * would call it underpaid. The server uses Python's Decimal, so both agree to the lamport.
      */
-    fun lamports(): Long? = try {
-        java.math.BigDecimal(amount.trim())
-            .movePointRight(9)
-            .setScale(0, java.math.RoundingMode.UNNECESSARY)
-            .longValueExact()
-            .takeIf { it > 0 }
-    } catch (e: Exception) {
-        null
-    }
+    fun lamports(): Long? = baseUnits(amount, 9)
 
     fun toBytes(): ByteArray = JSONObject().apply {
         put("v", WIRE_VERSION)
@@ -64,6 +70,10 @@ data class PayRequest(
         put("l", label)
         put("f", reference)
         genesis?.let { put("g", it) }
+        if (!isSol) {
+            put("d", decimals)
+            put("s", symbol)
+        }
     }.toString().toByteArray(Charsets.UTF_8)
 
     /**
@@ -87,11 +97,14 @@ data class PayRequest(
         !isBase58Address(recipient) -> "The request has an invalid destination address."
         !isBase58Address(reference) -> "The request has an invalid reference."
         genesis != null && !isBase58Address(genesis) -> "The request has an invalid Genesis token."
+        !isSol && !isBase58Address(token) -> "The request names an invalid token."
+        decimals !in 0..MAX_DECIMALS -> "The request has impossible token decimals."
+        symbol.isBlank() || symbol.length > 12 -> "The request has an unreadable token name."
         amount.isNotBlank() && amount.toDoubleOrNull() == null -> "The request has an unreadable amount."
         (amount.toDoubleOrNull() ?: 0.0) < 0 -> "The request asks for a negative amount."
         (amount.toDoubleOrNull() ?: 0.0) > MAX_AMOUNT -> "That amount looks wrong — refusing it."
         // Readable and in range but not expressible in lamports, e.g. "0.0000000001" or "0".
-        amount.isNotBlank() && lamports() == null -> "That amount can't be paid in SOL."
+        amount.isNotBlank() && units() == null -> "That amount can't be paid in $symbol."
         label.length > 64 -> "The request has an oversized label."
         else -> null
     }
@@ -105,6 +118,27 @@ data class PayRequest(
 
         /** A sanity ceiling. A tap should never carry a life-changing sum by accident. */
         const val MAX_AMOUNT = 1_000.0
+
+        /** Solana mints allow up to 255 decimals in principle; nothing real uses more than 9. */
+        const val MAX_DECIMALS = 12
+
+        /**
+         * An amount in a token's smallest unit, exactly — or null when it is blank, unreadable,
+         * zero, or finer than the token can express.
+         *
+         * Never through a Double. `0.00013 * 1e9` is 129999.99999999999, which truncates to one
+         * lamport short — and 1,710 of the 99,999 five-decimal amounts below 1 SOL do the same.
+         * The server uses Python's Decimal, so both agree to the unit.
+         */
+        fun baseUnits(amount: String, decimals: Int): Long? = try {
+            java.math.BigDecimal(amount.trim())
+                .movePointRight(decimals)
+                .setScale(0, java.math.RoundingMode.UNNECESSARY)
+                .longValueExact()
+                .takeIf { it > 0 }
+        } catch (e: Exception) {
+            null
+        }
 
         private val B58 = Regex("^[1-9A-HJ-NP-Za-km-z]{32,44}$")
 
@@ -122,6 +156,8 @@ data class PayRequest(
                 label = o.optString("l"),
                 reference = o.getString("f"),
                 genesis = if (o.has("g")) o.getString("g") else null,
+                decimals = o.optInt("d", 9),
+                symbol = o.optString("s").ifBlank { if (o.optString("t", "SOL") == "SOL") "SOL" else o.optString("t").take(4) },
             )
         } catch (e: Exception) {
             null

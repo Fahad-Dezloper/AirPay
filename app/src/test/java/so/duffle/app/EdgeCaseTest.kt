@@ -158,17 +158,13 @@ class EdgeCaseTest {
     // ------------------------------------------------- the wrong-asset class of bug
 
     /**
-     * The confirm sheet renders req.token, but buildTransfer only ever emits a SystemProgram
-     * transfer. A USDC request would have shown "5 USDC" and sent 5 SOL. On mainnet that is a
-     * wrong-asset payment with no undo, so a non-SOL request must be refused outright.
+     * A token is named by its mint, never its symbol. Anyone can mint a token called "USDC";
+     * a request that said "USDC" and let the payer's wallet decide which one would be a
+     * wrong-asset payment waiting to happen.
      */
-    @Test fun `a request in another token is not silently paid in SOL`() {
-        val usdc = PayRequest(good, "5", "USDC", "Shop", ref)
-        assertTrue("only SOL is supported, so this must not look payable",
-            !usdc.token.equals("SOL", ignoreCase = true))
-        // The wire layer accepts it — refusal is the payer's decision, not a parse failure,
-        // so the user is told why rather than seeing a corrupt-request error.
-        assertNull(usdc.validate())
+    @Test fun `a request naming a token by symbol instead of mint is refused`() {
+        val bySymbol = PayRequest(good, "5", "USDC", "Shop", ref, decimals = 6, symbol = "USDC")
+        assertNotNull(bySymbol.validate())
     }
 
     @Test fun `a SOL request is still payable`() {

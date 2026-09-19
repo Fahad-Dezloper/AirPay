@@ -18,17 +18,25 @@ def is_address(s: object) -> bool:
     return isinstance(s, str) and bool(_B58.match(s))
 
 
+SOL = "SOL"
+MAX_DECIMALS = 12
+
+
 def lamports(amount: str) -> int | None:
-    """Exact SOL -> lamports, or None when it cannot be paid. Never through a float:
-    0.00013 * 1e9 truncates to 129999, and 1,710 of the 99,999 five-decimal amounts under
-    1 SOL do the same."""
+    return units(amount, 9)
+
+
+def units(amount: str, decimals: int) -> int | None:
+    """Exact amount -> the token's smallest unit (lamports for SOL), or None when it cannot be
+    paid. Never through a float: 0.00013 * 1e9 truncates to 129999, and 1,710 of the 99,999
+    five-decimal amounts under 1 SOL do the same."""
     try:
         d = Decimal(str(amount).strip())
     except InvalidOperation:
         return None
-    if not d.is_finite():
+    if not d.is_finite() or not isinstance(decimals, int) or not 0 <= decimals <= MAX_DECIMALS:
         return None
-    v = d.scaleb(9)
+    v = d.scaleb(decimals)
     if v != v.to_integral_value():
         return None
     n = int(v)
@@ -56,7 +64,18 @@ def account_keys(result: dict) -> list[str]:
     return out
 
 
-def verify_transfer(result: dict | None, reference: str, recipient: str, want: int) -> Verdict:
+def token_held(balances: list | None, owner: str, mint: str) -> int:
+    """All of `mint` that `owner` holds across the accounts a transaction touched. A token
+    account this transaction created has no 'pre' entry, which correctly counts as 0."""
+    total = 0
+    for b in balances or []:
+        if isinstance(b, dict) and b.get("owner") == owner and b.get("mint") == mint:
+            total += int(b["uiTokenAmount"]["amount"])
+    return total
+
+
+def verify_transfer(result: dict | None, reference: str, recipient: str, want: int,
+                    mint: str | None = None) -> Verdict:
     """`result` is the `result` field of a getTransaction response (None if not yet served).
 
     The reference only FINDS candidates. What matters is the recipient's balance going up by
@@ -71,6 +90,13 @@ def verify_transfer(result: dict | None, reference: str, recipient: str, want: i
             return Verdict("rejected", "that transaction failed on-chain")
         if reference not in keys:
             return Verdict("rejected", "that transaction is not for this request")
+        if mint is not None:
+            # Tokens land in the recipient's token account, not their wallet, so their own key
+            # need not appear. What counts is the token balance they own, of this mint only —
+            # the right amount of a different token pays nothing.
+            got = token_held(meta.get("postTokenBalances"), recipient, mint) - \
+                token_held(meta.get("preTokenBalances"), recipient, mint)
+            return PAID if got >= want else Verdict("rejected", f"paid {got} of {want} token units")
         if recipient not in keys:
             return Verdict("rejected", "that transaction did not pay this address")
         i = keys.index(recipient)

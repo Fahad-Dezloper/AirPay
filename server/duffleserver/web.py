@@ -95,7 +95,9 @@ def make_handler(service, helius_auth: str | None, limiter: RateLimit | None = N
                 if path == "/v1/requests":
                     out = service.register(body.get("reference"), body.get("recipient"),
                                            body.get("amount"), body.get("label", ""),
-                                           payer=body.get("payer") or None, genesis=body.get("genesis") or None)
+                                           payer=body.get("payer") or None, genesis=body.get("genesis") or None,
+                                           token=body.get("token") or "SOL", decimals=body.get("decimals", 9),
+                                           symbol=body.get("symbol") or "SOL")
                     return self._json(200, {"status": out["status"], "signature": out.get("signature")})
                 if path == "/v1/rpc":
                     # The phones share one public Solana endpoint that rate-limits after a
@@ -167,10 +169,12 @@ def make_handler(service, helius_auth: str | None, limiter: RateLimit | None = N
                 # requests addressed to this phone while it had no stream open.
                 since = time.time() - 600
                 for r in service.store.recent_paid(recipient, since):
-                    self._send({"type": "paid", "reference": r["reference"], "signature": r["signature"], "amount": r["amount"]})
+                    self._send({"type": "paid", "reference": r["reference"], "signature": r["signature"],
+                                "amount": r["amount"], "symbol": r["symbol"]})
                 for r in service.store.open_for_payer(recipient, since):
                     self._send({"type": "request", "reference": r["reference"], "recipient": r["recipient"],
-                                "amount": r["amount"], "label": r["label"], "genesis": r["genesis"] or ""})
+                                "amount": r["amount"], "label": r["label"], "genesis": r["genesis"] or "",
+                                "token": r["token"], "decimals": r["decimals"], "symbol": r["symbol"]})
                 self.wfile.flush()
                 while True:
                     try:

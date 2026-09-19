@@ -28,7 +28,8 @@ object Chain {
 
     sealed interface Built {
         data class Ok(val tx: ByteArray) : Built
-        data class NotEnough(val have: Double, val need: Double) : Built
+        /** Amounts already formatted, in [symbol]: "0.004", "0.01", "SOL". */
+        data class NotEnough(val have: String, val need: String, val symbol: String) : Built
         data class Offline(val detail: String) : Built
         data class Bad(val why: String) : Built
     }
@@ -63,7 +64,7 @@ object Chain {
             when (val b = balance(payer)) {
                 is Balance.Ok -> {
                     val need = (lamports + FEE_HEADROOM_LAMPORTS) / LAMPORTS_PER_SOL
-                    if (b.sol < need) return Built.NotEnough(b.sol, lamports / LAMPORTS_PER_SOL)
+                    if (b.sol < need) return Built.NotEnough(fmt(b.sol), fmt(lamports / LAMPORTS_PER_SOL), "SOL")
                 }
                 is Balance.Offline -> return Built.Offline(b.detail)
             }
@@ -107,6 +108,170 @@ object Chain {
         if (serialized[0].toInt() != 0) return serialized
         return byteArrayOf(1) + ByteArray(64) + serialized.copyOfRange(1, serialized.size)
     }
+
+    const val TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+    const val TOKEN_2022_PROGRAM = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+    private const val ATA_PROGRAM = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+    private const val SYSTEM_PROGRAM = "11111111111111111111111111111111"
+
+    /**
+     * Rent for the recipient's token account when this payment has to create it, plus fee
+     * headroom. A plain token account is 2,039,280 lamports; Token-2022 accounts carry
+     * extensions and cost a little more, so this rounds up rather than land on the boundary.
+     */
+    private const val NEW_TOKEN_ACCOUNT_LAMPORTS = 2_500_000L
+
+    /** The associated token account: where a wallet holds a given mint, derived, never stored. */
+    fun tokenAccount(owner: String, mint: String, program: String): String =
+        PublicKey.findProgramAddress(
+            listOf(PublicKey(owner), PublicKey(program), PublicKey(mint)), PublicKey(ATA_PROGRAM),
+        ).publicKey.toBase58()
+
+    /** What the chain says a mint is. Null when unreachable or not a mint at all. */
+    data class Mint(val program: String, val decimals: Int)
+
+    fun mintInfo(mint: String): Mint? {
+        if (!PayRequest.isBase58Address(mint)) return null
+        val res = post("""{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["$mint",{"encoding":"jsonParsed"}]}""")
+            ?: return null
+        if (rpcError(res) != null) return null
+        return try {
+            val value = org.json.JSONObject(res).getJSONObject("result").optJSONObject("value") ?: return null
+            val program = value.getString("owner")
+            val parsed = value.getJSONObject("data").getJSONObject("parsed")
+            if (program !in setOf(TOKEN_PROGRAM, TOKEN_2022_PROGRAM) || parsed.optString("type") != "mint") null
+            else Mint(program, parsed.getJSONObject("info").getInt("decimals"))
+        } catch (e: Exception) { null }
+    }
+
+    /** Raw units held in one token account; 0 when it doesn't exist; null when unreachable. */
+    fun tokenBalance(account: String): Long? {
+        val res = post("""{"jsonrpc":"2.0","id":1,"method":"getTokenAccountBalance","params":["$account"]}""")
+            ?: return null
+        // An account that was never created is a balance of zero, not a failure.
+        rpcError(res)?.let { return if ("could not find account" in it.lowercase() || "invalid param" in it.lowercase()) 0L else null }
+        return Regex("\"amount\"\\s*:\\s*\"(\\d+)\"").find(res)?.groupValues?.get(1)?.toLongOrNull()
+    }
+
+    /** Whether an account exists yet. Null when unreachable. */
+    fun exists(account: String): Boolean? {
+        val res = post("""{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["$account",{"encoding":"base64","dataSlice":{"offset":0,"length":0}}]}""")
+            ?: return null
+        if (rpcError(res) != null) return null
+        return try { !org.json.JSONObject(res).getJSONObject("result").isNull("value") } catch (e: Exception) { null }
+    }
+
+    /**
+     * Builds an unsigned SPL token payment: create the recipient's token account if it doesn't
+     * exist yet (idempotent, so a race with someone else creating it is harmless), then
+     * `transferChecked` — which carries the mint and its decimals, so the chain refuses the
+     * transfer outright if either is wrong. The `reference` rides on the transfer exactly as it
+     * does for SOL.
+     *
+     * Works for both token programs: classic SPL Token and Token-2022. Which one a mint uses is
+     * read from the chain, never assumed.
+     */
+    fun buildTokenTransfer(
+        payer: String,
+        recipient: String,
+        mint: String,
+        units: Long,
+        decimals: Int,
+        reference: String,
+        symbol: String,
+        /** Test seams: skip every network read. */
+        blockhashOverride: String? = null,
+        programOverride: String? = null,
+        recipientAccountExists: Boolean? = null,
+    ): Built {
+        if (!PayRequest.isBase58Address(payer)) return Built.Bad("Your wallet address looks wrong.")
+        if (!PayRequest.isBase58Address(recipient)) return Built.Bad("That destination address is not valid.")
+        if (!PayRequest.isBase58Address(mint)) return Built.Bad("That token address is not valid.")
+        if (!PayRequest.isBase58Address(reference)) return Built.Bad("That payment reference is not valid.")
+        if (units <= 0) return Built.Bad("Enter an amount greater than zero.")
+
+        val live = blockhashOverride == null
+        val program = programOverride ?: run {
+            val info = mintInfo(mint) ?: return Built.Offline("could not read $symbol from Solana")
+            // The request's idea of the decimals must match the chain's, or "0.5" means something
+            // different to each phone. transferChecked would refuse it anyway; saying so here is
+            // kinder than a wallet error.
+            if (info.decimals != decimals) return Built.Bad("That request's $symbol details don't match the token on Solana.")
+            info.program
+        }
+
+        return try {
+            val from = PublicKey(payer)
+            val to = PublicKey(recipient)
+            val mintKey = PublicKey(mint)
+            val programKey = PublicKey(program)
+            val source = PublicKey(tokenAccount(payer, mint, program))
+            val destination = PublicKey(tokenAccount(recipient, mint, program))
+
+            val needsAccount = recipientAccountExists?.not() ?: if (live) {
+                exists(destination.toBase58())?.not() ?: return Built.Offline("could not reach Solana")
+            } else false
+
+            if (live) {
+                val held = tokenBalance(source.toBase58()) ?: return Built.Offline("could not reach Solana")
+                if (held < units) return Built.NotEnough(fmtUnits(held, decimals), fmtUnits(units, decimals), symbol)
+                // Tokens move, but the fee — and the recipient's new account, if they have never
+                // held this token — is paid in SOL.
+                val solNeeded = FEE_HEADROOM_LAMPORTS + if (needsAccount) NEW_TOKEN_ACCOUNT_LAMPORTS else 0L
+                when (val b = balance(payer)) {
+                    is Balance.Ok -> if (b.sol * LAMPORTS_PER_SOL < solNeeded) return Built.NotEnough(
+                        fmt(b.sol), fmt(solNeeded / LAMPORTS_PER_SOL), "SOL for fees",
+                    )
+                    is Balance.Offline -> return Built.Offline(b.detail)
+                }
+            }
+
+            val blockhash = blockhashOverride ?: latestBlockhash() ?: return Built.Offline("could not reach Solana")
+
+            val createAccount = BaseInstruction(
+                data = byteArrayOf(1), // CreateIdempotent
+                keys = listOf(
+                    AccountMeta(from, signer = true, writable = true),
+                    AccountMeta(destination, signer = false, writable = true),
+                    AccountMeta(to, signer = false, writable = false),
+                    AccountMeta(mintKey, signer = false, writable = false),
+                    AccountMeta(PublicKey(SYSTEM_PROGRAM), signer = false, writable = false),
+                    AccountMeta(programKey, signer = false, writable = false),
+                ),
+                programId = PublicKey(ATA_PROGRAM),
+            )
+            val transfer = BaseInstruction(
+                data = transferCheckedData(units, decimals),
+                keys = listOf(
+                    AccountMeta(source, signer = false, writable = true),
+                    AccountMeta(mintKey, signer = false, writable = false),
+                    AccountMeta(destination, signer = false, writable = true),
+                    AccountMeta(from, signer = true, writable = false),
+                    AccountMeta(PublicKey(reference), signer = false, writable = false),
+                ),
+                programId = programKey,
+            )
+            val instructions = if (needsAccount) listOf(createAccount, transfer) else listOf(transfer)
+            Built.Ok(reserveSignatureSlot(Transaction(blockhash, instructions, feePayer = from).serialize()))
+        } catch (e: Exception) {
+            Built.Bad(e.message ?: "could not build the transaction")
+        }
+    }
+
+    /** TransferChecked: instruction 12, then the amount (u64, little-endian), then decimals (u8). */
+    fun transferCheckedData(units: Long, decimals: Int): ByteArray {
+        val out = ByteArray(10)
+        out[0] = 12
+        for (i in 0 until 8) out[1 + i] = (units ushr (8 * i)).toByte()
+        out[9] = decimals.toByte()
+        return out
+    }
+
+    private fun fmt(sol: Double) = "%.4f".format(sol)
+
+    /** Raw units back to a readable amount, trimmed: 1500000 at 6 decimals is "1.5". */
+    fun fmtUnits(units: Long, decimals: Int): String =
+        java.math.BigDecimal.valueOf(units, decimals).stripTrailingZeros().toPlainString()
 
     sealed interface Balance {
         data class Ok(val sol: Double) : Balance
@@ -173,7 +338,7 @@ object Chain {
      * what they sign — Seeker Wallet was seen adding two ComputeBudget instructions to a
      * transaction we built, so "is this our exact transaction" would have been the wrong test.
      */
-    fun findPayment(reference: String, recipient: String, lamports: Long): Found {
+    fun findPayment(reference: String, recipient: String, lamports: Long, mint: String? = null): Found {
         if (!PayRequest.isBase58Address(reference)) return Found.Broken("that reference is not valid")
         if (!PayRequest.isBase58Address(recipient)) return Found.Broken("that address is not valid")
         val res = post(signaturesBody(reference)) ?: return Found.Offline
@@ -187,7 +352,7 @@ object Chain {
         for (sig in candidates) {
             val tx = post(transactionBody(sig)) ?: return Found.Offline
             rpcError(tx)?.let { return Found.Broken(it) }
-            when (val v = verifyTransfer(tx, reference, recipient, lamports)) {
+            when (val v = verifyTransfer(tx, reference, recipient, lamports, mint)) {
                 Verdict.Paid -> return Found.Yes(sig)
                 is Verdict.Rejected -> short = Found.Short(sig, v.why)
                 // Listed by signature but not yet served by getTransaction — look again later.
@@ -207,7 +372,7 @@ object Chain {
      * The pure half of [findPayment], so it can be tested against a real devnet transaction
      * without a network. `txJson` is a raw `getTransaction` response.
      */
-    fun verifyTransfer(txJson: String, reference: String, recipient: String, lamports: Long): Verdict = try {
+    fun verifyTransfer(txJson: String, reference: String, recipient: String, lamports: Long, mint: String? = null): Verdict = try {
         val result = org.json.JSONObject(txJson).optJSONObject("result")
         if (result == null) {
             Verdict.Pending
@@ -218,6 +383,14 @@ object Chain {
             when {
                 !meta.isNull("err") -> Verdict.Rejected("that transaction failed on-chain")
                 reference !in keys -> Verdict.Rejected("that transaction is not for this request")
+                // A token payment lands in the recipient's token account, not their wallet, so
+                // their own key need not appear at all. What counts is the token balance they own.
+                mint != null -> {
+                    val got = tokenHeld(meta.optJSONArray("postTokenBalances"), recipient, mint) -
+                        tokenHeld(meta.optJSONArray("preTokenBalances"), recipient, mint)
+                    if (got >= lamports) Verdict.Paid
+                    else Verdict.Rejected("paid $got of $lamports token units")
+                }
                 at < 0 -> Verdict.Rejected("that transaction did not pay this address")
                 else -> {
                     val got = meta.getJSONArray("postBalances").getLong(at) -
@@ -229,6 +402,22 @@ object Chain {
         }
     } catch (e: Exception) {
         Verdict.Rejected("could not read that transaction")
+    }
+
+    /**
+     * Everything [owner] holds of [mint] across the accounts a transaction touched. A token
+     * account created by this very transaction has no "pre" entry, which correctly reads as 0.
+     */
+    private fun tokenHeld(balances: org.json.JSONArray?, owner: String, mint: String): Long {
+        if (balances == null) return 0
+        var sum = 0L
+        for (i in 0 until balances.length()) {
+            val b = balances.optJSONObject(i) ?: continue
+            if (b.optString("owner") == owner && b.optString("mint") == mint) {
+                sum += b.getJSONObject("uiTokenAmount").getString("amount").toLong()
+            }
+        }
+        return sum
     }
 
     /**
@@ -319,6 +508,7 @@ object Chain {
         reference: String? = null,
         recipient: String? = null,
         lamports: Long = 0,
+        mint: String? = null,
         timeoutMs: Long = 60_000,
     ): Confirmation {
         val until = System.currentTimeMillis() + timeoutMs
@@ -349,7 +539,7 @@ object Chain {
             // reference, in full. Independent of whether the status cache has heard of us.
             if (reference != null && recipient != null && lamports > 0) {
                 val found = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                    findPayment(reference, recipient, lamports)
+                    findPayment(reference, recipient, lamports, mint)
                 }
                 if (found is Found.Yes) return Confirmation.Confirmed
             }
@@ -362,7 +552,7 @@ object Chain {
 
     /** Turns a raw TransactionError into something a person can act on. */
     fun describeError(raw: String): String = when {
-        "InsufficientFunds" in raw || "Custom\":1" in raw -> "not enough SOL for the transfer and fee"
+        "InsufficientFunds" in raw || "Custom\":1" in raw -> "there wasn't enough to cover the transfer and fee"
         "BlockhashNotFound" in raw -> "it took too long and expired"
         "AccountNotFound" in raw -> "the paying account doesn't exist on this network"
         else -> "the network rejected it"
@@ -374,6 +564,9 @@ object Chain {
 
     fun explorerUrl(signature: String) =
         "https://explorer.solana.com/tx/$signature?cluster=devnet"
+
+    /** A raw JSON-RPC call through the same endpoints as everything else here. */
+    fun rpc(json: String): String? = post(json)
 
     /** Set when the node refused us for asking too often, so callers can say so honestly. */
     @Volatile var rateLimited = false
@@ -389,12 +582,19 @@ object Chain {
      * not, and should not ship one. The fallback keeps the app working with no server at all.
      */
     private fun post(json: String): String? {
-        val endpoints = if (ServerClient.enabled) listOf(ServerClient.rpcUrl, PUBLIC_RPC) else listOf(PUBLIC_RPC)
+        // A server that just failed is skipped for a while. Otherwise every read waits out a
+        // failed connection first — the token list took seven seconds with the server down.
+        val serverUp = ServerClient.enabled && System.currentTimeMillis() > serverDownUntil
+        val endpoints = if (serverUp) listOf(ServerClient.rpcUrl, PUBLIC_RPC) else listOf(PUBLIC_RPC)
         for (url in endpoints) {
             postTo(url, json)?.let { return it }
+            if (url != PUBLIC_RPC) serverDownUntil = System.currentTimeMillis() + SERVER_RETRY_MS
         }
         return null
     }
+
+    @Volatile private var serverDownUntil = 0L
+    private const val SERVER_RETRY_MS = 30_000L
 
     private fun postTo(url: String, json: String): String? = try {
         val c = (URL(url).openConnection() as HttpURLConnection).apply {

@@ -18,6 +18,12 @@ from .store import Store
 log = logging.getLogger("duffle.service")
 
 
+def mint_of(req: dict) -> str | None:
+    """The SPL mint a stored request asks for, or None for SOL."""
+    token = req.get("token") or verify.SOL
+    return None if token == verify.SOL else token
+
+
 def next_check_after(age: float) -> float:
     """How long until an open request is looked at again. Young requests have a payer in
     their wallet right now; old ones may be paid tomorrow. Nothing ever expires."""
@@ -47,7 +53,8 @@ class Service:
     # -- inputs -----------------------------------------------------------------------------
 
     def register(self, reference: str, recipient: str, amount: str, label: str = "",
-                 payer: str | None = None, genesis: str | None = None) -> dict:
+                 payer: str | None = None, genesis: str | None = None,
+                 token: str = "SOL", decimals: int = 9, symbol: str = "SOL") -> dict:
         if not verify.is_address(reference):
             raise ValueError("invalid reference")
         if not verify.is_address(recipient):
@@ -56,18 +63,40 @@ class Service:
             raise ValueError("invalid payer")
         if genesis is not None and not verify.is_address(genesis):
             raise ValueError("invalid genesis")
-        want = verify.lamports(amount)
+        token = token or verify.SOL
+        if token != verify.SOL and not verify.is_address(token):
+            raise ValueError("invalid token")
+        if isinstance(decimals, bool) or not isinstance(decimals, int):
+            raise ValueError("invalid decimals")
+        if token == verify.SOL:
+            decimals, symbol = 9, "SOL"
+        else:
+            # The phone's word on decimals decides what "0.5" means, so check it against the
+            # mint when the chain can be reached. An unreachable chain isn't a reason to refuse:
+            # the payer's transferChecked is refused on-chain if the decimals are wrong anyway.
+            try:
+                real = self.rpc.mint_decimals(token)
+            except (chain.Offline, chain.RpcError):
+                real = decimals
+            if real is None:
+                raise ValueError("that token is not a mint")
+            if real != decimals:
+                raise ValueError("those decimals don't match the mint")
+        symbol = str(symbol or "")[:12] or token[:4]
+        want = verify.units(amount, decimals)
         if want is None:
             raise ValueError("invalid amount")
         label = str(label or "")[:64]
-        result = self.store.register(reference, recipient, str(amount).strip(), want, label, payer, genesis)
+        result = self.store.register(reference, recipient, str(amount).strip(), want, label, payer, genesis,
+                                     token, decimals, symbol)
         if result.get("created"):
             if self.helius:
                 self.helius.touch()
             # A request addressed to someone: the phones have parted, so the server carries it.
             if payer:
                 self._deliver(payer, {"type": "request", "reference": reference, "recipient": recipient,
-                                      "amount": str(amount).strip(), "label": label, "genesis": genesis or ""})
+                                      "amount": str(amount).strip(), "label": label, "genesis": genesis or "",
+                                      "token": token, "decimals": decimals, "symbol": symbol})
         return result
 
     def withdraw(self, reference: str) -> int:
@@ -146,7 +175,7 @@ class Service:
             return []
         settled = []
         for req in self.store.open_among(verify.account_keys(tx)):
-            v = verify.verify_transfer(tx, req["reference"], req["recipient"], req["lamports"])
+            v = verify.verify_transfer(tx, req["reference"], req["recipient"], req["lamports"], mint_of(req))
             if v.kind == "paid" and self._settle(req, signature):
                 settled.append(req["reference"])
             elif v.kind == "rejected":
@@ -158,7 +187,7 @@ class Service:
         if not req or req["status"] != "open":
             return req["status"] if req else "unknown"
         try:
-            kind, sig, why = chain.find_payment(self.rpc, reference, req["recipient"], req["lamports"])
+            kind, sig, why = chain.find_payment(self.rpc, reference, req["recipient"], req["lamports"], mint_of(req))
         except (chain.Offline, chain.RpcError) as e:
             # Unknown is not unpaid: look again soon, say nothing to anyone.
             self.store.schedule(reference, time.time() + 5)
@@ -198,7 +227,8 @@ class Service:
     def _settle(self, req: dict, signature: str) -> bool:
         if not self.store.mark_paid(req["reference"], signature):
             return False
-        event = {"type": "paid", "reference": req["reference"], "signature": signature, "amount": req["amount"]}
+        event = {"type": "paid", "reference": req["reference"], "signature": signature, "amount": req["amount"],
+                 "symbol": req.get("symbol") or "SOL"}
         log.info("PAID %s… by %s…", req["reference"][:8], signature[:8])
         self._deliver(req["recipient"], event)
         return True

@@ -49,6 +49,8 @@ object ServerClient {
     suspend fun register(
         reference: String, recipient: String, amount: String, label: String,
         payer: String? = null, genesis: String? = null,
+        /** "SOL" or the SPL mint, as in [PayRequest]. */
+        token: String = "SOL", decimals: Int = 9, symbol: String = "SOL",
     ): Boolean = post("/v1/requests", JSONObject().apply {
         put("reference", reference)
         put("recipient", recipient)
@@ -56,6 +58,9 @@ object ServerClient {
         put("label", label)
         payer?.let { put("payer", it) }
         genesis?.let { put("genesis", it) }
+        put("token", token)
+        put("decimals", decimals)
+        put("symbol", symbol)
     })
 
     /**
@@ -137,11 +142,14 @@ object ServerClient {
         "paid" -> parsePaid(json)
         "request" -> try {
             val o = JSONObject(json)
+            val token = o.optString("token", "SOL").ifBlank { "SOL" }
             PayRequest(
-                recipient = o.getString("recipient"), amount = o.getString("amount"), token = "SOL",
+                recipient = o.getString("recipient"), amount = o.getString("amount"), token = token,
                 label = o.optString("label"), reference = o.getString("reference"),
                 genesis = o.optString("genesis").takeIf { it.isNotBlank() },
-            ).takeIf { it.validate() == null && it.lamports() != null }?.let { Requested(it) }
+                decimals = o.optInt("decimals", 9),
+                symbol = o.optString("symbol").ifBlank { if (token == "SOL") "SOL" else token.take(4) },
+            ).takeIf { it.validate() == null && it.units() != null }?.let { Requested(it) }
         } catch (e: Exception) { null }
         "withdrawn" -> try {
             JSONObject(json).getString("reference").takeIf { PayRequest.isBase58Address(it) }?.let { Withdrawn(it) }

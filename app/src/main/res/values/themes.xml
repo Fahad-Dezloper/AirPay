@@ -16,6 +16,7 @@
         <item name="android:backgroundDimEnabled">false</item>
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
-        <item name="android:windowAnimationStyle">@android:style/Animation.InputMethod</item>
+        <!-- No window animation: the sheet animates itself, on a spring. -->
+        <item name="android:windowAnimationStyle">@null</item>
     </style>
 </resources>
