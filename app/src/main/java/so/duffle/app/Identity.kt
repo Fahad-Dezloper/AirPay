@@ -19,7 +19,7 @@ object Identity {
         val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         // The cached mint only counts for the wallet it was looked up for.
         val genesis = p.getString("genesis", null)?.takeIf { p.getString("genesis_for", null) == address }
-        return TapCard(address, label(context), genesis).takeIf { it.validate() == null }
+        return TapCard(address, label(context), genesis, Brand.mine()).takeIf { it.validate() == null }
     }
 
     fun rememberGenesis(context: Context, address: String, mint: String?) {

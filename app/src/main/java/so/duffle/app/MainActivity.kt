@@ -646,6 +646,7 @@ class MainActivity : ComponentActivity() {
             label = Identity.label(this),
             reference = PayRequest.newReference(),
             genesis = myGenesis,
+            brand = Brand.mine(),
         )
     }
 

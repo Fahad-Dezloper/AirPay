@@ -84,6 +84,7 @@ object ServerClient {
         put("address", from.address)
         put("label", from.label)
         from.genesis?.let { put("genesis", it) }
+        from.brand?.let { put("brand", it) }
     })
 
     /** Where to send a push when a payment to `recipient` lands. */
@@ -161,7 +162,8 @@ object ServerClient {
         } catch (e: Exception) { null }
         "tap" -> try {
             val o = JSONObject(json)
-            TapCard(o.getString("address"), o.optString("label"), o.optString("genesis").takeIf { it.isNotBlank() })
+            TapCard(o.getString("address"), o.optString("label"), o.optString("genesis").takeIf { it.isNotBlank() },
+                o.optString("brand").takeIf { Brand.isKnown(it) })
                 .takeIf { it.validate() == null }?.let { Tapped(it) }
         } catch (e: Exception) { null }
         else -> null

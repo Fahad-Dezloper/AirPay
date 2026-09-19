@@ -298,7 +298,7 @@ class DeliveryTest(unittest.TestCase):
         svc = Service(Store(), FakeRpc())
         q = svc.hub.subscribe(TO)
         self.assertEqual(1, svc.relay_tap(TO, PAYER, "CPH2401"))
-        self.assertEqual({"type": "tap", "address": PAYER, "label": "CPH2401", "genesis": ""}, q.get(timeout=1))
+        self.assertEqual({"type": "tap", "address": PAYER, "label": "CPH2401", "genesis": "", "brand": ""}, q.get(timeout=1))
         with self.assertRaises(ValueError):
             svc.relay_tap(TO, TO, "self")
 
@@ -572,6 +572,20 @@ class RealUsdcPaymentTest(unittest.TestCase):
         self.assertEqual("rejected", verify.verify_transfer(self.TX, self.REF, TO, 1_000_000).kind)
         self.assertEqual("rejected", verify.verify_transfer(
             self.TX, self.REF, TO, 1_000_000, "HzwqbKZw8HxMN6bF2yFZNrht3c2iXXzpKcFu7uBEDKtr").kind)
+
+
+class BrandRelayTest(unittest.TestCase):
+    def test_a_relayed_tap_carries_the_phone_maker(self):
+        svc = Service(Store(), FakeRpc())
+        q = svc.hub.subscribe(TO)
+        svc.relay_tap(TO, PAYER, "Seeker", brand="seeker")
+        self.assertEqual("seeker", q.get(timeout=1)["brand"])
+
+    def test_anything_but_a_short_key_is_dropped(self):
+        svc = Service(Store(), FakeRpc())
+        q = svc.hub.subscribe(TO)
+        svc.relay_tap(TO, PAYER, "x", brand="<b>OnePlus</b>")
+        self.assertEqual("", q.get(timeout=1)["brand"])
 
 
 if __name__ == "__main__":

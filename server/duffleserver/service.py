@@ -5,6 +5,7 @@ are paid, and ring the payee. Everything network-facing is injected so tests run
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 from collections import OrderedDict
@@ -123,14 +124,18 @@ class Service:
         return self._deliver(row["recipient"], {"type": "rejected", "reference": reference,
                                                 "label": str(label or "")[:64]})
 
-    def relay_tap(self, to: str, address: str, label: str = "", genesis: str | None = None) -> int:
+    def relay_tap(self, to: str, address: str, label: str = "", genesis: str | None = None,
+                  brand: str | None = None) -> int:
         """An introduction the radio could not deliver because the phones parted before HELLO."""
         if not verify.is_address(to) or not verify.is_address(address) or to == address:
             raise ValueError("invalid address")
         if genesis is not None and not verify.is_address(genesis):
             raise ValueError("invalid genesis")
+        # The phone maker, for the logo on the other screen. A short lowercase key or nothing —
+        # never free text, since it ends up on someone else's screen.
+        brand = brand if isinstance(brand, str) and re.fullmatch(r"[a-z]{2,12}", brand) else ""
         return self._deliver(to, {"type": "tap", "address": address, "label": str(label or "")[:64],
-                                  "genesis": genesis or ""})
+                                  "genesis": genesis or "", "brand": brand})
 
     def _deliver(self, to: str, event: dict) -> int:
         """Live stream first, push for a closed app. Returns how many listeners heard it."""

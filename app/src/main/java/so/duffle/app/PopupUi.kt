@@ -284,8 +284,8 @@ private fun PeerHeader(peer: TapPayload, me: String, history: Contact?, title: S
 
     Row(verticalAlignment = Alignment.CenterVertically) {
         Box(Modifier.size(width = 70.dp, height = 46.dp)) {
-            Avatar(me, D.Blue, Modifier.align(Alignment.CenterStart).graphicsLayer { translationX = -gap * meet.value; alpha = 1f - meet.value * .6f })
-            Avatar(peer.label.take(1).uppercase().ifBlank { "?" }, D.Black,
+            Avatar(me, D.Blue, Brand.mine(), Modifier.align(Alignment.CenterStart).graphicsLayer { translationX = -gap * meet.value; alpha = 1f - meet.value * .6f })
+            Avatar(peer.label.take(1).uppercase().ifBlank { "?" }, D.Black, Brand.of(peer),
                 Modifier.align(Alignment.CenterEnd).graphicsLayer { translationX = gap * meet.value; alpha = 1f - meet.value * .6f })
         }
         Spacer(Modifier.width(14.dp))
@@ -311,11 +311,21 @@ private fun PeerHeader(peer: TapPayload, me: String, history: Contact?, title: S
 }
 
 @Composable
-private fun Avatar(letter: String, colour: Color, modifier: Modifier) {
+private fun Avatar(letter: String, colour: Color, brand: String?, modifier: Modifier) {
+    // The maker's mark when we know the phone; the initial when we don't.
+    val look = Brand.look(brand)
     Box(
-        modifier.size(46.dp).background(D.White, CircleShape).padding(3.dp).background(colour, CircleShape),
+        modifier.size(46.dp).background(D.White, CircleShape).padding(3.dp).clip(CircleShape)
+            .background(look?.colour ?: colour),
         contentAlignment = Alignment.Center,
-    ) { Text(letter, color = D.White, fontSize = 17.sp, fontWeight = FontWeight.Bold, fontFamily = Display) }
+    ) {
+        when {
+            look == null -> Text(letter, color = D.White, fontSize = 17.sp, fontWeight = FontWeight.Bold, fontFamily = Display)
+            look.picture -> Image(painterResource(look.drawable), contentDescription = null,
+                modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+            else -> HIcon(look.drawable, D.White, 20.dp)
+        }
+    }
 }
 
 // -------------------------------------------------------------------------------------- form

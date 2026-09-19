@@ -204,7 +204,8 @@ class TapMessagingService : FirebaseMessagingService() {
             }
             // An introduction relayed because the phones parted before HELLO could cross.
             "tap" -> {
-                val card = TapCard(d["address"].orEmpty(), d["label"].orEmpty(), d["genesis"]?.takeIf { it.isNotBlank() })
+                val card = TapCard(d["address"].orEmpty(), d["label"].orEmpty(), d["genesis"]?.takeIf { it.isNotBlank() },
+                    d["brand"]?.takeIf { Brand.isKnown(it) })
                 if (card.validate() != null) return
                 Contacts(this).record(card.address, card.label, card.genesis != null)
                 Push.showTapped(this, card)

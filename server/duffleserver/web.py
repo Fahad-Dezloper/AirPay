@@ -126,7 +126,7 @@ def make_handler(service, helius_auth: str | None, limiter: RateLimit | None = N
                         return self._json(404, {"error": "unknown reference"})
                 if path == "/v1/taps":
                     heard = service.relay_tap(body.get("to"), body.get("address"), body.get("label", ""),
-                                              genesis=body.get("genesis") or None)
+                                              genesis=body.get("genesis") or None, brand=body.get("brand") or None)
                     return self._json(200, {"live": heard})
                 if path == "/v1/devices":
                     service.add_device(body.get("recipient"), body.get("push_token"))

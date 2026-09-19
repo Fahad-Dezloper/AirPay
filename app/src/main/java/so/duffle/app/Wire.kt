@@ -45,6 +45,8 @@ data class PayRequest(
     val decimals: Int = 9,
     /** What to call the token on screen, e.g. "USDC". Display only. */
     val symbol: String = if (token == "SOL") "SOL" else token.take(4),
+    /** The asking phone's maker, as a [Brand] key. Display only. */
+    val brand: String? = null,
 ) {
     val isSol get() = token == "SOL"
     /** The SPL mint, or null for SOL. */
@@ -74,6 +76,7 @@ data class PayRequest(
             put("d", decimals)
             put("s", symbol)
         }
+        brand?.let { put("b", it) }
     }.toString().toByteArray(Charsets.UTF_8)
 
     /**
@@ -158,6 +161,8 @@ data class PayRequest(
                 genesis = if (o.has("g")) o.getString("g") else null,
                 decimals = o.optInt("d", 9),
                 symbol = o.optString("s").ifBlank { if (o.optString("t", "SOL") == "SOL") "SOL" else o.optString("t").take(4) },
+                // An unknown brand is dropped, not refused: it only decides a picture.
+                brand = o.optString("b").takeIf { Brand.isKnown(it) },
             )
         } catch (e: Exception) {
             null
@@ -187,6 +192,8 @@ data class TapCard(
     val address: String,
     val label: String,
     val genesis: String? = null,
+    /** This phone's maker, as a [Brand] key, so the other side can show its mark. */
+    val brand: String? = null,
 ) {
     fun toBytes(): ByteArray = JSONObject().apply {
         put("v", PayRequest.WIRE_VERSION)
@@ -194,6 +201,7 @@ data class TapCard(
         put("r", address)
         put("l", label)
         genesis?.let { put("g", it) }
+        brand?.let { put("b", it) }
     }.toString().toByteArray(Charsets.UTF_8)
 
     /** Untrusted like everything else that arrives by radio. */
@@ -214,6 +222,7 @@ data class TapCard(
                 address = o.getString("r"),
                 label = o.optString("l"),
                 genesis = if (o.has("g")) o.getString("g") else null,
+                brand = o.optString("b").takeIf { Brand.isKnown(it) },
             ).takeIf { it.validate() == null }
         } catch (e: Exception) {
             null
@@ -237,6 +246,10 @@ sealed interface TapPayload {
     val genesis: String? get() = when (this) {
         is Request -> request.genesis
         is Card -> card.genesis
+    }
+    val brand: String? get() = when (this) {
+        is Request -> request.brand
+        is Card -> card.brand
     }
 
     fun toBytes(): ByteArray = when (this) {
