@@ -29,9 +29,16 @@ class BrandTest {
         assertNull(card.brand)
     }
 
-    @Test fun `an older phone that sends no brand still shows as a Seeker if it has Genesis`() {
-        val card = TapCard("2qxPntVgWyxU2jQz2MLcUuCp71D9D1ZSTcbFvCcXWrUc", "Seeker", genesis = "4WZ9hkr9h743Kufw7zHYj9YAiYHMKW8fbHBUnGohD18D")
-        assertEquals(Brand.SEEKER, Brand.of(TapPayload.Card(card)))
-        assertNull(Brand.of(TapPayload.Card(card.copy(genesis = null))))
+    /** The Seeker mark is earned on-chain, never by saying so — over the radio or in the brand field. */
+    @Test fun `the Seeker mark needs the chain's confirmation`() {
+        val claims = TapPayload.Card(TapCard("2qxPntVgWyxU2jQz2MLcUuCp71D9D1ZSTcbFvCcXWrUc", "Seeker",
+            genesis = "4WZ9hkr9h743Kufw7zHYj9YAiYHMKW8fbHBUnGohD18D", brand = Brand.SEEKER))
+        assertNull(Brand.of(claims, verified = false))
+        assertEquals(Brand.SEEKER, Brand.of(claims, verified = true))
+        // A verified Seeker on an older build that sends no brand still gets the mark.
+        assertEquals(Brand.SEEKER, Brand.of(TapPayload.Card(claims.card.copy(brand = null)), verified = true))
+        // Other brands are just labels, shown either way.
+        val onePlus = TapPayload.Card(claims.card.copy(genesis = null, brand = "oneplus"))
+        assertEquals("oneplus", Brand.of(onePlus, verified = false))
     }
 }

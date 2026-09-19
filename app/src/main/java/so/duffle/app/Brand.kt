@@ -40,6 +40,26 @@ object Brand {
 
     fun look(key: String?): Look? = key?.let { LOOKS[it] }
 
+    /** What to call the phone in a sentence. */
+    fun name(key: String?): String? = when (key) {
+        SEEKER -> "Solana Seeker"
+        "oneplus" -> "OnePlus"
+        "apple" -> "iPhone"
+        "samsung" -> "Samsung"
+        "google" -> "Google Pixel"
+        "xiaomi" -> "Xiaomi"
+        "motorola" -> "Motorola"
+        "oppo" -> "OPPO"
+        "vivo" -> "vivo"
+        "huawei" -> "Huawei"
+        "honor" -> "Honor"
+        "sony" -> "Sony"
+        "nokia" -> "Nokia"
+        "asus" -> "ASUS"
+        "lg" -> "LG"
+        else -> null
+    }
+
     /** Known keys only — the wire accepts nothing else. */
     fun isKnown(key: String?) = key != null && key in LOOKS
 
@@ -72,6 +92,11 @@ object Brand {
         }
     }
 
-    /** A payload that didn't say: a Genesis token still proves a Seeker. */
-    fun of(payload: TapPayload): String? = payload.brand ?: if (payload.genesis != null) SEEKER else null
+    /**
+     * Their phone's mark — but the Seeker's only once the chain has confirmed a Genesis token in
+     * their wallet ([verified]). A phone can say it is anything; the Seeker mark, like the badge,
+     * is reserved for what was checked.
+     */
+    fun of(payload: TapPayload, verified: Boolean): String? =
+        payload.brand?.takeIf { it != SEEKER || verified } ?: if (verified) SEEKER else null
 }

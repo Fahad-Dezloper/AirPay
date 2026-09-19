@@ -73,6 +73,8 @@ class TapPopupActivity : ComponentActivity() {
     private var shownAt = 0L
     /** What the connected wallet holds — the token list. Null until the first read lands. */
     private var holdings by mutableStateOf<List<Tokens.Holding>?>(null)
+    /** How this sheet came to be open — in person, or relayed afterwards. Shown on the device page. */
+    private var cameFrom by mutableStateOf<String?>(null)
     /** Debug preview only: the amount to show in the "working" state. */
     private var previewAmount by mutableStateOf<String?>(null)
 
@@ -104,6 +106,7 @@ class TapPopupActivity : ComponentActivity() {
                     onExplorer = { sig -> runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(Chain.explorerUrl(sig)))) } },
                     previewAmount = previewAmount,
                     holdings = holdings,
+                    cameFrom = cameFrom,
                 )
                 // Balances are read every time the sheet opens: they change with every payment.
                 LaunchedEffect(address) {
@@ -140,7 +143,7 @@ class TapPopupActivity : ComponentActivity() {
                 // screen can be designed without two phones and a tap every time. `adb am start`
                 // can pass strings but not the byte array a real tap delivers. Parsed and
                 // validated exactly like radio input.
-                ?: intent.getStringExtra(EXTRA_PAYLOAD_JSON)?.takeIf { BuildConfig.DEBUG }
+                ?: intent.getStringExtra(EXTRA_PAYLOAD_JSON)?.takeIf { BuildConfig.PREVIEWS }
                     ?.let { TapPayload.parse(it.toByteArray()) }
         } ?: return false
 
@@ -152,10 +155,11 @@ class TapPopupActivity : ComponentActivity() {
         peer = payload
         phase = Phase.Ready
         shownAt = System.currentTimeMillis()
+        cameFrom = if (intent.action == NfcAdapter.ACTION_NDEF_DISCOVERED) "nfc" else intent.getStringExtra(EXTRA_FROM)
 
         // Debug builds only: jump straight to a state, so every screen can be looked at on a real
         // phone without paying anyone. No side effects — nothing is recorded or registered.
-        intent.getStringExtra(EXTRA_PREVIEW)?.takeIf { BuildConfig.DEBUG }?.let { state ->
+        intent.getStringExtra(EXTRA_PREVIEW)?.takeIf { BuildConfig.PREVIEWS }?.let { state ->
             val amount = (payload as? TapPayload.Request)?.request?.amount ?: "0.5"
             phase = when (state) {
                 "working" -> Phase.Working("Approve in your wallet…")

@@ -35,6 +35,29 @@ object Genesis {
      * Deliberately fails closed: any network trouble returns null, so the badge is absent
      * rather than wrongly claimed. Never say "Verified Seeker" on a guess.
      */
+    /** What the chain says about a wallet, keeping "couldn't ask" apart from "no". */
+    sealed interface Check {
+        data class Held(val mint: String) : Check
+        data object None : Check
+        data object Unreachable : Check
+    }
+
+    /**
+     * Does this wallet hold a Genesis Token? Unlike [mintFor], a network failure is reported as
+     * [Check.Unreachable] rather than folded into "no", so a screen can say "couldn't check".
+     */
+    fun check(owner: String): Check {
+        val accounts = tokenAccounts(owner) ?: return Check.Unreachable
+        for (mint in accounts) {
+            when (genesisMint(mint)) {
+                true -> return Check.Held(mint)
+                null -> return Check.Unreachable
+                false -> Unit
+            }
+        }
+        return Check.None
+    }
+
     fun mintFor(owner: String): String? {
         val accounts = tokenAccounts(owner) ?: return null
         for (mint in accounts) {
@@ -67,6 +90,19 @@ object Genesis {
             }
         } catch (e: Exception) {
             null
+        }
+    }
+
+    /** True, false, or null when the chain couldn't be asked. */
+    private fun genesisMint(mint: String): Boolean? {
+        val res = rpc("""{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["$mint",{"encoding":"jsonParsed"}]}""")
+            ?: return null
+        return try {
+            val info = JSONObject(res).getJSONObject("result").getJSONObject("value")
+                .getJSONObject("data").getJSONObject("parsed").getJSONObject("info")
+            info.optString("mintAuthority") == MINT_AUTHORITY || info.optString("freezeAuthority") == MINT_AUTHORITY
+        } catch (e: Exception) {
+            false
         }
     }
 

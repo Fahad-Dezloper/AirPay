@@ -57,10 +57,34 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontVariation
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
+import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.foundation.IndicationNodeFactory
+import androidx.compose.foundation.interaction.InteractionSource
+import androidx.compose.foundation.interaction.PressInteraction
+import androidx.compose.ui.graphics.drawscope.ContentDrawScope
+import androidx.compose.ui.node.DelegatableNode
+import androidx.compose.ui.node.DrawModifierNode
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.animation.AnimatedVisibilityScope
+import androidx.compose.animation.BoundsTransform
+import androidx.compose.animation.ExperimentalSharedTransitionApi
+import androidx.compose.animation.SharedTransitionLayout
+import androidx.compose.animation.SharedTransitionScope
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.runtime.compositionLocalOf
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.runtime.produceState
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.ui.draw.drawWithContent
@@ -115,6 +139,7 @@ internal val Ui = FontFamily(figtree(400), figtree(500), figtree(600), figtree(7
 /** Every amount uses tabular figures, so digits don't shift sideways as they change. */
 private val Figures = TextStyle(fontFamily = Ui, fontFeatureSettings = "tnum")
 
+@OptIn(ExperimentalSharedTransitionApi::class)
 @Composable
 internal fun PopupScreen(
     peer: TapPayload,
@@ -131,11 +156,26 @@ internal fun PopupScreen(
     onExplorer: (String) -> Unit,
     previewAmount: String? = null,
     holdings: List<Tokens.Holding>? = null,
+    /** How the sheet was opened: "nfc", "hce", "app" (in person) or "server", "notification". */
+    cameFrom: String? = null,
 ) {
     // Hoisted so the amount survives the switch from typing to paying: the same number stays on
     // screen while the button below it reports progress.
     var amount by rememberSaveable { mutableStateOf(previewAmount ?: "") }
     var token by rememberSaveable { mutableStateOf("SOL") }
+    // Pay opens a review of the payment; only "Confirm and pay" starts it. Hoisted so "Try again"
+    // after a failure comes back to the review, not the keypad.
+    var confirming by rememberSaveable { mutableStateOf(false) }
+    // The page about the other phone, opened by tapping the header.
+    var aboutThem by rememberSaveable { mutableStateOf(false) }
+    // A Genesis token is a claim until the chain says otherwise. Checked for every phone, on
+    // mainnet (where Genesis lives), and the "Verified Seeker" badge waits for the answer.
+    val genesis by produceState<Genesis.Check?>(initialValue = null, peer.address) {
+        value = withContext(Dispatchers.IO) { Genesis.check(peer.address) }
+    }
+    // Fetched now, not when the device page opens: arriving mid-animation it changed "Checking…"
+    // to a date while the sheet was still resizing, forcing a relayout during the move.
+    val wallet by produceState<WalletAge?>(initialValue = null, peer.address) { value = walletAge(peer.address) }
 
     // The sheet is positioned by one number: how far below its resting place it is, in pixels.
     // Rising, dragging, springing back and leaving all move that same number, so any of them can
@@ -185,16 +225,25 @@ internal fun PopupScreen(
             offset.snapTo(if (next < 0f) (offset.value + delta * .25f).coerceAtLeast(-40f) else next)
         }
     }
-    val dismissFraction = if (sheetHeight > 0f) (offset.value / sheetHeight).coerceIn(0f, 1f) else 0f
+    // Everything that moves every frame — the sheet's height while it resizes, how far it has been
+    // dragged, the dim fading — is read while drawing, never while composing. Read here, in the
+    // body, the height changing on every frame of a resize recomposed the entire sheet every frame
+    // (113 recompositions in three trips to the device page), and that was the stutter.
+    fun dismissFraction() = if (sheetHeight > 0f) (offset.value / sheetHeight).coerceIn(0f, 1f) else 0f
 
     // The tap's ripple: a ring spreading from where the phones touched, then fading.
     val ripple = remember { Animatable(0f) }
     LaunchedEffect(Unit) { ripple.animateTo(1f, tween(900)) }
 
     CompositionLocalProvider(LocalTextStyle provides TextStyle(fontFamily = Ui)) {
+    // Hosted here, at the top of the sheet, rather than around the form: nested inside the sheet's
+    // size animations it could be asked to place a shared element before it had been placed
+    // itself, and crashed ("Uninitialized LayoutCoordinates").
+    SharedTransitionLayout(Modifier.fillMaxSize()) {
+    CompositionLocalProvider(LocalTransition provides this, LocalVerified provides (genesis is Genesis.Check.Held)) {
     Box(
         Modifier.fillMaxSize()
-            .background(Color.Black.copy(alpha = .28f * scrim.value * (1f - dismissFraction)))
+            .drawBehind { drawRect(Color.Black.copy(alpha = .28f * scrim.value * (1f - dismissFraction()))) }
             .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = close),
         contentAlignment = Alignment.BottomCenter,
     ) {
@@ -224,16 +273,22 @@ internal fun PopupScreen(
                 // Swallow taps so touching the sheet never dismisses it.
                 .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {}
                 .navigationBarsPadding()
-                .padding(start = 22.dp, end = 22.dp, top = 10.dp, bottom = 12.dp)
-                .animateContentSize(spring(dampingRatio = 0.9f, stiffness = 247f)),
+                // No animateContentSize here. Every change of screen already animates its own height
+                // (SizeTransform); a second size animation on the sheet chased the first one frame by
+                // frame, re-laying out the whole sheet each time — 40-50ms frames going to the device
+                // page on a OnePlus, against a 16ms budget.
+                .padding(start = 22.dp, end = 22.dp, top = 10.dp, bottom = 12.dp),
         ) {
             Box(Modifier.align(Alignment.CenterHorizontally).size(36.dp, 4.dp).background(D.Line, CircleShape))
             Spacer(Modifier.height(16.dp))
             val paying = peer is TapPayload.Card && connected && (phase == Phase.Ready || phase is Phase.Working)
-            PeerHeader(peer, me, history, title = if (paying) "Pay ${peer.label.ifBlank { "them" }}" else peer.label.ifBlank { "Unknown phone" })
+            PeerHeader(peer, me, history, title = if (paying && !aboutThem) "Pay ${peer.label.ifBlank { "them" }}" else peer.label.ifBlank { "Unknown phone" },
+                verified = genesis is Genesis.Check.Held,
+                onOpen = if (phase is Phase.Working) null else ({ aboutThem = !aboutThem }), open = aboutThem)
             Spacer(Modifier.height(14.dp))
 
             // Typing and paying are one screen: the button morphs instead of the sheet swapping.
+            BackHandler(enabled = aboutThem) { aboutThem = false }
             val key = when (phase) {
                 Phase.Ready, is Phase.Working -> "form"
                 is Phase.Waiting -> "waiting"
@@ -244,14 +299,24 @@ internal fun PopupScreen(
             AnimatedContent(
                 targetState = key,
                 transitionSpec = {
-                    fadeIn(tween(180, delayMillis = 60)) togetherWith fadeOut(tween(120)) using SizeTransform(clip = false)
+                    fadeIn(tween(200, delayMillis = 60)) togetherWith fadeOut(tween(110)) using
+                        SizeTransform(clip = false) { _, _ -> spring(dampingRatio = 0.9f, stiffness = 380f) }
                 },
                 label = "phase",
             ) { k ->
                 Column(Modifier.fillMaxWidth()) {
                     when (k) {
-                        "form" -> Form(peer, phase, connected, amount, { amount = it }, token, { token = it }, holdings, onConnect, onPay, onRequest,
-                            { leave(onDecline) }, close)
+                        // The keypad and the device page both stay built; switching only fades one
+                        // out and the other in. Rebuilding the keypad form on the way back — amount,
+                        // chip, twelve keys, shared-element setup — cost 85-150ms frames.
+                        "form" -> KeepBoth(
+                            showSecond = aboutThem && phase !is Phase.Working,
+                            first = {
+                                Form(peer, phase, connected, amount, { amount = it }, token, { token = it }, holdings, onConnect, onPay, onRequest,
+                                    { leave(onDecline) }, close, confirming, { confirming = it }, covered = aboutThem)
+                            },
+                            second = { AboutThem(peer, history, genesis, wallet, cameFrom, onBack = { aboutThem = false }) },
+                        )
                         "waiting" -> (phase as? Phase.Waiting)?.let { WaitingBody(peer.label, it.amount, it.symbol, close) }
                         "success" -> (phase as? Phase.Success)?.let {
                             ResultBody(Result.Success, it.title, it.detail, it.signature, onExplorer) {
@@ -270,39 +335,47 @@ internal fun PopupScreen(
         }
     }
     }
+    }
+    }
 }
 
 // ------------------------------------------------------------------------------------ header
 
 @Composable
-private fun PeerHeader(peer: TapPayload, me: String, history: Contact?, title: String) {
-    val seeker = peer.genesis != null
+private fun PeerHeader(
+    peer: TapPayload, me: String, history: Contact?, title: String,
+    verified: Boolean, onOpen: (() -> Unit)?, open: Boolean,
+) {
+    // Only what the chain confirmed. A claimed Genesis token used to earn the badge by itself.
+    val seeker = verified
     // The two avatars slide in from opposite sides and meet — the phones touching, again.
     val meet = remember { Animatable(1f) }
     LaunchedEffect(Unit) { meet.animateTo(0f, Arrive) }
     val gap = with(LocalDensity.current) { 28.dp.toPx() }
 
-    Row(verticalAlignment = Alignment.CenterVertically) {
+    Row(
+        Modifier.clip(RoundedCornerShape(16.dp))
+            .then(if (onOpen != null) Modifier.clickable(onClick = onOpen) else Modifier),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
         Box(Modifier.size(width = 70.dp, height = 46.dp)) {
             Avatar(me, D.Blue, Brand.mine(), Modifier.align(Alignment.CenterStart).graphicsLayer { translationX = -gap * meet.value; alpha = 1f - meet.value * .6f })
-            Avatar(peer.label.take(1).uppercase().ifBlank { "?" }, D.Black, Brand.of(peer),
+            // The Seeker mark, like the badge, only once the chain has confirmed it.
+            Avatar(peer.label.take(1).uppercase().ifBlank { "?" }, D.Black, Brand.of(peer, verified),
                 Modifier.align(Alignment.CenterEnd).graphicsLayer { translationX = gap * meet.value; alpha = 1f - meet.value * .6f })
         }
         Spacer(Modifier.width(14.dp))
         Column(Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(title, color = D.Black, fontSize = 20.sp, fontWeight = FontWeight.Bold, fontFamily = Ui, maxLines = 1,
+                // One line, shortened with "…" if it must be. The "VERIFIED SEEKER" pill that used to
+                // sit here didn't fit beside a name on a narrower phone and cut "Pay Seeker" to
+                // "Pay"; a verified mark after the name says the same, and the device page says why.
+                Text(title, color = D.Black, fontSize = 20.sp, fontWeight = FontWeight.Bold, fontFamily = Ui,
+                    maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f, fill = false))
                 if (seeker) {
-                    Spacer(Modifier.width(8.dp))
-                    Row(
-                        Modifier.background(D.Blue.copy(alpha = .12f), RoundedCornerShape(50)).padding(horizontal = 8.dp, vertical = 3.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        HIcon(R.drawable.hi_tick, D.Black, 12.dp)
-                        Spacer(Modifier.width(4.dp))
-                        Text("VERIFIED SEEKER", color = D.Black, fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = .8.sp)
-                    }
+                    Spacer(Modifier.width(5.dp))
+                    HIcon(R.drawable.hi_verified, D.Blue, 20.dp)
                 }
             }
             Text("${peer.address.take(6)}…${peer.address.takeLast(6)}", color = D.Quiet, fontSize = 14.sp, maxLines = 1)
@@ -330,6 +403,7 @@ private fun Avatar(letter: String, colour: Color, brand: String?, modifier: Modi
 
 // -------------------------------------------------------------------------------------- form
 
+@OptIn(ExperimentalSharedTransitionApi::class)
 @Composable
 private fun Form(
     peer: TapPayload,
@@ -345,16 +419,134 @@ private fun Form(
     onRequest: (String, Tokens.Holding?) -> Unit,
     onDecline: () -> Unit,
     onLater: () -> Unit,
+    confirming: Boolean,
+    onConfirming: (Boolean) -> Unit,
+    /** The device page is showing over this form; its back button belongs to that page. */
+    covered: Boolean = false,
 ) {
     val working = (phase as? Phase.Working)?.text
     if (!connected) return ConnectBody(working, onConnect)
 
+    // Back from the review returns to the amount, not out of the sheet — unless money is moving.
+    BackHandler(enabled = confirming && working == null && !covered) { onConfirming(false) }
+
+    // The keypad and the review share their pieces, like Framer Motion's layoutId: the token's logo
+    // flies out of the chip to sit above the number, the amount glides into place, "SOL" grows, and
+    // the two buttons stay exactly where they are while their words change. Only the middle —
+    // keypad or details — fades from one to the other.
+    val transition = LocalTransition.current
+    AnimatedContent(
+        targetState = confirming,
+        transitionSpec = {
+            fadeIn(tween(220, delayMillis = 70)) togetherWith fadeOut(tween(120)) using
+                SizeTransform(clip = false) { _, _ -> spring(dampingRatio = 0.9f, stiffness = 380f) }
+        },
+        label = "review",
+    ) { reviewing ->
+        CompositionLocalProvider(LocalShared provides transition?.let { SharedScopes(it, this@AnimatedContent) }) {
+        Column(Modifier.fillMaxWidth()) {
+            if (reviewing) {
+                val req = (peer as? TapPayload.Request)?.request
+                val payAmount = req?.amount ?: amount
+                val held = holdings?.firstOrNull { it.token == (req?.token ?: token) }
+                val shown = held ?: req?.let { Tokens.Holding(it.mint, it.symbol, it.symbol, it.decimals, 0, null) }
+                    ?: holdings?.firstOrNull() ?: SolPlaceholder
+                ConfirmBody(peer, payAmount, shown, known = holdings != null && held != null, working = working,
+                    onConfirm = { onPay(payAmount, if (req == null) shown else null) }, onBack = { onConfirming(false) })
+            } else {
+                Entry(peer, working, amount, onAmount, token, onToken, holdings, { onConfirming(true) }, onRequest, onDecline, onLater)
+            }
+        }
+        }
+    }
+}
+
+/**
+ * Two screens, both kept composed, one shown. The container takes the shown one's height (animated
+ * once, here) and the other is faded out and made untouchable — so switching builds nothing.
+ */
+@Composable
+private fun KeepBoth(showSecond: Boolean, first: @Composable () -> Unit, second: @Composable () -> Unit) {
+    val firstAlpha by animateFloatAsState(if (showSecond) 0f else 1f, tween(if (showSecond) 110 else 200, delayMillis = if (showSecond) 0 else 60), label = "first")
+    val secondAlpha by animateFloatAsState(if (showSecond) 1f else 0f, tween(if (showSecond) 200 else 110, delayMillis = if (showSecond) 60 else 0), label = "second")
+    Layout(
+        contents = listOf(
+            { Box(Modifier.graphicsLayer { alpha = firstAlpha }.inert(showSecond)) { first() } },
+            { Box(Modifier.graphicsLayer { alpha = secondAlpha }.inert(!showSecond)) { second() } },
+        ),
+        modifier = Modifier.fillMaxWidth().animateContentSize(spring(dampingRatio = 0.9f, stiffness = 380f)),
+    ) { (a, b), constraints ->
+        val loose = constraints.copy(minHeight = 0, maxHeight = Constraints.Infinity)
+        val pa = a.first().measure(loose)
+        val pb = b.first().measure(loose)
+        val shown = if (showSecond) pb else pa
+        layout(constraints.maxWidth, shown.height) {
+            pa.placeRelative(0, 0)
+            pb.placeRelative(0, 0)
+        }
+    }
+}
+
+/** Hidden content: no touches reach it, and screen readers skip it. */
+private fun Modifier.inert(hidden: Boolean): Modifier = if (!hidden) this else this
+    .clearAndSetSemantics { }
+    .pointerInput(Unit) {
+        awaitPointerEventScope {
+            while (true) awaitPointerEvent(PointerEventPass.Initial).changes.forEach { it.consume() }
+        }
+    }
+
+/** The two scopes a shared element needs, handed down so any piece of the form can take part. */
+@OptIn(ExperimentalSharedTransitionApi::class)
+private class SharedScopes(val transition: SharedTransitionScope, val visibility: AnimatedVisibilityScope)
+
+private val LocalShared = compositionLocalOf<SharedScopes?> { null }
+
+/** Whether the chain has confirmed the other phone is a Seeker, for anything deep in the sheet. */
+private val LocalVerified = compositionLocalOf { false }
+
+@OptIn(ExperimentalSharedTransitionApi::class)
+private val LocalTransition = compositionLocalOf<SharedTransitionScope?> { null }
+
+/** Joins this element to its twin on the other screen under [key]. Outside the review flow, nothing. */
+@OptIn(ExperimentalSharedTransitionApi::class)
+@Composable
+private fun Modifier.shared(key: String, bounds: Boolean = false): Modifier {
+    val s = LocalShared.current ?: return this
+    val motion = BoundsTransform { _, _ -> spring(dampingRatio = 0.86f, stiffness = 380f) }
+    return with(s.transition) {
+        val state = rememberSharedContentState(key)
+        // Bounds for things whose content changes (a button's words, SOL growing): the old and new
+        // crossfade inside a shape that moves. Element for things that are the same on both sides.
+        if (bounds) this@shared.sharedBounds(
+            state, s.visibility, boundsTransform = motion,
+            resizeMode = SharedTransitionScope.ResizeMode.ScaleToBounds(ContentScale.Fit, Alignment.CenterStart),
+        )
+        else this@shared.sharedElement(state, s.visibility, boundsTransform = motion)
+    }
+}
+
+@Composable
+private fun Entry(
+    peer: TapPayload,
+    working: String?,
+    amount: String,
+    onAmount: (String) -> Unit,
+    token: String,
+    onToken: (String) -> Unit,
+    holdings: List<Tokens.Holding>?,
+    onReview: () -> Unit,
+    onRequest: (String, Tokens.Holding?) -> Unit,
+    onDecline: () -> Unit,
+    onLater: () -> Unit,
+) {
     if (peer is TapPayload.Request) {
         val asked = peer.request.amount
         Text("Asks you for", color = D.Quiet, fontSize = 13.sp, modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center)
         AmountDisplay(asked, null, peer.request.symbol, centred = true)
         Spacer(Modifier.height(24.dp))
-        PrimaryButton(working ?: "Pay $asked ${peer.request.symbol}", { onPay(asked, null) }, loading = working != null)
+        PrimaryButton(working ?: "Pay $asked ${peer.request.symbol}", onReview,
+            Modifier.fillMaxWidth().shared("primary", bounds = true), loading = working != null)
         // Two different answers: "Later" keeps it in Requests and tells them nothing; "Decline"
         // is a no, and their phone is told so they stop waiting.
         AnimatedVisibility(visible = working == null) {
@@ -401,11 +593,257 @@ private fun Form(
     Spacer(Modifier.height(16.dp))
     PrimaryButton(
         working ?: if (valid) "Pay $amount ${chosen.symbol}" else "Pay",
-        { onPay(amount, chosen) }, enabled = valid && enough, loading = working != null,
+        onReview, Modifier.fillMaxWidth().shared("primary", bounds = true), enabled = valid && enough, loading = working != null,
     )
     AnimatedVisibility(visible = working == null) {
-        TextLink("Request instead", { onRequest(amount, chosen) }, enabled = valid)
+        TextLink("Request instead", { onRequest(amount, chosen) }, enabled = valid, modifier = Modifier.shared("secondary", bounds = true))
     }
+}
+
+/**
+ * The last look before money moves: what, to whom, on which network, what it costs, and what is
+ * left. Nothing has been sent when this shows; "Confirm and pay" is the only way forward.
+ */
+@Composable
+private fun ConfirmBody(
+    peer: TapPayload,
+    amount: String,
+    token: Tokens.Holding,
+    /** False when the wallet's balance of this token isn't known (or it holds none). */
+    known: Boolean,
+    working: String?,
+    onConfirm: () -> Unit,
+    onBack: () -> Unit,
+) {
+    val units = PayRequest.baseUnits(amount, token.decimals) ?: 0L
+    val fee = 5_000L // one signature; the wallet may add a small priority fee on top
+    // A first payment in a token also opens the recipient's account for it — checked, not assumed.
+    val needsAccount by produceState<Boolean?>(initialValue = null, token.token, peer.address) {
+        value = if (token.isSol) false else withContext(Dispatchers.IO) {
+            runCatching {
+                val program = Chain.mintInfo(token.mint!!)?.program ?: return@runCatching null
+                Chain.exists(Chain.tokenAccount(peer.address, token.mint, program))?.not()
+            }.getOrNull()
+        }
+    }
+    val setupLamports = if (needsAccount == true) 2_039_280L else 0L
+    val solCost = fee + setupLamports + if (token.isSol) units else 0L
+    val left = if (token.isSol) token.units - solCost else token.units - units
+    val enough = known && left >= 0
+    val brand = Brand.of(peer, LocalVerified.current)
+
+    Column(Modifier.fillMaxWidth()) {
+        Box(Modifier.shared("logo-${token.token}")) { TokenImage(token, 52.dp) }
+        Spacer(Modifier.height(12.dp))
+        Row(verticalAlignment = Alignment.Bottom) {
+            // Styled exactly like the keypad's amount, so the number moves without changing shape.
+            Text(
+                amount, color = D.Black, fontSize = 60.sp, fontWeight = FontWeight.ExtraBold, fontFamily = Display,
+                letterSpacing = (-2).sp, softWrap = false, maxLines = 1,
+                style = TextStyle(
+                    fontFeatureSettings = "tnum", lineHeight = 60.sp,
+                    platformStyle = PlatformTextStyle(includeFontPadding = false),
+                    lineHeightStyle = LineHeightStyle(LineHeightStyle.Alignment.Center, LineHeightStyle.Trim.Both),
+                ),
+                modifier = Modifier.weight(1f, fill = false).shared("amount"),
+            )
+            Spacer(Modifier.width(10.dp))
+            Text(token.symbol, color = D.Black, fontSize = 26.sp, fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(bottom = 6.dp).shared("symbol-${token.token}", bounds = true))
+        }
+        Text("to ${peer.label.ifBlank { "them" }}", color = D.Quiet, fontSize = 15.sp)
+
+        Spacer(Modifier.height(18.dp))
+        DetailRow("Pay with") {
+            TokenImage(token, 20.dp)
+            Spacer(Modifier.width(6.dp))
+            Value(token.symbol)
+        }
+        DetailRow("To") {
+            MiniAvatar(brand, peer.label)
+            Spacer(Modifier.width(6.dp))
+            Value(peer.label.ifBlank { "Unknown phone" })
+        }
+        DetailRow("Address") { Value("${peer.address.take(6)}…${peer.address.takeLast(6)}") }
+        DetailRow("Network") { Value("Solana devnet") }
+        DetailRow("Network fee") { Value("~${Chain.fmtUnits(fee, 9)} SOL") }
+        if (needsAccount == true) {
+            DetailRow("New account") { Value("~${Chain.fmtUnits(setupLamports, 9)} SOL") }
+        }
+        DetailRow("Total") {
+            Value(
+                if (token.isSol) "${Chain.fmtUnits(solCost, 9)} SOL"
+                else "$amount ${token.symbol} + ${Chain.fmtUnits(fee + setupLamports, 9)} SOL",
+                strong = true,
+            )
+        }
+
+        Spacer(Modifier.height(20.dp))
+        PrimaryButton(working ?: if (enough) "Confirm and pay" else if (known) "Not enough ${token.symbol}" else "No ${token.symbol} in your wallet", onConfirm, Modifier.fillMaxWidth().shared("primary", bounds = true),
+            enabled = enough, loading = working != null)
+        AnimatedVisibility(visible = working == null) { TextLink("Back", onBack, modifier = Modifier.shared("secondary", bounds = true)) }
+    }
+}
+
+@Composable
+private fun DetailRow(label: String, value: @Composable RowScope.() -> Unit) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(label, color = D.Quiet, fontSize = 15.sp, modifier = Modifier.weight(1f))
+        Row(verticalAlignment = Alignment.CenterVertically, content = value)
+    }
+}
+
+@Composable
+private fun Value(text: String, strong: Boolean = false) =
+    Text(text, color = D.Black, fontSize = 15.sp, fontWeight = if (strong) FontWeight.Bold else FontWeight.Medium, style = Figures, maxLines = 1)
+
+/** A small version of the header avatar: their phone's mark, or their initial. */
+@Composable
+private fun MiniAvatar(brand: String?, label: String) {
+    val look = Brand.look(brand)
+    Box(Modifier.size(22.dp).clip(CircleShape).background(look?.colour ?: D.Black), contentAlignment = Alignment.Center) {
+        when {
+            look == null -> Text(label.take(1).uppercase().ifBlank { "?" }, color = D.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+            look.picture -> Image(painterResource(look.drawable), null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+            else -> HIcon(look.drawable, D.White, 12.dp)
+        }
+    }
+}
+
+/**
+ * What can honestly be said about the phone you just touched. Everything here is either checked
+ * on-chain, or your own history with them, or labelled as what their phone says about itself —
+ * never a guess dressed up as a verdict.
+ */
+@Composable
+private fun AboutThem(
+    peer: TapPayload, history: Contact?, genesis: Genesis.Check?, wallet: WalletAge?, cameFrom: String?, onBack: () -> Unit,
+) {
+    val verified = genesis is Genesis.Check.Held
+    val brand = Brand.of(peer, verified)
+    val fmt = DayMonth
+
+    Column(Modifier.fillMaxWidth()) {
+        DetailRow("Genesis token") {
+            when (genesis) {
+                null -> Value("Checking…")
+                is Genesis.Check.Held -> {
+                    Value("Verified Seeker")
+                    Spacer(Modifier.width(5.dp))
+                    HIcon(R.drawable.hi_verified, D.Blue, 18.dp)
+                }
+                Genesis.Check.Unreachable -> Value("Couldn't check")
+                // The one warning here: the phone claimed a Genesis token its wallet doesn't hold.
+                Genesis.Check.None -> if (peer.genesis != null) {
+                    Text("Claimed, not held", color = D.Danger, fontSize = 15.sp, fontWeight = FontWeight.Medium)
+                } else Value("Not a Seeker")
+            }
+        }
+        DetailRow("Phone") {
+            MiniAvatar(brand, peer.label)
+            Spacer(Modifier.width(6.dp))
+            Value(Brand.name(brand) ?: "Unknown")
+        }
+        when (cameFrom) {
+            "nfc", "hce", "app" -> DetailRow("Met") { Value("In person, by tap") }
+            "server", "notification" -> DetailRow("Met") { Value("Through Duffle, after a tap") }
+        }
+        DetailRow("With you") {
+            Value(when {
+                history == null || history.taps <= 1 -> "First time"
+                history.totalPaid > 0 -> "${history.taps} taps · paid ${"%.4f".format(history.totalPaid).trimEnd('0').trimEnd('.')} SOL"
+                else -> "${history.taps} taps since ${fmt.format(java.util.Date(history.firstTapMillis))}"
+            })
+        }
+        DetailRow("Wallet") {
+            val w = wallet
+            when {
+                w == null -> Value("Checking…")
+                w.count < 0 -> Value("Couldn't check")
+                w.count == 0 -> Text("Brand new", color = D.Danger, fontSize = 15.sp, fontWeight = FontWeight.Medium)
+                // Only the first thousand transactions are read, so a busier wallet is "before" that date.
+                else -> Value(w.firstMillis?.let { (if (w.count >= 1000) "Before " else "Since ") + fmt.format(java.util.Date(it)) } ?: "In use")
+            }
+        }
+
+        Spacer(Modifier.height(14.dp))
+        Text("WALLET ADDRESS", color = D.Quiet, fontSize = 11.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 1.sp)
+        Spacer(Modifier.height(6.dp))
+        AddressRow(peer.address)
+        Spacer(Modifier.height(4.dp))
+        TextLink("Back", onBack)
+    }
+}
+
+/** One line, however narrow the phone: the address shortened in the middle, with its two actions. */
+@Composable
+private fun AddressRow(address: String) {
+    val clipboard = LocalClipboardManager.current
+    val uri = LocalUriHandler.current
+    val context = LocalContext.current
+    var copied by remember { mutableStateOf(false) }
+    LaunchedEffect(copied) { if (copied) { delay(1_400); copied = false } }
+    Row(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(D.Fill)
+            .padding(start = 14.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            "${address.take(8)}…${address.takeLast(8)}", color = D.Black, fontSize = 16.sp,
+            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace, maxLines = 1, softWrap = false,
+            modifier = Modifier.weight(1f),
+        )
+        RoundIcon(if (copied) R.drawable.hi_tick else R.drawable.hi_copy, if (copied) "Copied" else "Copy address") {
+            Haptics.select(context)
+            clipboard.setText(androidx.compose.ui.text.AnnotatedString(address))
+            copied = true
+        }
+        Spacer(Modifier.width(6.dp))
+        RoundIcon(R.drawable.hi_link_out, "View on explorer") {
+            Haptics.select(context)
+            runCatching { uri.openUri("https://explorer.solana.com/address/$address?cluster=devnet") }
+        }
+    }
+}
+
+/** A large round icon button that presses in and clicks. */
+@Composable
+private fun RoundIcon(@DrawableRes icon: Int, label: String, onClick: () -> Unit) {
+    val interaction = remember { MutableInteractionSource() }
+    Box(
+        Modifier.then(PressScale(interaction)).size(48.dp).clip(CircleShape).background(D.White)
+            .clickable(interaction, indication = null, onClickLabel = label, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        AnimatedContent(
+            targetState = icon,
+            transitionSpec = { (fadeIn(tween(120)) + scaleIn(initialScale = .6f)) togetherWith fadeOut(tween(80)) },
+            label = "icon",
+        ) { HIcon(it, D.Black, 24.dp) }
+    }
+}
+
+/**
+ * "7 Sept". One instance for the app: building a SimpleDateFormat loads locale data, and doing it
+ * each time the device page opened was work on the first frame of the animation.
+ */
+private val DayMonth by lazy { java.text.SimpleDateFormat("d MMM", java.util.Locale.getDefault()) }
+
+/**
+ * How long their wallet has been in use on Solana (with anyone, not just you) — a wallet made
+ * minutes ago with no history is what a throwaway looks like. `count` is -1 when unreachable.
+ */
+private data class WalletAge(val count: Int, val firstMillis: Long?)
+
+private suspend fun walletAge(address: String): WalletAge = withContext(Dispatchers.IO) {
+    val res = Chain.rpc("""{"jsonrpc":"2.0","id":1,"method":"getSignaturesForAddress","params":["$address",{"limit":1000}]}""")
+    if (res == null || Chain.rpcError(res) != null) return@withContext WalletAge(-1, null)
+    runCatching {
+        val arr = org.json.JSONObject(res).getJSONArray("result")
+        // Newest first, so the last entry is the oldest this page reaches.
+        val oldest = if (arr.length() > 0) arr.getJSONObject(arr.length() - 1).optLong("blockTime", 0L).takeIf { it > 0 } else null
+        WalletAge(arr.length(), oldest?.times(1000))
+    }.getOrDefault(WalletAge(-1, null))
 }
 
 /** One keypress applied to the amount so far. Never produces something that can't be sent. */
@@ -430,6 +868,9 @@ private fun AmountDisplay(
     chip: (@Composable (Modifier) -> Unit)? = null, warn: Boolean = true,
 ) {
     Column(Modifier.fillMaxWidth(), horizontalAlignment = if (centred) Alignment.CenterHorizontally else Alignment.Start) {
+        // Bottom-aligned with small offsets rather than alignByBaseline: reading a baseline lays a
+        // child out during measurement, before the shared-transition host is placed, and the
+        // shared amount and chip crashed the sheet on open ("Uninitialized LayoutCoordinates").
         Row(verticalAlignment = Alignment.Bottom) {
             // The token chip is measured first and always keeps its full width; the number gets
             // what is left. Past that it scrolls sideways, pinned to the digit just typed, with a
@@ -447,7 +888,8 @@ private fun AmountDisplay(
                     platformStyle = PlatformTextStyle(includeFontPadding = false),
                     lineHeightStyle = LineHeightStyle(LineHeightStyle.Alignment.Center, LineHeightStyle.Trim.Both),
                 ),
-                modifier = Modifier.alignByBaseline().weight(1f, fill = false)
+                modifier = Modifier.weight(1f, fill = false)
+                    .shared("amount")
                     .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
                     .drawWithContent {
                         drawContent()
@@ -462,9 +904,10 @@ private fun AmountDisplay(
             )
             Spacer(Modifier.width(10.dp))
             if (chip == null) {
-                Text(token, color = D.Quiet, fontSize = 20.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.alignByBaseline())
+                Text(token, color = D.Quiet, fontSize = 20.sp, fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(bottom = 6.dp).shared("symbol-$token", bounds = true))
             } else {
-                chip(Modifier.alignByBaseline())
+                chip(Modifier.padding(bottom = 2.dp))
             }
         }
         // Only speaks up when there's something to say, in a slot that never changes the sheet's height.
@@ -487,17 +930,43 @@ private fun Keypad(enabled: Boolean, onKey: (Char) -> Unit) {
 /** A key lights up grey while held — no ripple, just the pressed state, like the mock. */
 @Composable
 private fun Key(k: Char, enabled: Boolean, modifier: Modifier, onClick: () -> Unit) {
-    val interaction = remember { MutableInteractionSource() }
-    val pressed by interaction.collectIsPressedAsState()
-    val bg by animateColorAsState(if (pressed) D.Line else D.White, tween(if (pressed) 0 else 220), label = "key")
     Box(
-        modifier.height(58.dp).clip(RoundedCornerShape(16.dp)).background(bg)
-            .clickable(interaction, indication = null, enabled = enabled, onClick = onClick),
+        modifier.height(58.dp).clip(RoundedCornerShape(16.dp))
+            .clickable(remember { MutableInteractionSource() }, indication = KeyPress, enabled = enabled, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
         val tint = if (enabled) D.Black else D.Quiet
         if (k == '<') HIcon(R.drawable.hi_backspace, tint, 26.dp)
         else Text(k.toString(), color = tint, fontSize = 24.sp, fontWeight = FontWeight.Medium, style = Figures)
+    }
+}
+
+/**
+ * A key's grey press, drawn by one shared modifier node: on at the touch, fading out over 220ms.
+ * Each key used to hold its own pressed state and colour animation — twelve of each set up in the
+ * frame the keypad reappeared, which is where the long frame coming back from a page went.
+ */
+private object KeyPress : IndicationNodeFactory {
+    override fun create(interactionSource: InteractionSource): DelegatableNode = KeyPressNode(interactionSource)
+    override fun equals(other: Any?) = other === this
+    override fun hashCode() = 7
+}
+
+private class KeyPressNode(private val source: InteractionSource) : Modifier.Node(), DrawModifierNode {
+    private val shade = Animatable(0f)
+    override fun onAttach() {
+        coroutineScope.launch {
+            source.interactions.collect { i ->
+                when (i) {
+                    is PressInteraction.Press -> launch { shade.snapTo(1f) }
+                    is PressInteraction.Release, is PressInteraction.Cancel -> launch { shade.animateTo(0f, tween(220)) }
+                }
+            }
+        }
+    }
+    override fun ContentDrawScope.draw() {
+        if (shade.value > 0f) drawRect(D.Line.copy(alpha = shade.value))
+        drawContent()
     }
 }
 
@@ -650,9 +1119,9 @@ private fun SecondaryButton(label: String, onClick: () -> Unit, modifier: Modifi
 }
 
 @Composable
-private fun TextLink(label: String, onClick: () -> Unit, enabled: Boolean = true) {
+private fun TextLink(label: String, onClick: () -> Unit, enabled: Boolean = true, modifier: Modifier = Modifier) {
     Box(
-        Modifier.fillMaxWidth().padding(top = 6.dp).height(48.dp).clip(RoundedCornerShape(14.dp))
+        Modifier.padding(top = 6.dp).then(modifier).fillMaxWidth().height(48.dp).clip(RoundedCornerShape(14.dp))
             .clickable(enabled = enabled, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) { Text(label, color = if (enabled) D.Black else D.Quiet, fontSize = 16.sp, fontWeight = FontWeight.Bold) }
@@ -692,9 +1161,11 @@ private fun TokenChip(
                 contentKey = { it.token }, label = "chip",
             ) { t ->
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    TokenImage(t, 24.dp)
+                    // Keyed by token so switching tokens here never has two "logos" at once.
+                    Box(Modifier.shared("logo-${t.token}")) { TokenImage(t, 24.dp) }
                     Spacer(Modifier.width(6.dp))
-                    Text(t.symbol, color = D.Black, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                    Text(t.symbol, color = D.Black, fontSize = 18.sp, fontWeight = FontWeight.Bold,
+                        modifier = Modifier.shared("symbol-${t.token}", bounds = true))
                 }
             }
             Spacer(Modifier.width(2.dp))
