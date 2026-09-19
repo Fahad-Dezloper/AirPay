@@ -480,9 +480,11 @@ private fun KeepBoth(showSecond: Boolean, first: @Composable () -> Unit, second:
         val pa = a.first().measure(loose)
         val pb = b.first().measure(loose)
         val shown = if (showSecond) pb else pa
+        // The shown screen is placed on top, so it is the one touches reach. With the page always
+        // on top, its hidden (touch-swallowing) layer sat over the keypad and no key could be tapped.
         layout(constraints.maxWidth, shown.height) {
-            pa.placeRelative(0, 0)
-            pb.placeRelative(0, 0)
+            pa.placeRelative(0, 0, zIndex = if (showSecond) 0f else 1f)
+            pb.placeRelative(0, 0, zIndex = if (showSecond) 1f else 0f)
         }
     }
 }
