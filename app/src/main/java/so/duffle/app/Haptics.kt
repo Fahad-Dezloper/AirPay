@@ -38,6 +38,10 @@ object Haptics {
         }
     }
 
+    /** A choice made — picking a token. Firmer than a key, lighter than the tap. */
+    fun select(context: Context) =
+        play(context, VibrationEffect.createPredefined(VibrationEffect.EFFECT_CLICK))
+
     /** A keypad digit. Frequent, so faint. */
     fun tick(context: Context) =
         play(context, VibrationEffect.createPredefined(VibrationEffect.EFFECT_TICK))

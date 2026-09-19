@@ -8,6 +8,11 @@ import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutLinearInEasing
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.rememberDraggableState
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
@@ -29,7 +34,6 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.Text
@@ -57,6 +61,35 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.unit.IntRect
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.LayoutDirection
+import androidx.compose.ui.window.PopupPositionProvider
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.animation.core.MutableTransitionState
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupProperties
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.foundation.Image
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
@@ -99,18 +132,60 @@ internal fun PopupScreen(
     previewAmount: String? = null,
     holdings: List<Tokens.Holding>? = null,
 ) {
-    BackHandler(onBack = onDismiss)
     // Hoisted so the amount survives the switch from typing to paying: the same number stays on
     // screen while the button below it reports progress.
     var amount by rememberSaveable { mutableStateOf(previewAmount ?: "") }
     var token by rememberSaveable { mutableStateOf("SOL") }
 
+    // The sheet is positioned by one number: how far below its resting place it is, in pixels.
+    // Rising, dragging, springing back and leaving all move that same number, so any of them can
+    // take over from another mid-motion — a drag can catch the sheet while it is still rising.
+    val scope = rememberCoroutineScope()
     val scrim = remember { Animatable(0f) }
-    val rise = remember { Animatable(1f) }
+    val offset = remember { Animatable(0f) }
+    var sheetHeight by remember { mutableFloatStateOf(0f) }
+    var shown by remember { mutableStateOf(false) }
+    var leaving by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
+        // Wait for the first measurement, then rise. Written so that a restart simply carries on
+        // from wherever the sheet is — an earlier version gave up on restart and left the sheet
+        // parked below the screen, invisible, with the app still in front.
+        val h = snapshotFlow { sheetHeight }.first { it > 0f }
+        if (!shown) {
+            offset.snapTo(h)
+            shown = true
+        }
         launch { scrim.animateTo(1f, tween(220)) }
-        rise.animateTo(0f, Arrive)
+        offset.animateTo(0f, Arrive)
     }
+    // Nothing leaves while money is in flight: the payment would carry on with no screen to report it.
+    val canLeave = phase !is Phase.Working
+
+    /** Slides the sheet away, then runs [after]. Exits are quicker and quieter than entrances. */
+    fun leave(after: () -> Unit = onDismiss) {
+        if (leaving) return
+        if (!canLeave) {
+            scope.launch { offset.animateTo(0f, spring(0.9f, 247f)) }
+            return
+        }
+        leaving = true
+        scope.launch {
+            launch { scrim.animateTo(0f, tween(200)) }
+            offset.animateTo(sheetHeight.coerceAtLeast(1f), tween(220, easing = FastOutLinearInEasing))
+            after()
+        }
+    }
+    BackHandler { leave() }
+    val close: () -> Unit = { leave() }
+
+    val drag = rememberDraggableState { delta ->
+        scope.launch {
+            val next = offset.value + delta
+            // Pulled upward it resists and stops a little way up; downward it follows the finger.
+            offset.snapTo(if (next < 0f) (offset.value + delta * .25f).coerceAtLeast(-40f) else next)
+        }
+    }
+    val dismissFraction = if (sheetHeight > 0f) (offset.value / sheetHeight).coerceIn(0f, 1f) else 0f
 
     // The tap's ripple: a ring spreading from where the phones touched, then fading.
     val ripple = remember { Animatable(0f) }
@@ -119,8 +194,8 @@ internal fun PopupScreen(
     CompositionLocalProvider(LocalTextStyle provides TextStyle(fontFamily = Ui)) {
     Box(
         Modifier.fillMaxSize()
-            .background(Color.Black.copy(alpha = .28f * scrim.value))
-            .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = onDismiss),
+            .background(Color.Black.copy(alpha = .28f * scrim.value * (1f - dismissFraction)))
+            .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = close),
         contentAlignment = Alignment.BottomCenter,
     ) {
         Canvas(Modifier.fillMaxSize()) {
@@ -134,7 +209,17 @@ internal fun PopupScreen(
         }
         Column(
             Modifier.fillMaxWidth()
-                .graphicsLayer { translationY = size.height * rise.value }
+                .onSizeChanged { sheetHeight = it.height.toFloat() }
+                // Below the screen until it has been measured, so it never flashes in place.
+                .graphicsLayer { translationY = if (shown) offset.value else size.height.toFloat() }
+                .draggable(
+                    drag, Orientation.Vertical, enabled = shown && !leaving,
+                    onDragStopped = { velocity ->
+                        // Far enough, or flicked: go. Otherwise settle back where it was.
+                        if (offset.value > sheetHeight * .25f || velocity > 1_200f) leave()
+                        else offset.animateTo(0f, spring(0.9f, 247f), initialVelocity = velocity)
+                    },
+                )
                 .background(D.White, RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp))
                 // Swallow taps so touching the sheet never dismisses it.
                 .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {}
@@ -165,18 +250,19 @@ internal fun PopupScreen(
             ) { k ->
                 Column(Modifier.fillMaxWidth()) {
                     when (k) {
-                        "form" -> Form(peer, phase, connected, amount, { amount = it }, token, { token = it }, holdings, onConnect, onPay, onRequest, onDecline, onDismiss)
-                        "waiting" -> (phase as? Phase.Waiting)?.let { WaitingBody(peer.label, it.amount, it.symbol, onDismiss) }
+                        "form" -> Form(peer, phase, connected, amount, { amount = it }, token, { token = it }, holdings, onConnect, onPay, onRequest,
+                            { leave(onDecline) }, close)
+                        "waiting" -> (phase as? Phase.Waiting)?.let { WaitingBody(peer.label, it.amount, it.symbol, close) }
                         "success" -> (phase as? Phase.Success)?.let {
                             ResultBody(Result.Success, it.title, it.detail, it.signature, onExplorer) {
-                                PrimaryButton("Done", onDismiss)
+                                PrimaryButton("Done", close)
                             }
                         }
                         "error" -> (phase as? Phase.Error)?.let {
-                            ResultBody(Result.Calm, it.title, it.detail, null, onExplorer) { RetryRow(onDismiss, onRetry) }
+                            ResultBody(Result.Calm, it.title, it.detail, null, onExplorer) { RetryRow(close, onRetry) }
                         }
                         "failed" -> (phase as? Phase.Failed)?.let {
-                            ResultBody(Result.Failed, it.title, it.detail, it.signature, onExplorer) { RetryRow(onDismiss, onRetry) }
+                            ResultBody(Result.Failed, it.title, it.detail, it.signature, onExplorer) { RetryRow(close, onRetry) }
                         }
                     }
                 }
@@ -335,8 +421,15 @@ private fun AmountDisplay(
 ) {
     Column(Modifier.fillMaxWidth(), horizontalAlignment = if (centred) Alignment.CenterHorizontally else Alignment.Start) {
         Row(verticalAlignment = Alignment.Bottom) {
+            // The token chip is measured first and always keeps its full width; the number gets
+            // what is left. Past that it scrolls sideways, pinned to the digit just typed, with a
+            // fade on the left edge to say there is more. A long number used to crush the chip
+            // until "SOL" wrapped one letter per line.
+            val scroll = rememberScrollState()
+            LaunchedEffect(amount, scroll.maxValue) { scroll.scrollTo(scroll.maxValue) }
             Text(
                 amount.ifBlank { "0" },
+                softWrap = false, maxLines = 1,
                 color = if (amount.isBlank()) D.Quiet else D.Black,
                 fontSize = 60.sp, fontWeight = FontWeight.ExtraBold, fontFamily = Display, letterSpacing = (-2).sp,
                 style = TextStyle(
@@ -344,7 +437,18 @@ private fun AmountDisplay(
                     platformStyle = PlatformTextStyle(includeFontPadding = false),
                     lineHeightStyle = LineHeightStyle(LineHeightStyle.Alignment.Center, LineHeightStyle.Trim.Both),
                 ),
-                modifier = Modifier.alignByBaseline(),
+                modifier = Modifier.alignByBaseline().weight(1f, fill = false)
+                    .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+                    .drawWithContent {
+                        drawContent()
+                        if (scroll.value > 0) {
+                            drawRect(
+                                Brush.horizontalGradient(listOf(Color.Transparent, Color.Black), startX = 0f, endX = 28.dp.toPx()),
+                                blendMode = BlendMode.DstIn,
+                            )
+                        }
+                    }
+                    .horizontalScroll(scroll),
             )
             Spacer(Modifier.width(10.dp))
             if (chip == null) {
@@ -555,44 +659,148 @@ private fun TokenChip(
     onOpen: (Boolean) -> Unit, modifier: Modifier = Modifier,
 ) {
     var open by remember { mutableStateOf(false) }
-    LaunchedEffect(open) { onOpen(open) }
+    // The list stays on screen until its exit has played, not just until `open` goes false.
+    val visible = remember { MutableTransitionState(false) }
+    LaunchedEffect(open) { visible.targetState = open; onOpen(open) }
+    val inPopup = visible.currentState || visible.targetState
+    // Where the list grows from — the chip, wherever the list ended up relative to it.
+    var origin by remember { mutableStateOf(TransformOrigin(.15f, 0f)) }
+    val density = LocalDensity.current
+    val shadowRoom = 8.dp
+
     Box(modifier) {
         Row(
             Modifier.clip(RoundedCornerShape(50)).background(D.Fill).clickable { open = true }
                 .padding(start = 6.dp, end = 8.dp, top = 5.dp, bottom = 5.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            TokenImage(chosen, 24.dp)
-            Spacer(Modifier.width(6.dp))
-            Text(chosen.symbol, color = D.Black, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+            // The chip changes the instant a token is picked — it sits above the list, so this is
+            // the first thing the eye catches.
+            AnimatedContent(
+                targetState = chosen,
+                transitionSpec = { (fadeIn(tween(140)) + scaleIn(initialScale = .8f, animationSpec = spring(0.7f, 600f))) togetherWith fadeOut(tween(90)) },
+                contentKey = { it.token }, label = "chip",
+            ) { t ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    TokenImage(t, 24.dp)
+                    Spacer(Modifier.width(6.dp))
+                    Text(t.symbol, color = D.Black, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                }
+            }
             Spacer(Modifier.width(2.dp))
             HIcon(R.drawable.hi_arrow_down, D.Black, 18.dp)
         }
-        DropdownMenu(
-            expanded = open, onDismissRequest = { open = false },
-            shape = RoundedCornerShape(18.dp), containerColor = D.White, shadowElevation = 12.dp,
-        ) {
-            list.forEach { t ->
-                Row(
-                    Modifier.width(280.dp).clickable { onToken(t.token); open = false }
-                        .padding(horizontal = 14.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
+
+        if (inPopup) {
+            // The popup is larger than the card by `shadowRoom` on every side, so the shadow has
+            // somewhere to fall. Material's menu draws its shadow in a window the size of the
+            // card, and the edges came out cut square.
+            val position = remember(density) {
+                MenuPosition(
+                    gap = with(density) { 6.dp.roundToPx() }, margin = with(density) { 16.dp.roundToPx() },
+                    room = with(density) { shadowRoom.roundToPx() },
+                ) { origin = it }
+            }
+            Popup(
+                popupPositionProvider = position,
+                onDismissRequest = { open = false },
+                properties = PopupProperties(focusable = true, clippingEnabled = false),
+            ) {
+                AnimatedVisibility(
+                    visibleState = visible,
+                    enter = fadeIn(tween(120)) + scaleIn(initialScale = .94f, transformOrigin = origin, animationSpec = spring(0.8f, 700f)),
+                    exit = fadeOut(tween(130)) + scaleOut(targetScale = .96f, transformOrigin = origin, animationSpec = tween(130)),
                 ) {
-                    TokenImage(t, 36.dp)
-                    Spacer(Modifier.width(12.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text(t.symbol, color = D.Black, fontSize = 16.sp, fontWeight = FontWeight.Bold, maxLines = 1)
-                        Text(t.name, color = D.Quiet, fontSize = 13.sp, maxLines = 1)
-                    }
-                    Spacer(Modifier.width(8.dp))
-                    Text(t.shown, color = D.Black, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, style = Figures, maxLines = 1)
-                    if (t.token == chosen.token) {
-                        Spacer(Modifier.width(8.dp))
-                        HIcon(R.drawable.hi_tick, D.Blue, 18.dp)
+                    Box(Modifier.padding(shadowRoom)) {
+                        TokenList(chosen, list, onPick = onToken, onDone = { open = false })
                     }
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun TokenList(chosen: Tokens.Holding, list: List<Tokens.Holding>, onPick: (String) -> Unit, onDone: () -> Unit) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    // Where the ring is. Moves the moment a row is tapped, before anything closes.
+    var ringOn by remember { mutableStateOf(chosen.token) }
+    var picking by remember { mutableStateOf(false) }
+    val shape = RoundedCornerShape(20.dp)
+    Column(
+        Modifier.width(290.dp)
+            .cardShadow(20.dp)
+            .background(D.White, shape)
+            .padding(6.dp),
+    ) {
+        list.forEach { t ->
+            val interaction = remember { MutableInteractionSource() }
+            val pressed by interaction.collectIsPressedAsState()
+            val rowBg by animateColorAsState(if (pressed) D.Fill else D.White, tween(if (pressed) 0 else 200), label = "row")
+            Row(
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(rowBg)
+                    .clickable(interaction, indication = null, enabled = !picking) {
+                        // Tap → click felt, ring lands, chip and balance switch → then the list
+                        // goes. Everything the person needs to see has happened before it closes.
+                        picking = true
+                        Haptics.select(context)
+                        ringOn = t.token
+                        onPick(t.token)
+                        scope.launch {
+                            delay(if (t.token == chosen.token) 120 else 260)
+                            onDone()
+                        }
+                    }
+                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                SelectRing(selected = t.token == ringOn) { TokenImage(t, 36.dp) }
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(t.symbol, color = D.Black, fontSize = 16.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                    Text(t.name, color = D.Quiet, fontSize = 13.sp, maxLines = 1)
+                }
+                Spacer(Modifier.width(8.dp))
+                Text(t.shown, color = D.Black, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, style = Figures, maxLines = 1)
+                Spacer(Modifier.width(6.dp))
+            }
+        }
+    }
+}
+
+/**
+ * The selected token: a ring of eight short rounded strokes around its logo, like a sun. It springs in
+ * and turns a few degrees as it lands; leaving, it simply fades.
+ */
+@Composable
+private fun SelectRing(selected: Boolean, content: @Composable () -> Unit) {
+    val p by animateFloatAsState(
+        if (selected) 1f else 0f,
+        if (selected) spring(dampingRatio = 0.55f, stiffness = 500f) else tween(110),
+        label = "ring",
+    )
+    Box(Modifier.size(56.dp), contentAlignment = Alignment.Center) {
+        Canvas(Modifier.matchParentSize()) {
+            if (p <= 0.01f) return@Canvas
+            val strokes = 8
+            val inner = 20.5.dp.toPx()          // just outside the 36dp logo
+            val length = 2.5.dp.toPx() * p.coerceAtMost(1.15f)
+            rotate(-30f * (1f - p)) {
+                for (i in 0 until strokes) {
+                    val a = (2 * Math.PI * i / strokes).toFloat()
+                    val dir = Offset(kotlin.math.cos(a), kotlin.math.sin(a))
+                    drawLine(
+                        color = D.Blue.copy(alpha = p.coerceIn(0f, 1f)),
+                        start = center + dir * inner,
+                        end = center + dir * (inner + length),
+                        strokeWidth = 2.2.dp.toPx(),
+                        cap = StrokeCap.Round,
+                    )
+                }
+            }
+        }
+        content()
     }
 }
 
@@ -650,5 +858,62 @@ private object LogoCache {
             failed += url
             null
         }
+    }
+}
+
+/**
+ * The standard card edge, as CSS writes it:
+ *     0 2px 3px -1px rgba(0,0,0,.1), 0 1px 0 0 rgba(25,28,33,.02), 0 0 0 1px rgba(25,28,33,.08)
+ * A soft drop, a crisp lip, and a hairline ring — the ring is what separates a white card from the
+ * white sheet under it. Drawn by hand because Compose's shadow() has no spread and no outline.
+ */
+private fun Modifier.cardShadow(radius: Dp) = drawBehind {
+    val r = radius.toPx()
+    val px = 1.dp.toPx()
+    drawIntoCanvas { canvas ->
+        // 0 2px 3px -1px rgba(0,0,0,.1): the shape shrunk by the spread, casting a blurred shadow.
+        val paint = androidx.compose.ui.graphics.Paint().asFrameworkPaint().apply {
+            isAntiAlias = true
+            color = android.graphics.Color.WHITE
+            setShadowLayer(3 * px, 0f, 2 * px, android.graphics.Color.argb(26, 0, 0, 0))
+        }
+        canvas.nativeCanvas.drawRoundRect(px, px, size.width - px, size.height - px, r - px, r - px, paint)
+    }
+    // 0 1px 0 0 rgba(25,28,33,.02): the same shape, one pixel lower.
+    drawRoundRect(Color(25, 28, 33).copy(alpha = .02f), topLeft = Offset(0f, px), size = size, cornerRadius = CornerRadius(r))
+    // 0 0 0 1px rgba(25,28,33,.08): a one-pixel ring outside the edge.
+    drawRoundRect(
+        Color(25, 28, 33).copy(alpha = .08f), topLeft = Offset(-px, -px),
+        size = Size(size.width + 2 * px, size.height + 2 * px), cornerRadius = CornerRadius(r + px),
+    )
+}
+
+/**
+ * Places the token list like any good menu: under the chip and lined up with it, slid sideways to
+ * stay [margin] inside the screen, and flipped above the chip when there's no room below. A long
+ * amount pushes the chip right, and the list used to run off the edge.
+ *
+ * The popup is the card plus [room] on every side for its shadow; positions are for the card.
+ */
+private class MenuPosition(
+    private val gap: Int,
+    private val margin: Int,
+    private val room: Int,
+    private val onOrigin: (TransformOrigin) -> Unit,
+) : PopupPositionProvider {
+    override fun calculatePosition(
+        anchorBounds: IntRect, windowSize: IntSize, layoutDirection: LayoutDirection, popupContentSize: IntSize,
+    ): IntOffset {
+        val w = popupContentSize.width - 2 * room
+        val h = popupContentSize.height - 2 * room
+        val maxX = (windowSize.width - margin - w).coerceAtLeast(margin)
+        val x = anchorBounds.left.coerceIn(margin, maxX)
+        val below = anchorBounds.bottom + gap
+        val fitsBelow = below + h <= windowSize.height - margin
+        val y = if (fitsBelow) below else (anchorBounds.top - gap - h).coerceAtLeast(margin)
+        // Grow out of the chip: its centre, measured on the card, at the edge nearest to it.
+        val ox = if (w > 0) ((anchorBounds.center.x - x).toFloat() / w).coerceIn(0f, 1f) else .5f
+        onOrigin(TransformOrigin(ox, if (fitsBelow) 0f else 1f))
+        return IntOffset(x - room, y - room)
     }
 }
