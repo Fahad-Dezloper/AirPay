@@ -272,6 +272,11 @@ class MainActivity : ComponentActivity() {
                             Spacer(Modifier.height(10.dp))
                         }
 
+                        if (tab == Tab.REWARDS) {
+                            RewardsTab(connected)
+                            return@Column
+                        }
+
                         if (tab == Tab.REQUESTS) {
                             RequestsTab(
                                 toPay = toPay,
@@ -707,7 +712,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-enum class Tab { TAP, REQUESTS }
+enum class Tab { TAP, REQUESTS, REWARDS }
 
 fun ago(at: Long, now: Long = System.currentTimeMillis()): String {
     val s = ((now - at) / 1000).coerceAtLeast(0)
@@ -945,12 +950,15 @@ private fun ConfirmSheet(
 
 @Composable
 private fun TabBar(current: Tab, openCount: Int, onSelect: (Tab) -> Unit) {
+    // Rewards only appears in a build that has them; without it the tab would open a screen
+    // that can never say anything.
     Row(
         Modifier.fillMaxWidth().background(Panel, RoundedCornerShape(10.dp))
             .border(1.dp, Line, RoundedCornerShape(10.dp)).padding(4.dp),
         horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        listOf(Tab.TAP to "Tap", Tab.REQUESTS to if (openCount > 0) "Requests · $openCount" else "Requests")
+        (listOf(Tab.TAP to "Tap", Tab.REQUESTS to if (openCount > 0) "Requests · $openCount" else "Requests") +
+            if (Rewards.enabled) listOf(Tab.REWARDS to "Rewards") else emptyList())
             .forEach { (t, label) ->
                 val on = t == current
                 TextButton(
@@ -1084,6 +1092,173 @@ private fun RequestsTab(
             }
         }
     }
+}
+
+/**
+ * What paying in person has earned, and what it hasn't.
+ *
+ * Every number here is the server's, read fresh each time the tab opens — the phone keeps no
+ * running total of its own, because a total the phone invented would drift from the one that
+ * decides payouts. When the server can't be reached the screen says so instead of showing a
+ * stale or hopeful figure.
+ *
+ * The refusals are shown next to the earnings on purpose. A rewards screen that only lists
+ * what was paid makes the rules look arbitrary the first time one of them refuses, and this
+ * layer's whole defence against farming is rules that refuse.
+ */
+@Composable
+private fun RewardsTab(connected: String?) {
+    var summary by remember { mutableStateOf<Rewards.Summary?>(null) }
+    var loading by remember { mutableStateOf(true) }
+    LaunchedEffect(connected) {
+        loading = true
+        summary = connected?.let { Rewards.summary(it) }
+        loading = false
+    }
+
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+        if (connected == null) {
+            Spacer(Modifier.height(40.dp))
+            Text("Connect a wallet", color = Fg, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(6.dp))
+            Text("Rewards are earned by the wallet that pays, so there is nothing to show until one is connected.",
+                color = Dim, fontSize = 13.sp)
+            return@Column
+        }
+        val s = summary
+        if (s == null) {
+            Spacer(Modifier.height(40.dp))
+            Text(if (loading) "Checking…" else "Can't reach the server", color = Fg, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+            if (!loading) {
+                Spacer(Modifier.height(6.dp))
+                Text("Your rewards are safe on the server — this screen just can't read them right now.",
+                    color = Dim, fontSize = 13.sp)
+            }
+            return@Column
+        }
+
+        // The total, with the split underneath. "Locked" is not a footnote: a reward can still
+        // be reversed for a week, and saying so now is cheaper than explaining it after.
+        Column(
+            Modifier.fillMaxWidth().background(Panel, RoundedCornerShape(10.dp))
+                .border(1.dp, Line, RoundedCornerShape(10.dp)).padding(16.dp),
+        ) {
+            Row(verticalAlignment = Alignment.Bottom) {
+                Text("${s.total}", color = Accent, fontSize = 40.sp, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.width(6.dp))
+                Text("SKR", color = Accent, fontSize = 16.sp, fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(bottom = 6.dp))
+            }
+            Spacer(Modifier.height(4.dp))
+            Text(
+                when {
+                    s.total == 0 -> "Nothing yet — a payment made by tapping earns ${s.perPayment} SKR"
+                    s.locked > 0 && s.ready > 0 -> "${s.ready} ready · ${s.locked} still locked"
+                    s.locked > 0 -> "Locked for ${s.lockDays} days, then yours"
+                    else -> "${s.ready} ready"
+                },
+                color = Dim, fontSize = 13.sp,
+            )
+            if (s.settled > 0) {
+                Spacer(Modifier.height(2.dp))
+                Text("${s.settled} paid out", color = Dim, fontSize = 12.sp)
+            }
+        }
+
+        Spacer(Modifier.height(12.dp))
+
+        // This week, as a row of pips rather than a number: four is small enough to see, and
+        // the streak is the thing worth finishing.
+        Column(RowStyle) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("This week", color = Fg, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.weight(1f))
+                Text("${s.weekPayments} of ${s.weekAllows}", color = Dim, fontSize = 13.sp)
+            }
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+                repeat(s.weekAllows) { i ->
+                    Box(
+                        Modifier.weight(1f).height(6.dp)
+                            .background(if (i < s.weekPayments) Accent else Line, RoundedCornerShape(3.dp)),
+                    )
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            Text(
+                if (s.weekPayments >= s.streakNeeded) "Streak complete — ${s.streak} SKR earned"
+                else "${s.streakNeeded - s.weekPayments} more this week for the ${s.streak} SKR streak",
+                color = Dim, fontSize = 12.sp,
+            )
+        }
+
+        Column(RowStyle) {
+            Row {
+                Text("This month", color = Dim, fontSize = 13.sp, modifier = Modifier.weight(1f))
+                Text("${s.monthEarned} of ${s.monthCap} SKR", color = Fg, fontSize = 13.sp)
+            }
+            Spacer(Modifier.height(4.dp))
+            Row {
+                Text("Left in this week's pool", color = Dim, fontSize = 13.sp, modifier = Modifier.weight(1f))
+                // An empty pool pays nobody, and the screen says so rather than letting the
+                // next payment quietly earn nothing.
+                Text(if (s.poolLeft > 0) "${s.poolLeft} SKR" else "empty — nothing earns until it refills",
+                    color = if (s.poolLeft > 0) Fg else Warn, fontSize = 13.sp)
+            }
+        }
+
+        if (s.rows.isNotEmpty()) {
+            Spacer(Modifier.height(14.dp))
+            SectionLabel("EARNED")
+            s.rows.forEach { row ->
+                Row(RowStyle, verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(Rewards.nameOf(row.kind), color = Fg, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                        Text("with ${row.counterparty.take(4)}…${row.counterparty.takeLast(4)}" +
+                            if (row.state == "locked") " · locked" else "",
+                            color = Dim, fontSize = 12.sp)
+                    }
+                    Text("+${row.skr}", color = if (row.state == "reversed") Warn else Accent,
+                        fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+
+        if (s.refusals.isNotEmpty()) {
+            Spacer(Modifier.height(14.dp))
+            SectionLabel("EARNED NOTHING")
+            s.refusals.forEach { ref ->
+                Row(RowStyle, verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(refusalText(ref.why), color = Fg, fontSize = 13.sp)
+                        Text("${ref.counterparty.take(4)}…${ref.counterparty.takeLast(4)}", color = Dim, fontSize = 12.sp)
+                    }
+                }
+            }
+        }
+
+        Spacer(Modifier.height(20.dp))
+    }
+}
+
+/** Every refusal the server can give, said plainly. Unknown ones are shown as-is rather than
+ *  hidden — a reason nobody can read is still better than a payment that silently earned
+ *  nothing. */
+private fun refusalText(why: String): String = when (why) {
+    "new_counterparty" -> "Their wallet was too new"
+    "counterparty_cooldown" -> "Already earned with them this month"
+    "below_minimum" -> "Under the minimum amount"
+    "not_a_tap" -> "Not paid by tapping"
+    "not_a_seeker" -> "Only a Seeker earns"
+    "self_payment" -> "Paid your own wallet"
+    "unknown_token" -> "That token doesn't earn"
+    "weekly_cap" -> "This week's four were already earned"
+    "monthly_cap" -> "This month's cap was reached"
+    "campaign_cap" -> "The campaign cap was reached"
+    "pool_empty" -> "The pool was empty"
+    "chain_unreachable" -> "Couldn't check the chain — will retry"
+    "no_payer" -> "We never learned who paid"
+    else -> why.replace('_', ' ')
 }
 
 @Composable

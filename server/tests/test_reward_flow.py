@@ -144,6 +144,25 @@ class FlowTest(unittest.TestCase):
         self.pay()
         self.assertEqual(before["skr"], sum(r["skr"] for r in self.rewards_of()))
 
+    def test_the_summary_carries_the_refusals_too(self):
+        # The rewards screen shows these next to the earnings: a screen listing only what was
+        # paid makes the rules look arbitrary the first time one refuses.
+        self.pay()
+        self.setUp(FakeFacts())  # a fresh store so the cooldown is not what refuses
+        self.pay(REF2, recipient=OTHER)
+        s = self.svc.reward_summary(SEEKER)
+        self.assertEqual([], s["recent"])
+        self.assertEqual([rewards.NEW_COUNTERPARTY], [r["refused"] for r in s["refused"]])
+        self.assertEqual(OTHER, s["refused"][0]["counterparty"])
+
+    def test_a_payment_that_earned_is_not_listed_as_a_refusal(self):
+        self.pay()
+        self.assertEqual([], self.svc.reward_summary(SEEKER)["refused"])
+
+    def test_the_summary_states_the_rates_so_the_app_need_not_hardcode_them(self):
+        self.svc.set_reward_config({"per_payment": 75})
+        self.assertEqual(75, self.svc.reward_summary(SEEKER)["rates"]["per_payment"])
+
     def test_someone_who_never_earned_gets_an_empty_summary_not_an_error(self):
         s = self.svc.reward_summary(FRIEND)
         self.assertEqual(0, s["balance"]["total"])

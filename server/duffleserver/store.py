@@ -292,6 +292,17 @@ class Store:
                 "SELECT * FROM reward_attempts ORDER BY at LIMIT ?", (limit,)).fetchall()
         return [dict(r) for r in rows]
 
+    def refusals_for(self, payer: str, limit: int = 10) -> list[dict]:
+        """Recent payments by this payer that earned nothing, newest first. The rewards screen
+        shows these: "why didn't I get anything?" is the question a reward layer has to be able
+        to answer, or people assume it is broken."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT reference, counterparty, refused, at FROM reward_attempts"
+                " WHERE payer=? AND refused IS NOT NULL ORDER BY at DESC LIMIT ?", (payer, limit),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
     def rewards_for(self, payer: str, limit: int = 50) -> list[dict]:
         with self._lock:
             rows = self._db.execute(

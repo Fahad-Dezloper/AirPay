@@ -284,6 +284,12 @@ class Service:
             "this_month": {"earned": past["earned_this_month"], "cap": config.monthly_cap},
             "pool_left": max(0, config.weekly_pool - past["week_spent"]),
             "recent": self.store.rewards_for(address, 20),
+            # Sent alongside the earnings on purpose: a screen that only shows what was paid
+            # makes the rules look arbitrary the first time one refuses.
+            "refused": self.store.refusals_for(address, 10),
+            "rates": {"first_payment": config.first_payment, "per_payment": config.per_payment,
+                      "streak": config.streak, "streak_needed": config.streak_needed,
+                      "lock_days": config.lock_days},
         }
 
     # -- checks -----------------------------------------------------------------------------

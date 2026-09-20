@@ -65,6 +65,67 @@ object Rewards {
         return null
     }
 
+    // ------------------------------------------------------------------ what one person has
+
+    /** One reward row, or one payment that earned nothing. */
+    data class Row(val kind: String, val skr: Int, val counterparty: String, val at: Long,
+                   val unlockAt: Long, val state: String)
+
+    data class Refusal(val counterparty: String, val why: String, val at: Long)
+
+    data class Summary(
+        val locked: Int, val ready: Int, val settled: Int, val total: Int,
+        /** Rewarded payments this week, out of what the week allows. */
+        val weekPayments: Int, val weekAllows: Int,
+        val monthEarned: Int, val monthCap: Int,
+        /** SKR left in this week's pool, across everyone. Nobody earns from an empty one. */
+        val poolLeft: Int,
+        val perPayment: Int, val streak: Int, val streakNeeded: Int, val lockDays: Int,
+        val rows: List<Row>, val refusals: List<Refusal>,
+    )
+
+    suspend fun summary(address: String): Summary? {
+        if (!enabled || address.isBlank()) return null
+        val o = ServerClient.read("/v1/rewards/$address") ?: return null
+        val bal = o.optJSONObject("balance")
+        val week = o.optJSONObject("this_week")
+        val month = o.optJSONObject("this_month")
+        val rates = o.optJSONObject("rates")
+        val rows = mutableListOf<Row>()
+        o.optJSONArray("recent")?.let { a ->
+            for (i in 0 until a.length()) a.optJSONObject(i)?.let {
+                rows += Row(it.optString("kind"), it.optInt("skr"), it.optString("counterparty"),
+                    (it.optDouble("created_at") * 1000).toLong(), (it.optDouble("unlock_at") * 1000).toLong(),
+                    it.optString("state"))
+            }
+        }
+        val refusals = mutableListOf<Refusal>()
+        o.optJSONArray("refused")?.let { a ->
+            for (i in 0 until a.length()) a.optJSONObject(i)?.let {
+                refusals += Refusal(it.optString("counterparty"), it.optString("refused"),
+                    (it.optDouble("at") * 1000).toLong())
+            }
+        }
+        return Summary(
+            locked = bal?.optInt("locked") ?: 0, ready = bal?.optInt("ready") ?: 0,
+            settled = bal?.optInt("settled") ?: 0, total = bal?.optInt("total") ?: 0,
+            weekPayments = week?.optInt("rewarded_payments") ?: 0, weekAllows = week?.optInt("of") ?: 4,
+            monthEarned = month?.optInt("earned") ?: 0, monthCap = month?.optInt("cap") ?: 0,
+            poolLeft = o.optInt("pool_left"),
+            perPayment = rates?.optInt("per_payment") ?: 0, streak = rates?.optInt("streak") ?: 0,
+            streakNeeded = rates?.optInt("streak_needed") ?: 4, lockDays = rates?.optInt("lock_days") ?: 7,
+            rows = rows, refusals = refusals,
+        )
+    }
+
+    /** What a reward was for, in words. */
+    fun nameOf(kind: String): String = when (kind) {
+        "first_payment" -> "First payment"
+        "per_payment" -> "Paid in person"
+        "streak" -> "Weekly streak"
+        else -> kind.replace('_', ' ').replaceFirstChar { it.uppercase() }
+    }
+
     /**
      * The refusal, in a sentence someone reads before paying. Only the reasons that are about
      * *this* payment are worth a line; "the pool is empty" or "you've hit this week's cap" are
