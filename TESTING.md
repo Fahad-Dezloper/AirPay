@@ -5,8 +5,10 @@ the one cable between the Seeker and the OnePlus costs more than the tests do, s
 in one sitting and the bugs fixed together.
 
 **Rig reminders** (learned the hard way, don't relearn them):
-- There is **one cable**. Only one phone is on adb at a time — plan each run so the phone on the
-  cable is the one whose logs matter, and pull the other's afterwards.
+- **Both phones can be on adb at once** (2026-09-21: Seeker `usb:0-1.1`, OnePlus `usb:0-1.2`).
+  This replaces the long-standing one-cable rule — both sides of a tap can be watched live, so
+  a test no longer has to be planned around which phone's logs matter. If only one cable is
+  available again, fall back to: put the phone whose logs matter on it, pull the other's after.
 - `adb logcat -G 16M` on **both** phones, `-c` to clear, run the test, then dump. Do not stream:
   the OnePlus drops off USB mid-session and kills the stream silently.
 - Check every install with md5 against the local APK. `adb install` has reported success on a
