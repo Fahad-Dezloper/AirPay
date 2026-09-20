@@ -92,7 +92,11 @@ class Store:
                               ("token", "TEXT NOT NULL DEFAULT 'SOL'"), ("decimals", "INTEGER NOT NULL DEFAULT 9"),
                               ("symbol", "TEXT NOT NULL DEFAULT 'SOL'"),
                               # How the payment started: only "tap" earns a reward.
-                              ("origin", "TEXT NOT NULL DEFAULT ''")):
+                              ("origin", "TEXT NOT NULL DEFAULT ''"),
+                              # When a payer was attached by a *second* registration — the mark
+                              # of two phones, since the asking phone cannot know who will pay.
+                              ("payer_at", "REAL"),
+                              ("registrations", "INTEGER NOT NULL DEFAULT 1")):
                 if col not in cols:
                     self._db.execute(f"ALTER TABLE requests ADD COLUMN {col} {kind}")
             self._db.execute("CREATE INDEX IF NOT EXISTS by_payer ON requests(payer, status)")
@@ -119,8 +123,10 @@ class Store:
             # phone ASKING for money, which cannot know who will pay; the paying phone registers
             # the same reference moments later and does know. Without this the server has nobody
             # to tell when the request is withdrawn. Never overwrites a payer already recorded.
+            self._db.execute("UPDATE requests SET registrations=registrations+1 WHERE reference=?", (reference,))
             if payer and not row["payer"]:
-                self._db.execute("UPDATE requests SET payer=? WHERE reference=?", (payer, reference))
+                self._db.execute("UPDATE requests SET payer=?, payer_at=? WHERE reference=?",
+                                 (payer, now, reference))
             # Same for the origin: the phone that taps knows it was a tap; the one that served
             # the request may not have said so.
             if origin and not row["origin"]:
@@ -291,6 +297,85 @@ class Store:
             rows = self._db.execute(
                 "SELECT * FROM reward_attempts ORDER BY at LIMIT ?", (limit,)).fetchall()
         return [dict(r) for r in rows]
+
+    def settled_payments(self, since: float, limit: int = 2000) -> list[dict]:
+        """Every payment that landed since `since`, in the shape patrol.py reads. Both
+        directions of a pair are in here, which is what makes a round trip visible."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT reference, payer, recipient, lamports, token, paid_at FROM requests"
+                " WHERE status='paid' AND payer IS NOT NULL AND paid_at >= ? ORDER BY paid_at LIMIT ?",
+                (since, limit),
+            ).fetchall()
+        return [{"reference": r["reference"], "payer": r["payer"], "counterparty": r["recipient"],
+                 "units": r["lamports"], "token": r["token"], "at": r["paid_at"]} for r in rows]
+
+    def locked_rewards(self, now: float) -> list[dict]:
+        """Rewards that can still be taken back, one row per payment (not per award), with the
+        payment's own details joined on so the patterns can be looked for."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT w.reference, w.payer, w.counterparty, SUM(w.skr) AS skr,"
+                "       MIN(w.created_at) AS created_at, MIN(w.unlock_at) AS unlock_at,"
+                "       q.lamports AS units, q.token AS token, q.payer_at AS payer_at,"
+                "       q.registrations AS registrations"
+                "  FROM rewards w LEFT JOIN requests q ON q.reference = w.reference"
+                " WHERE w.state='locked' GROUP BY w.reference",
+            ).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            # Two registrations *and* a payer that arrived in the later one: the asking phone
+            # cannot know who will pay, so that second call came from the other handset.
+            d["corroborated"] = bool(d.get("payer_at")) and (d.get("registrations") or 1) > 1
+            d["units"] = d.get("units") or 0
+            out.append(d)
+        return out
+
+    def settle_matured(self, now: float) -> int:
+        """Locked rewards past their unlock time become final. Nothing is paid out here — that
+        is R6's decision — this only ends the window in which they can be reversed."""
+        with self._lock, self._db:
+            cur = self._db.execute(
+                "UPDATE rewards SET state='settled' WHERE state='locked' AND unlock_at <= ?", (now,))
+        return cur.rowcount
+
+    def reverse_rewards(self, reference: str, reason: str) -> int:
+        """Takes back every award for one payment, with the reason kept. Only a locked reward
+        can be reversed; once settled it is theirs, whatever we notice afterwards."""
+        with self._lock, self._db:
+            cur = self._db.execute(
+                "UPDATE rewards SET state='reversed', reason=? WHERE reference=? AND state='locked'",
+                (reason, reference))
+        return cur.rowcount
+
+    def reward_ledger(self, since: float) -> dict:
+        """The admin view: what was paid, by rule and by day, and what was refused and why."""
+        with self._lock:
+            paid = self._db.execute(
+                "SELECT kind, state, COUNT(*) AS n, SUM(skr) AS skr FROM rewards"
+                " WHERE created_at >= ? GROUP BY kind, state", (since,)).fetchall()
+            days = self._db.execute(
+                "SELECT date(created_at, 'unixepoch') AS day, COUNT(*) AS n, SUM(skr) AS skr"
+                "  FROM rewards WHERE created_at >= ? AND state!='reversed' GROUP BY day ORDER BY day",
+                (since,)).fetchall()
+            refused = self._db.execute(
+                "SELECT refused, COUNT(*) AS n FROM reward_attempts"
+                " WHERE at >= ? AND refused IS NOT NULL GROUP BY refused ORDER BY n DESC",
+                (since,)).fetchall()
+            reversed_rows = self._db.execute(
+                "SELECT reference, payer, counterparty, skr, reason FROM rewards"
+                " WHERE state='reversed' AND created_at >= ?", (since,)).fetchall()
+            people = self._db.execute(
+                "SELECT COUNT(DISTINCT payer) AS n FROM rewards WHERE created_at >= ? AND state!='reversed'",
+                (since,)).fetchone()[0]
+        return {
+            "by_rule": [dict(r) for r in paid],
+            "by_day": [dict(r) for r in days],
+            "refused": [dict(r) for r in refused],
+            "reversed": [dict(r) for r in reversed_rows],
+            "people": people,
+        }
 
     def refusals_for(self, payer: str, limit: int = 10) -> list[dict]:
         """Recent payments by this payer that earned nothing, newest first. The rewards screen

@@ -1214,11 +1214,20 @@ private fun RewardsTab(connected: String?) {
                 Row(RowStyle, verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text(Rewards.nameOf(row.kind), color = Fg, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                        Text("with ${row.counterparty.take(4)}…${row.counterparty.takeLast(4)}" +
-                            if (row.state == "locked") " · locked" else "",
-                            color = Dim, fontSize = 12.sp)
+                        // A reward taken back says why, in the same place the reward was. It
+                        // is not deleted: someone who saw 300 SKR and later sees 0 deserves
+                        // the reason on the same screen rather than a number that changed.
+                        Text(
+                            when {
+                                row.state == "reversed" -> row.reason?.substringAfter(": ") ?: "taken back"
+                                row.state == "locked" -> "with ${row.counterparty.take(4)}…${row.counterparty.takeLast(4)} · locked"
+                                else -> "with ${row.counterparty.take(4)}…${row.counterparty.takeLast(4)}"
+                            },
+                            color = if (row.state == "reversed") Warn else Dim, fontSize = 12.sp,
+                        )
                     }
-                    Text("+${row.skr}", color = if (row.state == "reversed") Warn else Accent,
+                    Text(if (row.state == "reversed") "−${row.skr}" else "+${row.skr}",
+                        color = if (row.state == "reversed") Warn else Accent,
                         fontSize = 15.sp, fontWeight = FontWeight.Bold)
                 }
             }

@@ -89,6 +89,14 @@ def make_handler(service, helius_auth: str | None, limiter: RateLimit | None = N
                 if not is_address(m.group(1)):
                     return self._json(400, {"error": "invalid address"})
                 return self._json(200, service.reward_summary(m.group(1)))
+            if url.path == "/v1/admin/rewards":
+                # What was paid, by rule and by day, and everything refused with its reason.
+                # Behind the admin token: it is the whole campaign's shape, including how to
+                # farm it, and the refusal counts are the farming attempts themselves.
+                if not admin_token or self.headers.get("Authorization") != f"Bearer {admin_token}":
+                    return self._json(403, {"error": "admin token required"})
+                days = float((parse_qs(url.query).get("days") or ["30"])[0])
+                return self._json(200, service.reward_ledger(days))
             if url.path == "/v1/rewards/config":
                 # Public on purpose: the app shows these amounts, and a screen promising a
                 # number the server no longer pays would be worse than showing nothing.

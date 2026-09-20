@@ -12,7 +12,7 @@ import time
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 
-from . import chain, rewards, verify
+from . import chain, patrol, rewards, verify
 from .helius import AddressSync, signatures_in
 from .notify import Fcm, Hub
 from .store import Store
@@ -49,6 +49,9 @@ class Service:
         self.helius = helius
         #: Reads Genesis and wallet age from the chain. None means rewards never pay out.
         self.facts = facts
+        #: How suspicious a pattern has to be before a locked reward is taken back.
+        self.watch = patrol.Watch()
+        self._patrolled = 0.0
         self._pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="check")
         self._inflight: set[str] = set()
         self._inflight_lock = threading.Lock()
@@ -271,6 +274,40 @@ class Service:
                 "kinds": [a.kind for a in d.awards],
                 "min_age_days": config.counterparty_min_age_days}
 
+    # -- looking back --------------------------------------------------------------------
+
+    def patrol(self, now: float | None = None) -> dict:
+        """Settle what has matured, reverse what shouldn't have been paid.
+
+        Run on a slow timer rather than at payment time: the patterns it looks for only exist
+        after the fact. Reversals are logged individually, because taking money back is the one
+        thing here that needs to be explainable to the person it happened to.
+        """
+        now = now or time.time()
+        found = patrol.reversals(
+            self.store.locked_rewards(now),
+            self.store.settled_payments(now - 7 * rewards.DAY),
+            now,
+            self.watch,
+        )
+        reversed_count = 0
+        for rev in found:
+            n = self.store.reverse_rewards(rev.reference, f"{rev.reason}: {rev.detail}")
+            if n:
+                reversed_count += n
+                log.warning("reversed %d reward(s) for %s…: %s", n, rev.reference[:8], rev.detail)
+        # Settling last, so a reward found suspicious in this same pass is reversed before its
+        # window closes rather than a second later.
+        settled = self.store.settle_matured(now)
+        if settled:
+            log.info("%d reward(s) settled", settled)
+        return {"reversed": reversed_count, "settled": settled}
+
+    def reward_ledger(self, days: float = 30.0) -> dict:
+        out = self.store.reward_ledger(time.time() - days * rewards.DAY)
+        out["config"] = config_as_dict(self.reward_config())
+        return out
+
     def reward_summary(self, address: str) -> dict:
         """What one person has earned, for their rewards screen."""
         now = time.time()
@@ -368,9 +405,16 @@ class Service:
             log.exception("check failed")
             return None
 
+    #: How often the look-back runs. Nothing it finds is urgent — the reward it might reverse
+    #: is locked for a week — so this stays well away from the payment sweep.
+    PATROL_EVERY = 10 * 60.0
+
     def run_watcher(self, stop: threading.Event, every: float = 1.0) -> None:
         while not stop.is_set():
             self._safe(self.sweep)
+            if time.time() - self._patrolled > self.PATROL_EVERY:
+                self._patrolled = time.time()
+                self._safe(self.patrol)
             stop.wait(every)
 
 

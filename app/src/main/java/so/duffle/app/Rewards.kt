@@ -69,7 +69,9 @@ object Rewards {
 
     /** One reward row, or one payment that earned nothing. */
     data class Row(val kind: String, val skr: Int, val counterparty: String, val at: Long,
-                   val unlockAt: Long, val state: String)
+                   val unlockAt: Long, val state: String,
+                   /** Why it was taken back, when it was. Shown rather than hidden. */
+                   val reason: String?)
 
     data class Refusal(val counterparty: String, val why: String, val at: Long)
 
@@ -96,7 +98,7 @@ object Rewards {
             for (i in 0 until a.length()) a.optJSONObject(i)?.let {
                 rows += Row(it.optString("kind"), it.optInt("skr"), it.optString("counterparty"),
                     (it.optDouble("created_at") * 1000).toLong(), (it.optDouble("unlock_at") * 1000).toLong(),
-                    it.optString("state"))
+                    it.optString("state"), it.optString("reason").ifBlank { null })
             }
         }
         val refusals = mutableListOf<Refusal>()

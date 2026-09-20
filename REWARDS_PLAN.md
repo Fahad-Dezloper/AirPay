@@ -102,11 +102,26 @@ before the next one starts.
   of reward rows, and a second tap to the same person inside 30 days produces none.
 - **Decision:** does the earn moment feel worth the screen space?
 
-### R2 · Anti-farm hardening
-- Clawback job: locked rewards, pattern checks (reciprocal pairs, round-trip amounts, bursts),
-  reversal with a reason.
-- Admin view: rewards issued, by rule, per day; rejected attempts and why.
-- **Check:** scripted farming run on devnet (two phones, back-and-forth) earns once, then nothing.
+### R2 · Anti-farm hardening — **built, on-device run still owed**
+- ✅ `patrol.py`: pure pattern checks over locked rewards — **round trip** (the same amount back
+  within 6h), **burst** (4+ rewarded payments in 10 minutes, first one spared), and
+  **uncorroborated tap**. Reversal carries a reason, and settles what has matured.
+- ✅ Runs every 10 minutes from the watcher. Nothing it finds is urgent: the reward it might
+  reverse is locked for a week, which is what the week is for.
+- ✅ Corroboration: a real tap leaves **two** registrations of one reference — the phone that
+  served it, then the phone that received it over the radio and knows who is paying. The store
+  records `payer_at` and `registrations` and derives it.
+  **It is evidence, not proof**, so an uncorroborated tap alone never loses a reward; it only
+  strengthens a pattern that already fired. A farmer with two phones registers twice too, and
+  an honest payer whose phone was briefly offline registers once.
+- ✅ `GET /v1/admin/rewards` (admin token): paid by rule and by day, refusals by reason,
+  reversals, distinct people.
+- ✅ App: a reversed reward shows as **−N with the reason**, in the place the reward was. It is
+  not deleted — someone who saw 300 SKR and later sees 0 is owed the reason on the same screen.
+- 23 tests, deliberately half of them **must-not-reverse**: a repayment the next day, a
+  different amount, a different token, three friends in ten minutes, a queue of separate payers.
+  A rule that fires on honest behaviour costs more than the farming it prevents.
+- **Check (still to do):** scripted farming run on devnet — see TESTING.md.
 - **Decision:** is anything else farmable? This is the phase to be paranoid.
 
 ### R3 · Streaks and the weekly picture
