@@ -144,6 +144,16 @@ nothing has to be rebuilt when the first one says yes.
 
 - Server: `offers` (funder, dApp, address to pay, token, minimum, window, reward, budget) and
   `claims` (who opened it, when, and the payment that satisfied it).
+- **One ledger.** An offer payout is written into the same `rewards` table as a tap reward,
+  `kind="offer"`. Two ledgers meant the app showed a balance that left offers out and, worse,
+  the weekly pool never saw the spend — so "an unfunded campaign costs nothing beyond the
+  budget" was asserted rather than enforced.
+- **Which caps an offer touches.** The **weekly pool**, yes — that is the budget. The per-person
+  **monthly and campaign caps, no**: those exist to stop one person taking the tap-reward share
+  meant for twenty, and an offer is already bounded by its own budget and by the pool. Counting
+  it twice would make claiming an offer cost you your tap rewards, penalising the one behaviour
+  that pays for itself. It also does not advance the weekly payment count or the streak, which
+  are about paying a person.
 - Verification watches the **claimer's** wallet, not the dApp's: a busy dApp address is
   unwatchable, while the set of people who opened an offer is small and known.
 - Spend comes out of the same weekly pool as tap rewards, so the campaign cannot cost more than

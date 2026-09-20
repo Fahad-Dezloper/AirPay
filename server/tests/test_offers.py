@@ -243,6 +243,20 @@ class OnChainTest(unittest.TestCase):
         # ...but is not a payment, so it neither advances the weekly count nor the streak.
         self.assertEqual(0, past["rewarded_this_week"])
 
+    def test_an_offer_does_not_eat_the_tap_reward_allowance(self):
+        """Offers draw on the weekly pool — that is the budget — but not on the per-person
+        monthly and campaign caps, which exist to stop one person taking the tap-reward share
+        meant for twenty. Counting them twice would mean claiming an offer costs you your tap
+        rewards, penalising the one behaviour that pays for itself."""
+        from duffleserver import rewards as R
+        self.open_claim(self.AT - 60)
+        self.svc.check_claims(now=self.AT + 60)
+        at = self.AT + 60
+        past = self.store.reward_history(SEEKER, "", at, R.week_of(at), 0)
+        self.assertEqual(300, past["week_spent"], "the pool sees it")
+        self.assertEqual(0, past["earned_this_month"], "the monthly cap does not")
+        self.assertEqual(0, past["earned_in_campaign"], "nor the campaign cap")
+
     def test_an_offer_is_not_paid_into_the_ledger_twice(self):
         self.open_claim(self.AT - 60)
         self.svc.check_claims(now=self.AT + 60)

@@ -282,10 +282,16 @@ class Store:
                 "SELECT COALESCE(SUM(skr),0) FROM rewards WHERE week=? AND state!='reversed'", (week,),
             ).fetchone()[0]
         with_them = [r["created_at"] for r in rows if r["counterparty"] == counterparty]
+        # The per-person caps are about the TAP reward budget: they stop one person taking the
+        # share meant for twenty. An offer is bounded twice already — by its own budget and by
+        # the weekly pool — so counting it here as well would mean claiming offers costs you
+        # your tap rewards, which is backwards: offers are the half that pays for itself.
+        # `week_spent` below deliberately still counts everything, because that IS the budget.
+        taps = [r for r in rows if r["kind"] != "offer"]
         return {
             "rewarded_this_week": sum(1 for r in rows if r["week"] == week and r["kind"] == "per_payment"),
-            "earned_in_campaign": sum(r["skr"] for r in rows),
-            "earned_this_month": sum(r["skr"] for r in rows if r["created_at"] >= month_start),
+            "earned_in_campaign": sum(r["skr"] for r in taps),
+            "earned_this_month": sum(r["skr"] for r in taps if r["created_at"] >= month_start),
             "last_reward_with_counterparty": max(with_them) if with_them else None,
             "had_first_payment": any(r["kind"] == "first_payment" for r in rows),
             "week_spent": spent,
