@@ -171,6 +171,12 @@ class TapPopupActivity : ComponentActivity() {
                 "waiting" -> Phase.Waiting(amount, "preview")
                 "success" -> Phase.Success("Sent", "$amount SOL to ${payload.label}", "67WKe2RHq4Z8vY1pXbT5mN3cJdedqWM5")
                 "received" -> Phase.Success("Received", "$amount SOL from ${payload.label}", "67WKe2RHq4Z8vY1pXbT5mN3cJdedqWM5")
+                // The ✓ with the reward that really arrives a few seconds later, so the earn
+                // moment can be looked at without waiting for a payment to settle.
+                "earned" -> {
+                    lifecycleScope.launch { delay(1_400); earned = Rewards.Earned(300, listOf("first_payment", "per_payment")) }
+                    Phase.Success("Sent", "$amount SOL to ${payload.label}", "67WKe2RHq4Z8vY1pXbT5mN3cJdedqWM5")
+                }
                 "error" -> Phase.Error("Nothing was sent", "You closed the wallet before approving. Tap again when you're ready.")
                 "failed" -> Phase.Failed("Payment failed", "Solana refused the transaction. Your SOL is still in your wallet.", "67WKe2RHq4Z8vY1pXbT5mN3cJdedqWM5")
                 "connect" -> { address = null; Phase.Ready }
