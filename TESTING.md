@@ -85,7 +85,7 @@ the Seeker raised "Seeker requests 1 USDC" **on the Seeker**. Two mistakes in on
 - the label sent was `Identity.label(us)` — our own name — instead of the payee's, which is why
   the notification read "Seeker requests" on the Seeker.
 
-Still owed from this session: expiry, and push to a closed app.
+Still owed from this session: push to a closed app. (Expiry is gone — see item 9.)
 
 ## New, never run on the phones (added 2026-09-21)
 
@@ -124,8 +124,11 @@ Still owed from this session: expiry, and push to a closed app.
 
 ## Older behaviour never re-run since it was built
 
-9. **Expiry agreement (wire v3 design).** Both phones sharing the receiver's blockhash, both
-   polling every 4s, `EXPIRY_FLOOR_MS` 12s. Measured 0.59s apart once; never re-measured on v4.
+9. ~~Expiry agreement (wire v3 design).~~ **Not a test any more — wire v4 removed expiry.**
+   A request never expires; only a transaction has a clock, and it starts when the payer
+   presses Pay (a fresh blockhash, ~40-60s for the wallet to return). The old shared-deadline
+   design left the payer about 28 seconds to read, decide and approve, which is what was
+   actually costing payments. Nothing to observe here; don't re-add this test.
 10. **Push to a closed app.** FCM under the new package `so.duffle.app` — the Firebase Android
     app was recreated after the rename.
 11. **Contacts and the Genesis badge on a real tap** — "✓ Verified Seeker" on the confirm sheet,
