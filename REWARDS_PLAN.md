@@ -6,21 +6,53 @@ behaviour never changes until we turn it on.
 
 Deck: https://claude.ai/artifact/KW1AmFua5R5Btxj2LiK5CV — the why, the numbers and the sources.
 
+## The numbers (decided 2026-09-20, in SKR — never in cents)
+
+One campaign = **1,000,000 SKR**. Everything is denominated in SKR and shown that way in the
+app: a small reward priced in money measurably underperforms no reward at all (Heyman &
+Ariely; Gneezy & Rustichini), and SKR moved between $0.0077 and $0.0289 in the last 30 days,
+so a dollar promise would break itself.
+
+| Reward | Amount | Budget | Why this size |
+|---|---|---|---|
+| First payment | **1,000 SKR**, once per Seeker | 300k (300 users) | Matches Seeker Summer's tier-1 fortnightly reward; paid on the first completed payment, never on install |
+| Each rewarded payment | **50 SKR** flat | 450k (9,000 payments) | A flat fee, not 2%: the old 20 SKR cap already bound on any payment over $19, and a percentage invites inflated self-payments |
+| Weekly streak | **250 SKR** for 4 rewarded payments in a week | 250k (1,000 weeks) | The habit is the point; the card starts pre-filled with one (endowed progress: 19% → 34% completion for identical effort) |
+
+**Per-user campaign cap: 2,500 SKR.** So the pool is 400 users at the cap, or roughly
+800–1,200 in practice. Budget against the real audience — about 43,669 wallets hold SKR and
+Season 2 runs about 9,000 daily actives — not the 150k phones.
+
+**The bar this had to clear:** an average Season 1 holder (18,033 SKR) earns about **83 SKR a
+week just by staking** at 24%. A user doing two payments a week earns 100 SKR; a full week
+with the streak earns 450. Below that bar nobody would tap for it.
+
+**Fixed, never random.** Uncertain rewards outperform fixed ones in the lab, but that is the
+scratch-card mechanic Google pulled Paytm over in 2020, and it meets the sweepstakes test.
+Not worth it.
+
+**Review trigger:** if SKR moves ±40% from $0.0192, revisit every amount here.
+
 ## The rules being built (the whole spec, in one place)
 
 A payment earns a reward only when **all** of these hold:
 
 | Rule | Value | Why |
 |---|---|---|
-| Payer is a verified Seeker | Genesis token held, checked on mainnet | one earner per real device; Solana Mobile gates its own rewards the same way |
+| Payer is a verified Seeker | Genesis token held, checked on mainnet **by the server** | one earner per real device; the phone's word isn't enough when money is at stake |
 | Paid in person | the payment came from an NFC tap in Duffle | an online transfer can't prove two phones were together — our anti-farm edge |
-| Minimum amount | ≥ $1 equivalent (config) | dust payments earn nothing |
-| Reward size | 2% of the amount, **max 20 SKR** | a flat reward was ~20% back on a small payment and invited farming |
-| Rate limit | 4 rewarded payments per week, plus a yearly cap | Tez's rules, which worked |
-| Real counterparty | their wallet has on-chain history, **or** is another verified Seeker | wallets are free: without this, one Seeker + a spare phone farms itself |
-| Counterparty cooldown | the same person earns you a reward once per 30 days | stops two friends paying each other in circles |
+| Minimum amount | **$5 equivalent**, per token in config (5 USDC/EURC, 0.05 SOL, 250 SKR) | $1 earns dust and clutters the ledger; $5 plus the weekly cap is the anti-wash mechanism |
+| Reward size | **50 SKR flat** | see above |
+| Rate limit | **4 rewarded payments a week**, 2,500 SKR per user per campaign | Tez's rule, which worked; the campaign cap bounds the worst case |
+| Real counterparty | their wallet has a transaction older than **7 days**, **or** holds Genesis | wallets are free: without this, one Seeker + a spare phone farms itself |
+| Counterparty cooldown | the same person earns you a reward once per **30 days** | stops two friends paying each other in circles |
 | Fixed, never random | no lottery or scratch-card mechanics | Google pulled Paytm in 2020 over scratch cards it called gambling |
-| Clawback | rewards stay locked for N days and can be reversed | wash patterns show up after the fact |
+| Clawback | rewards stay locked **7 days** and can be reversed | wash patterns show up after the fact |
+
+**Say it before they pay, not after.** When the person being paid has a new wallet, the review
+screen says so plainly — "New wallet · this payment won't earn a reward" — next to the amount.
+The device page already shows "Brand new" for the same wallet. Nobody should learn the rule by
+not being paid.
 
 **Devnet only.** Devnet payments are free, so real SKR must never be paid for a devnet
 payment. Until mainnet, rewards are recorded in a ledger and shown in the app; payout is
