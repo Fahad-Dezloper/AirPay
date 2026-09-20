@@ -77,6 +77,9 @@ class TapPopupActivity : ComponentActivity() {
     private var cameFrom by mutableStateOf<String?>(null)
     /** Debug preview only: the amount to show in the "working" state. */
     private var previewAmount by mutableStateOf<String?>(null)
+    /** SKR this payment earned, once the server has seen it settle. Null until then, and if
+     *  nothing was earned — an empty space is better than a nil. */
+    private var earned by mutableStateOf<Rewards.Earned?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -96,6 +99,7 @@ class TapPopupActivity : ComponentActivity() {
                     phase = phase,
                     connected = address != null,
                     me = Identity.label(this).take(1).uppercase().ifBlank { "Y" },
+                    myAddress = address.orEmpty(),
                     history = Contacts(this).all().firstOrNull { it.address == p.address },
                     onDismiss = { if (phase !is Phase.Working) finish() },
                     onConnect = ::connect,
@@ -106,6 +110,7 @@ class TapPopupActivity : ComponentActivity() {
                     onExplorer = { sig -> runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(Chain.explorerUrl(sig)))) } },
                     previewAmount = previewAmount,
                     holdings = holdings,
+                    earned = earned,
                     cameFrom = cameFrom,
                 )
                 // Balances are read every time the sheet opens: they change with every payment.
@@ -187,7 +192,7 @@ class TapPopupActivity : ComponentActivity() {
                 // As payer: a request received by tapping was registered by the phone asking,
                 // which cannot know who will pay — so a withdrawal would reach nobody.
                 ServerClient.register(payload.request.reference, payload.request.recipient,
-                    payload.request.amount, payload.request.label, payer = address)
+                    payload.request.amount, payload.request.label, payer = address, origin = "tap")
             }
         }
 
@@ -253,7 +258,7 @@ class TapPopupActivity : ComponentActivity() {
             launch {
                 ServerClient.register(req.reference, req.recipient, req.amount,
                     Identity.label(this@TapPopupActivity), payer = payer,
-                    token = req.token, decimals = req.decimals, symbol = req.symbol)
+                    token = req.token, decimals = req.decimals, symbol = req.symbol, origin = "tap")
             }
             val result = try {
                 Payments.pay(wallet, payer, req, stage = { phase = Phase.Working(it) }, log = { Log.i(TAG, it) })
@@ -268,6 +273,10 @@ class TapPopupActivity : ComponentActivity() {
                         paid = if (req.isSol) req.amount.toDoubleOrNull() ?: 0.0 else 0.0)
                     Haptics.success(this@TapPopupActivity)
                     refreshHoldings()
+                    // The reward can only be decided once the server has seen the payment on
+                    // the chain, which is after this screen appears. It slides in when it
+                    // lands, rather than holding up the ✓.
+                    launch { earned = Rewards.awaitEarned(payer, req.reference) }
                     Phase.Success("Sent", "${req.amount} ${req.symbol} to ${req.label}", result.signature)
                 }
                 is PayResult.AlreadyPaid -> {
@@ -315,6 +324,9 @@ class TapPopupActivity : ComponentActivity() {
                 reference, me, value, Identity.label(this@TapPopupActivity),
                 payer = p.address, genesis = Identity.card(this@TapPopupActivity)?.genesis,
                 token = t.token, decimals = t.decimals, symbol = t.symbol,
+                // The radio could not carry this one, but the phones did touch — that is how we
+                // know their address at all — so it is still an in-person payment.
+                origin = "tap",
             )
             if (!sent) {
                 Haptics.failure(this@TapPopupActivity)

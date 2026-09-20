@@ -504,7 +504,7 @@ class MainActivity : ComponentActivity() {
             // tell when it was withdrawn.
             lifecycleScope.launch {
                 ServerClient.register(req.reference, req.recipient, req.amount, req.label, payer = connected,
-                    token = req.token, decimals = req.decimals, symbol = req.symbol)
+                    token = req.token, decimals = req.decimals, symbol = req.symbol, origin = "tap")
             }
         }
 
@@ -535,7 +535,7 @@ class MainActivity : ComponentActivity() {
         push("watching chain for ${req.reference.take(8)}… (${owed.count { !it.paid }} open)")
         lifecycleScope.launch {
             ServerClient.register(req.reference, req.recipient, req.amount, req.label,
-                token = req.token, decimals = req.decimals, symbol = req.symbol)
+                token = req.token, decimals = req.decimals, symbol = req.symbol, origin = "tap")
         }
     }
 

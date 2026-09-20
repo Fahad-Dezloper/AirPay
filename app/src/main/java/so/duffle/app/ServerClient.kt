@@ -51,6 +51,15 @@ object ServerClient {
         payer: String? = null, genesis: String? = null,
         /** "SOL" or the SPL mint, as in [PayRequest]. */
         token: String = "SOL", decimals: Int = 9, symbol: String = "SOL",
+        /**
+         * How this payment started. "tap" means the two phones touched, which is the whole
+         * basis of the reward rules — an online transfer cannot show that two people met.
+         *
+         * It is the phone's word, and a modified build could claim it, so the server treats it
+         * as one condition among several rather than as proof. Left blank the server keeps
+         * whatever it already knows, so the nudge after paying never overwrites the tap.
+         */
+        origin: String = "",
     ): Boolean = post("/v1/requests", JSONObject().apply {
         put("reference", reference)
         put("recipient", recipient)
@@ -61,6 +70,7 @@ object ServerClient {
         put("token", token)
         put("decimals", decimals)
         put("symbol", symbol)
+        if (origin.isNotEmpty()) put("origin", origin)
     })
 
     /**
@@ -176,6 +186,48 @@ object ServerClient {
         if (PayRequest.isBase58Address(ref) && sig.length in 60..100) Paid(ref, sig) else null
     } catch (e: Exception) {
         null
+    }
+
+    /**
+     * A POST whose answer we need, not just its success. Null on anything that went wrong —
+     * no server, no network, a refusal — because every caller's honest fallback is to say
+     * nothing rather than to guess.
+     */
+    internal suspend fun ask(path: String, body: JSONObject): JSONObject? {
+        if (!enabled) return null
+        return withContext(Dispatchers.IO) {
+            try {
+                val c = (URL(base + path).openConnection() as HttpURLConnection).apply {
+                    requestMethod = "POST"
+                    doOutput = true
+                    connectTimeout = 8_000
+                    readTimeout = 8_000
+                    setRequestProperty("Content-Type", "application/json")
+                }
+                c.outputStream.use { it.write(body.toString().toByteArray()) }
+                if (c.responseCode !in 200..299) return@withContext null
+                JSONObject(c.inputStream.bufferedReader().use { it.readText() })
+            } catch (e: Exception) {
+                null
+            }
+        }
+    }
+
+    /** The same, for a plain read. */
+    internal suspend fun read(path: String): JSONObject? {
+        if (!enabled) return null
+        return withContext(Dispatchers.IO) {
+            try {
+                val c = (URL(base + path).openConnection() as HttpURLConnection).apply {
+                    connectTimeout = 8_000
+                    readTimeout = 8_000
+                }
+                if (c.responseCode !in 200..299) return@withContext null
+                JSONObject(c.inputStream.bufferedReader().use { it.readText() })
+            } catch (e: Exception) {
+                null
+            }
+        }
     }
 
     private suspend fun post(path: String, body: JSONObject): Boolean {

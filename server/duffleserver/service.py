@@ -215,18 +215,7 @@ class Service:
 
         config = self.reward_config()
         week = rewards.week_of(now)
-        past = self.store.reward_history(payer, recipient, now, week, month_start(now))
-        history = rewards.History(
-            payer_is_seeker=payer_is_seeker,
-            counterparty_is_seeker=bool(self.facts and self.facts.is_seeker(recipient)),
-            counterparty_first_seen=self.facts.first_seen(recipient) if self.facts else None,
-            rewarded_this_week=past["rewarded_this_week"],
-            earned_in_campaign=past["earned_in_campaign"],
-            earned_this_month=past["earned_this_month"],
-            pool_left=max(0, config.weekly_pool - past["week_spent"]),
-            last_reward_with_counterparty=past["last_reward_with_counterparty"],
-            had_first_payment=past["had_first_payment"],
-        )
+        history = self._reward_history(payer, recipient, payer_is_seeker, now, config)
         payment = rewards.Payment(reference, payer, recipient, req.get("token") or "SOL",
                                   int(req["lamports"]), req.get("origin") or "")
         decision = rewards.evaluate(payment, history, now, config)
@@ -243,6 +232,44 @@ class Service:
                                       "unlock_at": decision.unlock_at or now})
         self.store.record_attempt(reference, payer, recipient, decision.refused, decision.total, now)
         return decision
+
+    def _reward_history(self, payer: str, counterparty: str, payer_is_seeker: bool,
+                        now: float, config: rewards.Config) -> rewards.History:
+        """Everything the rules need to know about this payer, gathered once. Shared by the
+        real decision and the preview — two copies of this would drift, and the app would end
+        up promising a reward the server then refuses."""
+        past = self.store.reward_history(payer, counterparty, now, rewards.week_of(now), month_start(now))
+        return rewards.History(
+            payer_is_seeker=payer_is_seeker,
+            counterparty_is_seeker=bool(self.facts and self.facts.is_seeker(counterparty)),
+            counterparty_first_seen=self.facts.first_seen(counterparty) if self.facts else None,
+            rewarded_this_week=past["rewarded_this_week"],
+            earned_in_campaign=past["earned_in_campaign"],
+            earned_this_month=past["earned_this_month"],
+            pool_left=max(0, config.weekly_pool - past["week_spent"]),
+            last_reward_with_counterparty=past["last_reward_with_counterparty"],
+            had_first_payment=past["had_first_payment"],
+        )
+
+    def reward_preview(self, payer: str, counterparty: str, token: str, units: int) -> dict:
+        """What this payment *would* earn, asked before it is made.
+
+        The point is the refusal. Someone about to pay a wallet made this morning should read
+        "this won't earn" on the review screen, not work it out from a reward that never
+        arrives. Nothing is written down, and a preview is never a promise: the real decision
+        runs again on the settled payment, when the week's pool may have emptied.
+        """
+        now = time.time()
+        config = self.reward_config()
+        seeker = self.facts.is_seeker(payer) if self.facts else False
+        if seeker is None:
+            return {"skr": 0, "refused": rewards.CHAIN_UNREACHABLE}
+        history = self._reward_history(payer, counterparty, seeker, now, config)
+        payment = rewards.Payment("preview", payer, counterparty, token or "SOL", int(units), "tap")
+        d = rewards.evaluate(payment, history, now, config)
+        return {"skr": d.total, "refused": d.refused,
+                "kinds": [a.kind for a in d.awards],
+                "min_age_days": config.counterparty_min_age_days}
 
     def reward_summary(self, address: str) -> dict:
         """What one person has earned, for their rewards screen."""

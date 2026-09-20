@@ -12,6 +12,9 @@ val localProps = Properties().apply {
     rootProject.file("local.properties").takeIf { it.exists() }?.inputStream()?.use { load(it) }
 }
 fun local(key: String) = "\"" + (localProps.getProperty(key) ?: "").replace("\"", "") + "\""
+// Rewards are off unless a build asks for them, so nothing in the paying path changes shape
+// until the layer is finished. Set rewards.enabled=true in local.properties to see it.
+fun flag(key: String) = (localProps.getProperty(key) ?: "").trim().equals("true", true).toString()
 
 kotlin {
     compilerOptions { jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17) }
@@ -29,6 +32,7 @@ android {
         versionName = "0.1"
 
         buildConfigField("String", "TAP_SERVER_URL", local("duffle.server"))
+        buildConfigField("boolean", "REWARDS", flag("rewards.enabled"))
         buildConfigField("String", "FIREBASE_APP_ID", local("firebase.appId"))
         buildConfigField("String", "FIREBASE_API_KEY", local("firebase.apiKey"))
         buildConfigField("String", "FIREBASE_PROJECT_ID", local("firebase.projectId"))

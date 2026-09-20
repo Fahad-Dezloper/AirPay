@@ -23,7 +23,7 @@ SEEKER = "4WZ9hkr9h743Kufw7zHYj9YAiYHMKW8fbHBUnGohD18D"
 FRIEND = "2qxPntVgWyxU2jQz2MLcUuCp71D9D1ZSTcbFvCcXWrUc"
 REF1 = "GwQqYKapoH4mS1M4G8NFvLBWcWNQTpoJBGBDyKi92KrU"
 REF2 = "3QJmqCeJP7hHB9ipDrVdwCYT8yMYhD4dFoDrK7tHx5eL"
-#: A second established wallet, so a test can pay someone new.
+#: A wallet with no history at all — what a throwaway looks like.
 OTHER = "8eYAaFEyuwxKwpa9qSbCTWj8VStg5MeAE9GPMyyMTfSn"
 SIG = "5gN5R1etzG8tUbZGqJdG5aS47gmRbGEJ4cSb9nCrnZiqt63ySjwSNNnUUcqbENQYYvfRuBfdkLQe3RPGeY9RXS5o"
 OLD = 1_000_000_000.0  # a wallet with years of history
@@ -34,7 +34,8 @@ class FakeFacts:
 
     def __init__(self, seekers=(SEEKER,), ages=None, unreachable=False):
         self.seekers = set(seekers)
-        self.ages = {FRIEND: OLD, OTHER: OLD} if ages is None else ages
+        #: OTHER is deliberately absent: a wallet the chain has never seen.
+        self.ages = {FRIEND: OLD} if ages is None else ages
         self.unreachable = unreachable
 
     def is_seeker(self, owner):
@@ -121,6 +122,27 @@ class FlowTest(unittest.TestCase):
         self.assertEqual(300, s["this_month"]["earned"])
         self.assertEqual(self.svc.reward_config().weekly_pool - 300, s["pool_left"])
         self.assertEqual(2, len(s["recent"]))
+
+    def test_the_review_screen_is_told_before_they_pay_not_after(self):
+        # The whole point of the preview: a new wallet is visible on the review screen.
+        fresh = self.svc.reward_preview(SEEKER, OTHER, "SOL", 100_000_000)
+        self.assertEqual(rewards.NEW_COUNTERPARTY, fresh["refused"])
+        good = self.svc.reward_preview(SEEKER, FRIEND, "SOL", 100_000_000)
+        self.assertEqual(300, good["skr"])
+        self.assertIsNone(good["refused"])
+
+    def test_a_preview_is_not_a_payment(self):
+        self.svc.reward_preview(SEEKER, FRIEND, "SOL", 100_000_000)
+        self.assertEqual([], self.rewards_of())
+        self.assertEqual([], self.store.reward_attempts())
+        # And having previewed does not use up the first-payment bonus.
+        self.pay()
+        self.assertEqual(300, sum(r["skr"] for r in self.rewards_of()))
+
+    def test_the_preview_and_the_real_decision_agree(self):
+        before = self.svc.reward_preview(SEEKER, FRIEND, "SOL", 100_000_000)
+        self.pay()
+        self.assertEqual(before["skr"], sum(r["skr"] for r in self.rewards_of()))
 
     def test_someone_who_never_earned_gets_an_empty_summary_not_an_error(self):
         s = self.svc.reward_summary(FRIEND)

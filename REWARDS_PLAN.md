@@ -85,13 +85,21 @@ before the next one starts.
 - **Check:** `python3 -m unittest` — every rule has a must-pay and a must-not-pay test.
 - **Decision:** are the numbers above right before anything is built on them?
 
-### R1 · Earn on a real tap
-- The server already watches each payment reference; when one settles, run the rules and
-  write a reward row.
-- Counterparty check: wallet age/history via the same RPC the device page uses.
-- App: "You earned X SKR" on the success screen, behind the flag.
-- **Check:** a real devnet tap between the two phones produces exactly one reward row, and a
-  second tap to the same person inside 30 days produces none.
+### R1 · Earn on a real tap — **built, not yet run on the phones**
+- ✅ A settled payment runs the rules and writes reward rows (`Service.reward_for_payment`,
+  called from `_settle`). Refusals are written down too, in `reward_attempts`.
+- ✅ The Seeker check is the **server's own**, on mainnet (`genesis.py`), not the badge the
+  phone claims — verified against the real wallet: `is_seeker` True, devnet history from
+  2026-09-06.
+- ✅ `POST /v1/rewards/preview` — the review screen asks what a payment *would* earn, so the
+  rules exist once. `GET /v1/rewards/<address>` is the earnings summary.
+- ✅ App: "Earns N SKR" / "New wallet · this payment won't earn SKR" on the review screen, and
+  "You earned N SKR" on the ✓ screen. All behind `rewards.enabled` in local.properties.
+- **Known weakness, to fix in R2:** `origin="tap"` is the phone's claim. A modified build
+  could send it for an online transfer. The server should corroborate — both phones
+  registering the same reference seconds apart is evidence the app can't fake alone.
+- **Check (still to do):** a real devnet tap between the two phones produces exactly one set
+  of reward rows, and a second tap to the same person inside 30 days produces none.
 - **Decision:** does the earn moment feel worth the screen space?
 
 ### R2 · Anti-farm hardening

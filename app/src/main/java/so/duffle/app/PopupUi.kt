@@ -7,6 +7,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutLinearInEasing
 import androidx.compose.foundation.gestures.Orientation
@@ -145,7 +146,10 @@ internal fun PopupScreen(
     peer: TapPayload,
     phase: Phase,
     connected: Boolean,
+    /** One letter for our own avatar. */
     me: String,
+    /** Our wallet address, when connected — what the reward preview is asked about. */
+    myAddress: String,
     history: Contact?,
     onDismiss: () -> Unit,
     onConnect: () -> Unit,
@@ -156,6 +160,8 @@ internal fun PopupScreen(
     onExplorer: (String) -> Unit,
     previewAmount: String? = null,
     holdings: List<Tokens.Holding>? = null,
+    /** What the payment just made earned, once the server knows. Shown on the ✓ screen. */
+    earned: Rewards.Earned? = null,
     /** How the sheet was opened: "nfc", "hce", "app" (in person) or "server", "notification". */
     cameFrom: String? = null,
 ) {
@@ -240,7 +246,8 @@ internal fun PopupScreen(
     // size animations it could be asked to place a shared element before it had been placed
     // itself, and crashed ("Uninitialized LayoutCoordinates").
     SharedTransitionLayout(Modifier.fillMaxSize()) {
-    CompositionLocalProvider(LocalTransition provides this, LocalVerified provides (genesis is Genesis.Check.Held)) {
+    CompositionLocalProvider(LocalTransition provides this, LocalVerified provides (genesis is Genesis.Check.Held),
+        LocalMe provides myAddress) {
     Box(
         Modifier.fillMaxSize()
             .drawBehind { drawRect(Color.Black.copy(alpha = .28f * scrim.value * (1f - dismissFraction()))) }
@@ -319,7 +326,7 @@ internal fun PopupScreen(
                         )
                         "waiting" -> (phase as? Phase.Waiting)?.let { WaitingBody(peer.label, it.amount, it.symbol, close) }
                         "success" -> (phase as? Phase.Success)?.let {
-                            ResultBody(Result.Success, it.title, it.detail, it.signature, onExplorer) {
+                            ResultBody(Result.Success, it.title, it.detail, it.signature, onExplorer, earned) {
                                 PrimaryButton("Done", close)
                             }
                         }
@@ -507,6 +514,9 @@ private val LocalShared = compositionLocalOf<SharedScopes?> { null }
 /** Whether the chain has confirmed the other phone is a Seeker, for anything deep in the sheet. */
 private val LocalVerified = compositionLocalOf { false }
 
+/** The connected wallet's address. The review screen asks the server what it would earn. */
+private val LocalMe = compositionLocalOf { "" }
+
 @OptIn(ExperimentalSharedTransitionApi::class)
 private val LocalTransition = compositionLocalOf<SharedTransitionScope?> { null }
 
@@ -634,6 +644,13 @@ private fun ConfirmBody(
     val enough = known && left >= 0
     val brand = Brand.of(peer, LocalVerified.current)
 
+    // Asked of the server, not worked out here: one copy of the rules, and it is the copy that
+    // will decide. Null — no server, no answer — shows nothing at all.
+    val me = LocalMe.current
+    val reward by produceState<Rewards.Preview?>(initialValue = null, me, peer.address, token.token, units) {
+        if (units > 0 && me.isNotBlank()) value = Rewards.preview(me, peer.address, token.token, units)
+    }
+
     Column(Modifier.fillMaxWidth()) {
         Box(Modifier.shared("logo-${token.token}")) { TokenImage(token, 52.dp) }
         Spacer(Modifier.height(12.dp))
@@ -680,10 +697,41 @@ private fun ConfirmBody(
             )
         }
 
+        RewardLine(reward)
+
         Spacer(Modifier.height(20.dp))
         PrimaryButton(working ?: if (enough) "Confirm and pay" else if (known) "Not enough ${token.symbol}" else "No ${token.symbol} in your wallet", onConfirm, Modifier.fillMaxWidth().shared("primary", bounds = true),
             enabled = enough, loading = working != null)
         AnimatedVisibility(visible = working == null) { TextLink("Back", onBack, modifier = Modifier.shared("secondary", bounds = true)) }
+    }
+}
+
+/**
+ * What this payment earns, said before it is made — or why it earns nothing.
+ *
+ * Nobody should learn a reward rule by not being paid. The refusal is the important half: a
+ * wallet made this morning earns nothing, and the person tapping it deserves to know that
+ * while they can still decide, rather than wondering afterwards.
+ */
+@Composable
+private fun RewardLine(reward: Rewards.Preview?) {
+    val why = Rewards.sayWhy(reward)
+    AnimatedVisibility(visible = reward != null && (reward.earns || why != null)) {
+        val earns = reward?.earns == true
+        Row(
+            Modifier.fillMaxWidth().padding(top = 10.dp)
+                .background(if (earns) D.Blue.copy(alpha = .07f) else D.Fill, RoundedCornerShape(12.dp))
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            HIcon(if (earns) R.drawable.hi_gift else R.drawable.hi_info, if (earns) D.Blue else D.Quiet, 18.dp)
+            Spacer(Modifier.width(8.dp))
+            Text(
+                if (earns) "Earns ${reward?.skr} SKR" else why.orEmpty(),
+                color = if (earns) D.Blue else D.Quiet,
+                fontSize = 14.sp, fontWeight = if (earns) FontWeight.SemiBold else FontWeight.Medium,
+            )
+        }
     }
 }
 
@@ -1010,7 +1058,8 @@ private enum class Result { Success, Calm, Failed }
 @Composable
 private fun ResultBody(
     kind: Result, title: String, detail: String, signature: String?,
-    onExplorer: (String) -> Unit, actions: @Composable () -> Unit,
+    onExplorer: (String) -> Unit, earned: Rewards.Earned? = null,
+    actions: @Composable () -> Unit,
 ) {
     // The mark pops in on a spring; the success haptic fires as the phase changes, so the two
     // land together.
@@ -1038,6 +1087,21 @@ private fun ResultBody(
                 HIcon(R.drawable.hi_arrow_up_right, D.Blue, 16.dp)
             }
         }
+        // Arrives seconds after the ✓, because the server only decides once the payment is on
+        // the chain. It slides in rather than appearing, so it reads as something that happened
+        // rather than something that was always there.
+        AnimatedVisibility(visible = earned != null, enter = fadeIn(tween(260)) + expandVertically(spring(dampingRatio = 0.75f, stiffness = 158f))) {
+            Row(
+                Modifier.padding(top = 14.dp).background(D.Blue.copy(alpha = .08f), RoundedCornerShape(999.dp))
+                    .padding(horizontal = 14.dp, vertical = 9.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                HIcon(R.drawable.hi_gift, D.Blue, 18.dp)
+                Spacer(Modifier.width(7.dp))
+                Text("You earned ${earned?.skr ?: 0} SKR", color = D.Blue, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+            }
+        }
+
         Spacer(Modifier.height(20.dp))
         actions()
     }

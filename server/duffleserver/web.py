@@ -141,6 +141,12 @@ def make_handler(service, helius_auth: str | None, limiter: RateLimit | None = N
                     heard = service.relay_tap(body.get("to"), body.get("address"), body.get("label", ""),
                                               genesis=body.get("genesis") or None, brand=body.get("brand") or None)
                     return self._json(200, {"live": heard})
+                if path == "/v1/rewards/preview":
+                    # A read, but a POST: the wallet addresses belong in a body, not in a URL
+                    # that proxies and logs keep.
+                    return self._json(200, service.reward_preview(
+                        body.get("payer") or "", body.get("counterparty") or "",
+                        body.get("token") or "SOL", int(body.get("units") or 0)))
                 if path == "/v1/rewards/config":
                     # Changing what rewards cost is an owner's action, not a user's.
                     if not admin_token or self.headers.get("Authorization") != f"Bearer {admin_token}":
