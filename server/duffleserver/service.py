@@ -5,6 +5,7 @@ are paid, and ring the payee. Everything network-facing is injected so tests run
 from __future__ import annotations
 
 import logging
+import calendar
 import re
 import threading
 import time
@@ -39,12 +40,15 @@ def next_check_after(age: float) -> float:
 
 class Service:
     def __init__(self, store: Store, rpc, hub: Hub | None = None, fcm: Fcm | None = None,
+                 facts=None,
                  helius: AddressSync | None = None, workers: int = 4):
         self.store = store
         self.rpc = rpc
         self.hub = hub or Hub()
         self.fcm = fcm or Fcm(None, None)
         self.helius = helius
+        #: Reads Genesis and wallet age from the chain. None means rewards never pay out.
+        self.facts = facts
         self._pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="check")
         self._inflight: set[str] = set()
         self._inflight_lock = threading.Lock()
@@ -55,7 +59,7 @@ class Service:
 
     def register(self, reference: str, recipient: str, amount: str, label: str = "",
                  payer: str | None = None, genesis: str | None = None,
-                 token: str = "SOL", decimals: int = 9, symbol: str = "SOL") -> dict:
+                 token: str = "SOL", decimals: int = 9, symbol: str = "SOL", origin: str = "") -> dict:
         if not verify.is_address(reference):
             raise ValueError("invalid reference")
         if not verify.is_address(recipient):
@@ -89,7 +93,7 @@ class Service:
             raise ValueError("invalid amount")
         label = str(label or "")[:64]
         result = self.store.register(reference, recipient, str(amount).strip(), want, label, payer, genesis,
-                                     token, decimals, symbol)
+                                     token, decimals, symbol, str(origin or "")[:16])
         if result.get("created"):
             if self.helius:
                 self.helius.touch()
@@ -191,6 +195,70 @@ class Service:
             log.info("reward config changed: %s", changed)
         return {"config": config_as_dict(after), "changed": changed, "ignored": ignored}
 
+    def reward_for_payment(self, req: dict) -> rewards.Decision:
+        """Run the rules over a payment that just settled, and write down what happened —
+        including when nothing was earned. The refusals are how farming becomes visible, and
+        how the app can answer "why didn't I get anything?"."""
+        now = time.time()
+        reference, payer, recipient = req["reference"], req.get("payer"), req["recipient"]
+        if not payer:
+            # A request registered by the asking phone alone: nobody to pay.
+            self.store.record_attempt(reference, "", recipient, rewards.NO_PAYER, 0, now)
+            return rewards.Decision(refused=rewards.NO_PAYER)
+
+        # Asked of the chain by us. The phone's own claim to be a Seeker is not evidence when
+        # money depends on it.
+        payer_is_seeker = self.facts.is_seeker(payer) if self.facts else False
+        if payer_is_seeker is None:
+            self.store.record_attempt(reference, payer, recipient, rewards.CHAIN_UNREACHABLE, 0, now)
+            return rewards.Decision(refused=rewards.CHAIN_UNREACHABLE)
+
+        config = self.reward_config()
+        week = rewards.week_of(now)
+        past = self.store.reward_history(payer, recipient, now, week, month_start(now))
+        history = rewards.History(
+            payer_is_seeker=payer_is_seeker,
+            counterparty_is_seeker=bool(self.facts and self.facts.is_seeker(recipient)),
+            counterparty_first_seen=self.facts.first_seen(recipient) if self.facts else None,
+            rewarded_this_week=past["rewarded_this_week"],
+            earned_in_campaign=past["earned_in_campaign"],
+            earned_this_month=past["earned_this_month"],
+            pool_left=max(0, config.weekly_pool - past["week_spent"]),
+            last_reward_with_counterparty=past["last_reward_with_counterparty"],
+            had_first_payment=past["had_first_payment"],
+        )
+        payment = rewards.Payment(reference, payer, recipient, req.get("token") or "SOL",
+                                  int(req["lamports"]), req.get("origin") or "")
+        decision = rewards.evaluate(payment, history, now, config)
+
+        if decision.earned:
+            written = self.store.record_rewards(
+                reference, payer, recipient, [(a.kind, a.skr) for a in decision.awards],
+                week, now, decision.unlock_at or now,
+            )
+            if written:
+                log.info("reward %s SKR to %s… for %s…", decision.total, payer[:8], reference[:8])
+                self._deliver(payer, {"type": "reward", "reference": reference, "skr": decision.total,
+                                      "kinds": ",".join(a.kind for a in decision.awards),
+                                      "unlock_at": decision.unlock_at or now})
+        self.store.record_attempt(reference, payer, recipient, decision.refused, decision.total, now)
+        return decision
+
+    def reward_summary(self, address: str) -> dict:
+        """What one person has earned, for their rewards screen."""
+        now = time.time()
+        config = self.reward_config()
+        week = rewards.week_of(now)
+        past = self.store.reward_history(address, "", now, week, month_start(now))
+        balance = self.store.reward_balance(address, now)
+        return {
+            "balance": balance,
+            "this_week": {"rewarded_payments": past["rewarded_this_week"], "of": config.weekly_payments},
+            "this_month": {"earned": past["earned_this_month"], "cap": config.monthly_cap},
+            "pool_left": max(0, config.weekly_pool - past["week_spent"]),
+            "recent": self.store.rewards_for(address, 20),
+        }
+
     # -- checks -----------------------------------------------------------------------------
 
     def check_signature(self, signature: str) -> list[str]:
@@ -252,6 +320,7 @@ class Service:
     def _settle(self, req: dict, signature: str) -> bool:
         if not self.store.mark_paid(req["reference"], signature):
             return False
+        self._safe(self.reward_for_payment, req)
         event = {"type": "paid", "reference": req["reference"], "signature": signature, "amount": req["amount"],
                  "symbol": req.get("symbol") or "SOL"}
         log.info("PAID %s… by %s…", req["reference"][:8], signature[:8])
@@ -277,3 +346,9 @@ def config_as_dict(c: rewards.Config) -> dict:
     out = {k: getattr(c, k) for k in rewards.Config.TUNABLE}
     out["minimums"] = dict(c.minimums)
     return out
+
+
+def month_start(at: float) -> float:
+    """Midnight UTC on the first of the month `at` falls in — the monthly cap's window."""
+    t = time.gmtime(at)
+    return calendar.timegm((t.tm_year, t.tm_mon, 1, 0, 0, 0, 0, 0, 0))

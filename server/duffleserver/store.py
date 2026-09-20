@@ -90,7 +90,9 @@ class Store:
                               # What was asked for: "SOL" or an SPL mint. `lamports` then holds
                               # the amount in that token's smallest unit.
                               ("token", "TEXT NOT NULL DEFAULT 'SOL'"), ("decimals", "INTEGER NOT NULL DEFAULT 9"),
-                              ("symbol", "TEXT NOT NULL DEFAULT 'SOL'")):
+                              ("symbol", "TEXT NOT NULL DEFAULT 'SOL'"),
+                              # How the payment started: only "tap" earns a reward.
+                              ("origin", "TEXT NOT NULL DEFAULT ''")):
                 if col not in cols:
                     self._db.execute(f"ALTER TABLE requests ADD COLUMN {col} {kind}")
             self._db.execute("CREATE INDEX IF NOT EXISTS by_payer ON requests(payer, status)")
@@ -99,15 +101,16 @@ class Store:
 
     def register(self, reference: str, recipient: str, amount: str, lamports: int, label: str,
                  payer: str | None = None, genesis: str | None = None,
-                 token: str = "SOL", decimals: int = 9, symbol: str = "SOL") -> dict:
+                 token: str = "SOL", decimals: int = 9, symbol: str = "SOL", origin: str = "") -> dict:
         now = time.time()
         with self._lock, self._db:
             row = self._db.execute("SELECT * FROM requests WHERE reference=?", (reference,)).fetchone()
             if row is None:
                 self._db.execute(
                     "INSERT INTO requests(reference,recipient,amount,lamports,label,created_at,next_check,payer,genesis,"
-                    "token,decimals,symbol) VALUES (?,?,?,?,?,?,0,?,?,?,?,?)",
-                    (reference, recipient, amount, lamports, label[:64], now, payer, genesis, token, decimals, symbol[:12]),
+                    "token,decimals,symbol,origin) VALUES (?,?,?,?,?,?,0,?,?,?,?,?,?)",
+                    (reference, recipient, amount, lamports, label[:64], now, payer, genesis, token, decimals,
+                     symbol[:12], origin[:16]),
                 )
                 return {"status": "open", "created": True}
             if row["recipient"] != recipient or row["lamports"] != lamports or row["token"] != token:
@@ -118,6 +121,10 @@ class Store:
             # to tell when the request is withdrawn. Never overwrites a payer already recorded.
             if payer and not row["payer"]:
                 self._db.execute("UPDATE requests SET payer=? WHERE reference=?", (payer, reference))
+            # Same for the origin: the phone that taps knows it was a tap; the one that served
+            # the request may not have said so.
+            if origin and not row["origin"]:
+                self._db.execute("UPDATE requests SET origin=? WHERE reference=?", (origin[:16], reference))
             # A repeat registration is a nudge: look now rather than on the next sweep.
             if row["status"] == "open":
                 self._db.execute("UPDATE requests SET next_check=0 WHERE reference=?", (reference,))
@@ -275,6 +282,15 @@ class Store:
                 " ON CONFLICT(reference) DO UPDATE SET refused=excluded.refused, skr=excluded.skr, at=excluded.at",
                 (reference, payer, counterparty, refused, int(skr), at),
             )
+
+    def reward_attempts(self, limit: int = 100) -> list[dict]:
+        """Every payment the rules looked at, oldest first — including the ones that earned
+        nothing. This is the only place a farming pattern, or a rule refusing too much, is
+        visible; R2's admin view reads it."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT * FROM reward_attempts ORDER BY at LIMIT ?", (limit,)).fetchall()
+        return [dict(r) for r in rows]
 
     def rewards_for(self, payer: str, limit: int = 50) -> list[dict]:
         with self._lock:

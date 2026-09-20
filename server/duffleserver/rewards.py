@@ -30,6 +30,10 @@ WEEKLY_CAP = "weekly_cap"
 MONTHLY_CAP = "monthly_cap"
 CAMPAIGN_CAP = "campaign_cap"
 POOL_EMPTY = "pool_empty"
+#: The chain could not be asked. Not a refusal — something to try again, in R2.
+CHAIN_UNREACHABLE = "chain_unreachable"
+#: We never learned who paid, so there is nobody to pay.
+NO_PAYER = "no_payer"
 
 # What a reward is for.
 FIRST_PAYMENT = "first_payment"

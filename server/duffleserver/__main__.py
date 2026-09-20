@@ -6,7 +6,8 @@ import os
 import threading
 from pathlib import Path
 
-from .chain import Rpc
+from .chain import PUBLIC_MAINNET, Rpc
+from .genesis import Chainfacts
 from .helius import AddressSync
 from .web import serve
 from .notify import Fcm
@@ -38,6 +39,11 @@ def main() -> None:
     rpc_url = env("DUFFLE_RPC_URL") or (
         f"https://devnet.helius-rpc.com/?api-key={helius_key}" if helius_key else "https://api.devnet.solana.com"
     )
+    # Genesis Tokens only exist on mainnet, so the reward check needs a second endpoint even
+    # though payments run on devnet. Asking devnet would tell every Seeker owner they own nothing.
+    mainnet_url = env("DUFFLE_MAINNET_RPC") or (
+        f"https://mainnet.helius-rpc.com/?api-key={helius_key}" if helius_key else PUBLIC_MAINNET
+    )
     store = Store(env("DUFFLE_DB", "duffle.db"))
     helius = AddressSync(
         store,
@@ -47,11 +53,13 @@ def main() -> None:
         webhook_type=env("HELIUS_WEBHOOK_TYPE", "rawDevnet"),
         auth=env("HELIUS_AUTH"),
     )
+    rpc = Rpc(rpc_url)
     service = Service(
         store,
-        Rpc(rpc_url),
+        rpc,
         fcm=Fcm(env("FCM_PROJECT_ID"), env("GOOGLE_APPLICATION_CREDENTIALS")),
         helius=helius,
+        facts=Chainfacts(Rpc(mainnet_url, fallback=PUBLIC_MAINNET), rpc),
     )
     helius.start()
     stop = threading.Event()
@@ -62,8 +70,8 @@ def main() -> None:
     # one, the numbers are read-only.
     httpd = serve(service, host, port, env("HELIUS_AUTH"), admin_token=env("DUFFLE_ADMIN_TOKEN"))
     logging.getLogger("duffle").info(
-        "listening on %s:%d · rpc %s · push %s · helius webhook %s", host, port,
-        rpc_url.split("?")[0],
+        "listening on %s:%d · rpc %s · genesis %s · push %s · helius webhook %s", host, port,
+        rpc_url.split("?")[0], mainnet_url.split("?")[0],
         "on" if service.fcm.enabled else "off", "on" if helius.enabled else "off (chain polling only)",
     )
     try:

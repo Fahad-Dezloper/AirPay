@@ -19,6 +19,7 @@ log = logging.getLogger("duffle.web")
 
 MAX_BODY = 2 * 1024 * 1024
 HEARTBEAT = 15.0
+_REWARDS_PATH = re.compile(r"^/v1/rewards/([1-9A-HJ-NP-Za-km-z]{32,44})$")
 _REQ_PATH = re.compile(r"^/v1/requests/([1-9A-HJ-NP-Za-km-z]{32,44})$")
 
 
@@ -82,6 +83,12 @@ def make_handler(service, helius_auth: str | None, limiter: RateLimit | None = N
                 if not req:
                     return self._json(404, {"error": "unknown reference"})
                 return self._json(200, {"status": req["status"], "signature": req["signature"], "amount": req["amount"]})
+            m = _REWARDS_PATH.match(url.path)
+            if m:
+                from .verify import is_address
+                if not is_address(m.group(1)):
+                    return self._json(400, {"error": "invalid address"})
+                return self._json(200, service.reward_summary(m.group(1)))
             if url.path == "/v1/rewards/config":
                 # Public on purpose: the app shows these amounts, and a screen promising a
                 # number the server no longer pays would be worse than showing nothing.
@@ -103,7 +110,7 @@ def make_handler(service, helius_auth: str | None, limiter: RateLimit | None = N
                                            body.get("amount"), body.get("label", ""),
                                            payer=body.get("payer") or None, genesis=body.get("genesis") or None,
                                            token=body.get("token") or "SOL", decimals=body.get("decimals", 9),
-                                           symbol=body.get("symbol") or "SOL")
+                                           symbol=body.get("symbol") or "SOL", origin=body.get("origin") or "")
                     return self._json(200, {"status": out["status"], "signature": out.get("signature")})
                 if path == "/v1/rpc":
                     # The phones share one public Solana endpoint that rate-limits after a

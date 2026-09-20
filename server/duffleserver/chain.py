@@ -17,6 +17,7 @@ class RpcError(Exception):
 
 
 PUBLIC_DEVNET = "https://api.devnet.solana.com"
+PUBLIC_MAINNET = "https://api.mainnet-beta.solana.com"
 
 
 class Rpc:
