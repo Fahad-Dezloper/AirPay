@@ -225,6 +225,30 @@ class OnChainTest(unittest.TestCase):
         self.assertEqual(0, self.svc.check_claims(now=self.AT + 60))
         self.assertEqual(offers.BELOW_MINIMUM, self.store.claim("pay-app", SEEKER)["refused"])
 
+    def test_an_offer_payout_lands_in_the_same_ledger_as_tap_rewards(self):
+        """One ledger, not two. With a separate one the app showed a balance that left offers
+        out, and the weekly pool never saw the spend — so the promise that an unfunded campaign
+        costs nothing beyond the budget was not actually being kept."""
+        self.open_claim(self.AT - 60)
+        self.svc.check_claims(now=self.AT + 60)
+        self.assertEqual(300, self.store.reward_balance(SEEKER, self.AT + 60)["total"])
+        self.assertEqual(["offer"], [r["kind"] for r in self.store.rewards_for(SEEKER)])
+        self.assertEqual(300, self.svc.reward_summary(SEEKER)["balance"]["total"])
+        # It spends the pool — checked against the week the payout was recorded in, not the
+        # wall clock, which is a different week in this fixture.
+        from duffleserver import rewards as R
+        at = self.AT + 60
+        past = self.store.reward_history(SEEKER, "", at, R.week_of(at), 0)
+        self.assertEqual(300, past["week_spent"])
+        # ...but is not a payment, so it neither advances the weekly count nor the streak.
+        self.assertEqual(0, past["rewarded_this_week"])
+
+    def test_an_offer_is_not_paid_into_the_ledger_twice(self):
+        self.open_claim(self.AT - 60)
+        self.svc.check_claims(now=self.AT + 60)
+        self.svc.check_claims(now=self.AT + 120)
+        self.assertEqual(1, len(self.store.rewards_for(SEEKER)))
+
     def test_a_claim_nobody_satisfied_in_time_expires(self):
         self.open_claim(self.AT - 300 * HOUR)
         self.svc.check_claims(now=self.AT + 60)

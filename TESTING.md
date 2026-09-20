@@ -38,8 +38,28 @@ separate the phones now" straight after.
 tapper never saw it — which is the one case it exists for. It now asks as soon as the amount is
 known, and for a request it shows on the first screen, under the amount.
 
-Still owed from this session: a payment of **0.05 SOL or more**, which is what the offer and the
-reward minimum both need. Everything above was run with 0.01.
+### Second tap, 0.05 SOL — the offer path
+
+| | |
+|---|---|
+| Tap + payment | ✅ `125DKtKz…`, 0.05 SOL, confirmed |
+| Warning before paying | ✅ **"New wallet · this payment won't earn SKR" on the first screen**, before Pay — the fix works |
+| Tap reward | ✅ refused `new_counterparty` — the OnePlus wallet was 6.7 days old against a 7-day rule, correct to the hour |
+| **Offer** | ✅ **paid 150 SKR**, 32 seconds after the payment landed |
+| Balance shown | ❌ **bug, fixed** — said 300, should have been 450 |
+
+**The bug.** Offer payouts were written to the claims table only, so they were missing from the
+balance the app shows *and* never drew down the weekly pool — which quietly broke the promise
+that an unfunded campaign costs nothing beyond the budget. Offer payouts now go into the same
+ledger as tap rewards (`kind="offer"`), so the balance, the pool, the caps and the admin ledger
+all see them. `kind` keeps them out of the weekly payment count and the streak, which are about
+paying people, not claiming offers.
+
+The already-paid claim was re-opened so the real code path settled it again rather than
+hand-editing a number: balance 450, pool 2400 → 1950.
+
+Still owed from this session: the USDC request, expiry, push to a closed app, and the Rewards
+tab on the OnePlus.
 
 ## Never run at all
 

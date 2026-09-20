@@ -199,6 +199,7 @@ object Rewards {
         "first_payment" -> "First payment"
         "per_payment" -> "Paid in person"
         "streak" -> "Weekly streak"
+        "offer" -> "Offer completed"
         else -> kind.replace('_', ' ').replaceFirstChar { it.uppercase() }
     }
 

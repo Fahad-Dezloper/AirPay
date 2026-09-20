@@ -375,6 +375,16 @@ class Service:
                 if self.store.settle_claim(offer.id, c["address"], offers.PAID, d.skr,
                                            d.signature, None, now):
                     settled += 1
+                    # Written into the SAME ledger as tap rewards, not a second one beside it.
+                    # Two ledgers meant the app showed a balance that left offers out, and —
+                    # worse — the weekly pool never saw the spend, so the promise that an
+                    # unfunded campaign costs nothing beyond the budget was not actually kept.
+                    # kind="offer" keeps it out of the weekly payment count and the streak,
+                    # which are about paying people, while the caps and the pool now include it.
+                    config = self.reward_config()
+                    self.store.record_rewards(
+                        d.signature or f"offer:{offer.id}:{c['address']}", c["address"], offer.address,
+                        [("offer", d.skr)], rewards.week_of(now), now, now + config.lock_days * rewards.DAY)
                     log.info("offer %s paid %s SKR to %s… (%s…)", offer.id, d.skr,
                              c["address"][:8], (d.signature or "")[:8])
                     self._deliver(c["address"], {"type": "offer", "offer": offer.id, "app": offer.app,
