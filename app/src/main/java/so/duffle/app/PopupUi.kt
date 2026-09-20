@@ -441,6 +441,23 @@ private fun Form(
     // flies out of the chip to sit above the number, the amount glides into place, "SOL" grows, and
     // the two buttons stay exactly where they are while their words change. Only the middle —
     // keypad or details — fades from one to the other.
+    // What this payment would earn, asked here rather than on the review screen.
+    //
+    // It used to be asked when the review opened, and someone who went from "Pay" to "Confirm"
+    // in a second never saw the answer: the request was still in flight when the screen moved
+    // on, and was cancelled with it. A warning nobody has time to read is not a warning. For a
+    // request the amount is known the moment the sheet opens, so the call has the whole time
+    // the person spends reading it.
+    val req0 = (peer as? TapPayload.Request)?.request
+    val payAmount0 = req0?.amount ?: amount
+    val decimals0 = req0?.decimals ?: holdings?.firstOrNull { it.token == token }?.decimals ?: 9
+    val units0 = PayRequest.baseUnits(payAmount0, decimals0) ?: 0L
+    val me0 = LocalMe.current
+    val reward by produceState<Rewards.Preview?>(initialValue = null, me0, peer.address, req0?.token ?: token, units0) {
+        value = null
+        if (units0 > 0 && me0.isNotBlank()) value = Rewards.preview(me0, peer.address, req0?.token ?: token, units0)
+    }
+
     val transition = LocalTransition.current
     AnimatedContent(
         targetState = confirming,
@@ -459,9 +476,13 @@ private fun Form(
                 val shown = held ?: req?.let { Tokens.Holding(it.mint, it.symbol, it.symbol, it.decimals, 0, null) }
                     ?: holdings?.firstOrNull() ?: SolPlaceholder
                 ConfirmBody(peer, payAmount, shown, known = holdings != null && held != null, working = working,
+                    reward = reward,
                     onConfirm = { onPay(payAmount, if (req == null) shown else null) }, onBack = { onConfirming(false) })
             } else {
-                Entry(peer, working, amount, onAmount, token, onToken, holdings, { onConfirming(true) }, onRequest, onDecline, onLater)
+                Entry(peer, working, amount, onAmount, token, onToken, holdings, { onConfirming(true) }, onRequest, onDecline, onLater,
+                    // Shown here too when the amount is already fixed: on a request there is
+                    // nothing left to change, so the earlier they read it the better.
+                    reward = if (peer is TapPayload.Request) reward else null)
             }
         }
         }
@@ -551,11 +572,13 @@ private fun Entry(
     onRequest: (String, Tokens.Holding?) -> Unit,
     onDecline: () -> Unit,
     onLater: () -> Unit,
+    reward: Rewards.Preview? = null,
 ) {
     if (peer is TapPayload.Request) {
         val asked = peer.request.amount
         Text("Asks you for", color = D.Quiet, fontSize = 13.sp, modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center)
         AmountDisplay(asked, null, peer.request.symbol, centred = true)
+        RewardLine(reward)
         Spacer(Modifier.height(24.dp))
         PrimaryButton(working ?: "Pay $asked ${peer.request.symbol}", onReview,
             Modifier.fillMaxWidth().shared("primary", bounds = true), loading = working != null)
@@ -624,6 +647,8 @@ private fun ConfirmBody(
     /** False when the wallet's balance of this token isn't known (or it holds none). */
     known: Boolean,
     working: String?,
+    /** What this payment would earn. Asked by the caller, long before this screen opened. */
+    reward: Rewards.Preview?,
     onConfirm: () -> Unit,
     onBack: () -> Unit,
 ) {
@@ -643,13 +668,6 @@ private fun ConfirmBody(
     val left = if (token.isSol) token.units - solCost else token.units - units
     val enough = known && left >= 0
     val brand = Brand.of(peer, LocalVerified.current)
-
-    // Asked of the server, not worked out here: one copy of the rules, and it is the copy that
-    // will decide. Null — no server, no answer — shows nothing at all.
-    val me = LocalMe.current
-    val reward by produceState<Rewards.Preview?>(initialValue = null, me, peer.address, token.token, units) {
-        if (units > 0 && me.isNotBlank()) value = Rewards.preview(me, peer.address, token.token, units)
-    }
 
     Column(Modifier.fillMaxWidth()) {
         Box(Modifier.shared("logo-${token.token}")) { TokenImage(token, 52.dp) }

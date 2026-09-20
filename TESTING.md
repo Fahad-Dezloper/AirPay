@@ -16,13 +16,37 @@ in one sitting and the bugs fixed together.
   locked phone serves nothing. The agent cannot enter the PIN.
 - Don't screenshot mid-tap; it has been linked to reader mode being torn down.
 
+## Run on 2026-09-20 — results
+
+The first real two-phone session. **The tap works on wire v4**: two genuine NFC taps, both
+`IsoDep, NfcA`, `maxTransceive=65279B`, request received and read in about 290ms, "you can
+separate the phones now" straight after.
+
+| | |
+|---|---|
+| Tap over NFC | ✅ twice |
+| Payment end to end | ✅ `221qSFVu…`, 0.010025 SOL, confirmed on devnet |
+| Genesis badge | ✅ "Verified Seeker — genesis 8eYAaFEy…" |
+| Contacts | ✅ "known contact CPH2401" |
+| Decline | ✅ server logged the rejection to the asking phone |
+| Reward rules | ✅ refused, correctly: 0.01 SOL is under the 0.05 minimum |
+| Offer | ✅ refused for the same reason — it wants 0.05 |
+| **Warning before paying** | ❌ **bug, fixed** — see below |
+
+**The bug.** The "won't earn" line was only asked for when the review screen opened. Going from
+"Pay" to "Confirm" in about a second cancelled the request before it left the phone, so a fast
+tapper never saw it — which is the one case it exists for. It now asks as soon as the amount is
+known, and for a request it shows on the first screen, under the amount.
+
+Still owed from this session: a payment of **0.05 SOL or more**, which is what the offer and the
+reward minimum both need. Everything above was run with 0.01.
+
 ## Never run at all
 
-1. **A real two-phone tap on the current build.** Wire went 3 → 4 and the rewards layer landed;
-   no genuine tap has happened since. This is the riskiest untested thing in the repo — nothing
-   built on top of it is trustworthy until it passes.
-2. **The OnePlus has an old build.** Only the Seeker has the rewards build. Install first
-   (`http://192.168.1.34:8777/tap.apk` over wifi, or the cable), then verify the md5.
+1. ~~A real two-phone tap on the current build.~~ **Passed 2026-09-20** (see above).
+2. ~~The OnePlus has an old build.~~ **Installed and md5-verified 2026-09-20.** It is one build
+   behind again after the warning fix; update it at the next cable swap (payer-side change only,
+   so it does not affect it as the payee).
 3. **A token request between the phones.** USDC/EURC over the tap path. A token *payment* was
    verified on-chain earlier (Seeker 20 → 19 USDC, OnePlus account created), but not through a
    tapped request on this build.
