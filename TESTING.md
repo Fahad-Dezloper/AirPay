@@ -71,7 +71,21 @@ spot because the app already knows whether the wallet holds Genesis. It now read
 — this wallet holds no Genesis Token" in place of the button, and the headline says the same
 rather than dangling "a payment by tapping earns 50 SKR" at someone who cannot earn it.
 
-Still owed from this session: the USDC payment over a tap, expiry, and push to a closed app.
+### USDC over a tap
+
+✅ Works — token list showed the real holdings, `transferChecked` paid 1 USDC over a tap.
+
+❌ **Bug, fixed: the payer's own phone was notified of its own request.** Paying 1 USDC from
+the Seeker raised "Seeker requests 1 USDC" **on the Seeker**. Two mistakes in one call:
+
+- the paying phone registers the request before paying (so the server watches it, knows who to
+  tell on a withdrawal, and can attribute the reward) — and the server delivered that request
+  back to the payer, because it cannot tell who is calling. There is now a `deliver` flag: the
+  payer says "I already have this". The relay after the phones part still delivers.
+- the label sent was `Identity.label(us)` — our own name — instead of the payee's, which is why
+  the notification read "Seeker requests" on the Seeker.
+
+Still owed from this session: expiry, and push to a closed app.
 
 ## Never run at all
 

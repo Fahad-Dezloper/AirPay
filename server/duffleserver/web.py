@@ -132,7 +132,8 @@ def make_handler(service, helius_auth: str | None, limiter: RateLimit | None = N
                                            body.get("amount"), body.get("label", ""),
                                            payer=body.get("payer") or None, genesis=body.get("genesis") or None,
                                            token=body.get("token") or "SOL", decimals=body.get("decimals", 9),
-                                           symbol=body.get("symbol") or "SOL", origin=body.get("origin") or "")
+                                           symbol=body.get("symbol") or "SOL", origin=body.get("origin") or "",
+                                           deliver=body.get("deliver") is not False)
                     return self._json(200, {"status": out["status"], "signature": out.get("signature")})
                 if path == "/v1/rpc":
                     # The phones share one public Solana endpoint that rate-limits after a

@@ -62,7 +62,8 @@ class Service:
 
     def register(self, reference: str, recipient: str, amount: str, label: str = "",
                  payer: str | None = None, genesis: str | None = None,
-                 token: str = "SOL", decimals: int = 9, symbol: str = "SOL", origin: str = "") -> dict:
+                 token: str = "SOL", decimals: int = 9, symbol: str = "SOL", origin: str = "",
+                 deliver: bool = True) -> dict:
         if not verify.is_address(reference):
             raise ValueError("invalid reference")
         if not verify.is_address(recipient):
@@ -101,7 +102,14 @@ class Service:
             if self.helius:
                 self.helius.touch()
             # A request addressed to someone: the phones have parted, so the server carries it.
-            if payer:
+            #
+            # `deliver` is how a phone says "I am the payer, I already have this" — the paying
+            # phone registers the request itself before paying, so that the server is watching
+            # and knows who to tell if it is withdrawn. Delivering it back to them rang their
+            # own phone with their own request: "Seeker requests 1 USDC" on the Seeker, while
+            # it was paying the OnePlus. The server cannot work this out for itself, because
+            # nothing here says who is calling.
+            if payer and deliver:
                 self._deliver(payer, {"type": "request", "reference": reference, "recipient": recipient,
                                       "amount": str(amount).strip(), "label": label, "genesis": genesis or "",
                                       "token": token, "decimals": decimals, "symbol": symbol})

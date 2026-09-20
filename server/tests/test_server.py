@@ -235,6 +235,28 @@ class DeliveryTest(unittest.TestCase):
         q.get(timeout=1)
         self.assertTrue(q.empty())
 
+    def test_the_paying_phone_is_not_rung_with_its_own_request(self):
+        """The payer registers the request itself before paying, so the server is watching and
+        knows who to tell if it is withdrawn. Delivering it back rang the payer's own phone with
+        its own request — "Seeker requests 1 USDC" on the Seeker, while it paid the OnePlus."""
+        fcm = FakeFcm()
+        svc = Service(Store(), FakeRpc(), fcm=fcm)
+        svc.add_device(PAYER, "p" * 40)
+        q = svc.hub.subscribe(PAYER)
+        svc.register(REF, TO, "0.01", "OnePlus", payer=PAYER, deliver=False)
+        self.assertTrue(q.empty(), "the payer already has this request — it made it")
+        self.assertEqual([], fcm.sent)
+        # It is still recorded as theirs, which is what the withdrawal and the reward need.
+        self.assertEqual(PAYER, svc.store.get(REF)["payer"])
+
+    def test_a_relayed_request_still_reaches_the_payer(self):
+        # The other half: "Request instead" after the phones parted has nobody but the server
+        # to carry it, and must keep working.
+        svc = Service(Store(), FakeRpc())
+        q = svc.hub.subscribe(PAYER)
+        svc.register(REF, TO, "0.01", "OnePlus", payer=PAYER)
+        self.assertEqual("request", q.get(timeout=1)["type"])
+
     def test_requests_to_yourself_or_garbage_payers_are_refused(self):
         svc = Service(Store(), FakeRpc())
         for payer in (TO, "nope"):

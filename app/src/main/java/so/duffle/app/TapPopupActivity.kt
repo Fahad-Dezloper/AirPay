@@ -198,7 +198,8 @@ class TapPopupActivity : ComponentActivity() {
                 // As payer: a request received by tapping was registered by the phone asking,
                 // which cannot know who will pay — so a withdrawal would reach nobody.
                 ServerClient.register(payload.request.reference, payload.request.recipient,
-                    payload.request.amount, payload.request.label, payer = address, origin = "tap")
+                    payload.request.amount, payload.request.label, payer = address, origin = "tap",
+                    deliver = false)
             }
         }
 
@@ -262,9 +263,12 @@ class TapPopupActivity : ComponentActivity() {
             // Registered before paying so the server is already watching and can tell the other
             // phone the instant it lands.
             launch {
-                ServerClient.register(req.reference, req.recipient, req.amount,
-                    Identity.label(this@TapPopupActivity), payer = payer,
-                    token = req.token, decimals = req.decimals, symbol = req.symbol, origin = "tap")
+                // req.label is the person being PAID. It used to send our own name, so the
+                // request was filed — and announced — as "Seeker requests 1 USDC" on the
+                // Seeker that was doing the paying.
+                ServerClient.register(req.reference, req.recipient, req.amount, req.label,
+                    payer = payer, token = req.token, decimals = req.decimals,
+                    symbol = req.symbol, origin = "tap", deliver = false)
             }
             val result = try {
                 Payments.pay(wallet, payer, req, stage = { phase = Phase.Working(it) }, log = { Log.i(TAG, it) })

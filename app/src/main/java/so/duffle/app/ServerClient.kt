@@ -60,6 +60,15 @@ object ServerClient {
          * whatever it already knows, so the nudge after paying never overwrites the tap.
          */
         origin: String = "",
+        /**
+         * Whether the server should carry this request to `payer`.
+         *
+         * False means "I am the payer, I already have it". The paying phone registers the
+         * request itself before paying — so the server is watching, knows who to tell if it is
+         * withdrawn, and can attribute the reward — and delivering it back rang its own phone
+         * with its own request. Only the relay after the phones have parted needs true.
+         */
+        deliver: Boolean = true,
     ): Boolean = post("/v1/requests", JSONObject().apply {
         put("reference", reference)
         put("recipient", recipient)
@@ -71,6 +80,7 @@ object ServerClient {
         put("decimals", decimals)
         put("symbol", symbol)
         if (origin.isNotEmpty()) put("origin", origin)
+        if (!deliver) put("deliver", false)
     })
 
     /**

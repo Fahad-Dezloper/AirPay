@@ -511,7 +511,8 @@ class MainActivity : ComponentActivity() {
             // tell when it was withdrawn.
             lifecycleScope.launch {
                 ServerClient.register(req.reference, req.recipient, req.amount, req.label, payer = connected,
-                    token = req.token, decimals = req.decimals, symbol = req.symbol, origin = "tap")
+                    token = req.token, decimals = req.decimals, symbol = req.symbol, origin = "tap",
+                    deliver = false)
             }
         }
 
