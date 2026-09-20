@@ -275,7 +275,7 @@ class MainActivity : ComponentActivity() {
                         }
 
                         if (tab == Tab.REWARDS) {
-                            RewardsTab(connected)
+                            RewardsTab(connected, myGenesis != null)
                             return@Column
                         }
 
@@ -1109,7 +1109,7 @@ private fun RequestsTab(
  * layer's whole defence against farming is rules that refuse.
  */
 @Composable
-private fun RewardsTab(connected: String?) {
+private fun RewardsTab(connected: String?, isSeeker: Boolean) {
     var summary by remember { mutableStateOf<Rewards.Summary?>(null) }
     var offers by remember { mutableStateOf<List<Rewards.Offer>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
@@ -1191,6 +1191,12 @@ private fun RewardsTab(connected: String?) {
                         }
                         offer.state == "expired" ->
                             Text("The window closed — claim it again", color = Dim, fontSize = 13.sp)
+                        // Say it before, not after. A green Claim button on a phone that can
+                        // never claim is the same mistake as a reward rule nobody hears about
+                        // until they are not paid — and this one is answerable on the spot,
+                        // because the app already knows whether this wallet holds Genesis.
+                        !isSeeker -> Text("Seeker only — this wallet holds no Genesis Token",
+                            color = Dim, fontSize = 13.sp)
                         else -> Button(
                             onClick = {
                                 val me = connected ?: return@Button
@@ -1230,6 +1236,8 @@ private fun RewardsTab(connected: String?) {
             Spacer(Modifier.height(4.dp))
             Text(
                 when {
+                    s.total == 0 && !isSeeker ->
+                        "Rewards are for Seeker owners — this wallet holds no Genesis Token"
                     s.total == 0 -> "Nothing yet — a payment made by tapping earns ${s.perPayment} SKR"
                     s.locked > 0 && s.ready > 0 -> "${s.ready} ready · ${s.locked} still locked"
                     s.locked > 0 -> "Locked for ${s.lockDays} days, then yours"

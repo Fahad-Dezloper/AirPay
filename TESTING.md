@@ -58,8 +58,20 @@ paying people, not claiming offers.
 The already-paid claim was re-opened so the real code path settled it again rather than
 hand-editing a number: balance 450, pool 2400 → 1950.
 
-Still owed from this session: the USDC request, expiry, push to a closed app, and the Rewards
-tab on the OnePlus.
+### The Rewards tab on a phone that is not a Seeker
+
+| | |
+|---|---|
+| Reads correctly | ✅ 0 SKR, 0 of 4, 0 of 500, pool shown — no error, no blank |
+| Claim refused | ✅ "Only a Seeker can claim this" |
+| Offering Claim at all | ❌ **fixed** — it showed a green Claim button to a wallet that can never claim |
+
+Same mistake as the earn-warning: told after the act instead of before, and answerable on the
+spot because the app already knows whether the wallet holds Genesis. It now reads "Seeker only
+— this wallet holds no Genesis Token" in place of the button, and the headline says the same
+rather than dangling "a payment by tapping earns 50 SKR" at someone who cannot earn it.
+
+Still owed from this session: the USDC payment over a tap, expiry, and push to a closed app.
 
 ## Never run at all
 
