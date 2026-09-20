@@ -12,6 +12,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 from .chain import Rpc
+from .service import config_as_dict
 from .store import Conflict
 
 log = logging.getLogger("duffle.web")
@@ -39,7 +40,8 @@ class RateLimit:
             return ok
 
 
-def make_handler(service, helius_auth: str | None, limiter: RateLimit | None = None):
+def make_handler(service, helius_auth: str | None, limiter: RateLimit | None = None,
+                 admin_token: str | None = None):
     limiter = limiter or RateLimit()
 
     class Handler(BaseHTTPRequestHandler):
@@ -80,6 +82,10 @@ def make_handler(service, helius_auth: str | None, limiter: RateLimit | None = N
                 if not req:
                     return self._json(404, {"error": "unknown reference"})
                 return self._json(200, {"status": req["status"], "signature": req["signature"], "amount": req["amount"]})
+            if url.path == "/v1/rewards/config":
+                # Public on purpose: the app shows these amounts, and a screen promising a
+                # number the server no longer pays would be worse than showing nothing.
+                return self._json(200, config_as_dict(service.reward_config()))
             if url.path == "/v1/events":
                 return self._events((parse_qs(url.query).get("recipient") or [""])[0])
             return self._json(404, {"error": "not found"})
@@ -128,6 +134,11 @@ def make_handler(service, helius_auth: str | None, limiter: RateLimit | None = N
                     heard = service.relay_tap(body.get("to"), body.get("address"), body.get("label", ""),
                                               genesis=body.get("genesis") or None, brand=body.get("brand") or None)
                     return self._json(200, {"live": heard})
+                if path == "/v1/rewards/config":
+                    # Changing what rewards cost is an owner's action, not a user's.
+                    if not admin_token or self.headers.get("Authorization") != f"Bearer {admin_token}":
+                        return self._json(403, {"error": "admin token required"})
+                    return self._json(200, service.set_reward_config(body))
                 if path == "/v1/devices":
                     service.add_device(body.get("recipient"), body.get("push_token"))
                     return self._json(200, {"ok": True})
@@ -195,7 +206,8 @@ def make_handler(service, helius_auth: str | None, limiter: RateLimit | None = N
     return Handler
 
 
-def serve(service, host: str, port: int, helius_auth: str | None = None) -> ThreadingHTTPServer:
-    httpd = ThreadingHTTPServer((host, port), make_handler(service, helius_auth))
+def serve(service, host: str, port: int, helius_auth: str | None = None,
+          admin_token: str | None = None) -> ThreadingHTTPServer:
+    httpd = ThreadingHTTPServer((host, port), make_handler(service, helius_auth, admin_token=admin_token))
     httpd.daemon_threads = True
     return httpd

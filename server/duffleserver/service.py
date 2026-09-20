@@ -11,7 +11,7 @@ import time
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 
-from . import chain, verify
+from . import chain, rewards, verify
 from .helius import AddressSync, signatures_in
 from .notify import Fcm, Hub
 from .store import Store
@@ -171,6 +171,26 @@ class Service:
             self._pool.submit(self._safe, self.check_signature, sig)
         return len(fresh)
 
+    # -- rewards ----------------------------------------------------------------------------
+
+    def reward_config(self) -> rewards.Config:
+        """The defaults with whatever has been changed at runtime on top. Read per call, so a
+        change takes effect on the next payment without a restart."""
+        return rewards.Config().with_overrides(self.store.reward_config())
+
+    def set_reward_config(self, values: dict) -> dict:
+        """Change the numbers while the server runs. Only known settings, only sane values —
+        `with_overrides` drops the rest, and this reports what it dropped."""
+        allowed = {k: v for k, v in (values or {}).items() if k in rewards.Config.TUNABLE}
+        ignored = sorted(set((values or {}).keys()) - set(allowed))
+        before = self.reward_config()
+        self.store.set_reward_config(allowed)
+        after = self.reward_config()
+        changed = {k: getattr(after, k) for k in allowed if getattr(before, k) != getattr(after, k)}
+        if changed:
+            log.info("reward config changed: %s", changed)
+        return {"config": config_as_dict(after), "changed": changed, "ignored": ignored}
+
     # -- checks -----------------------------------------------------------------------------
 
     def check_signature(self, signature: str) -> list[str]:
@@ -250,3 +270,10 @@ class Service:
         while not stop.is_set():
             self._safe(self.sweep)
             stop.wait(every)
+
+
+def config_as_dict(c: rewards.Config) -> dict:
+    """The numbers, for the admin endpoint and for the app's rewards screen."""
+    out = {k: getattr(c, k) for k in rewards.Config.TUNABLE}
+    out["minimums"] = dict(c.minimums)
+    return out

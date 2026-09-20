@@ -8,28 +8,40 @@ Deck: https://claude.ai/artifact/KW1AmFua5R5Btxj2LiK5CV — the why, the numbers
 
 ## The numbers (decided 2026-09-20, in SKR — never in cents)
 
-One campaign = **1,000,000 SKR**. Everything is denominated in SKR and shown that way in the
-app: a small reward priced in money measurably underperforms no reward at all (Heyman &
-Ariely; Gneezy & Rustichini), and SKR moved between $0.0077 and $0.0289 in the last 30 days,
-so a dollar promise would break itself.
+Budget: **$200 a month of our own money, plus every SKR Duffle earns**, reinvested early. That
+is about **10,400 SKR a month**, or a **2,400 SKR weekly pool**.
 
-| Reward | Amount | Budget | Why this size |
-|---|---|---|---|
-| First payment | **1,000 SKR**, once per Seeker | 300k (300 users) | Matches Seeker Summer's tier-1 fortnightly reward; paid on the first completed payment, never on install |
-| Each rewarded payment | **50 SKR** flat | 450k (9,000 payments) | A flat fee, not 2%: the old 20 SKR cap already bound on any payment over $19, and a percentage invites inflated self-payments |
-| Weekly streak | **250 SKR** for 4 rewarded payments in a week | 250k (1,000 weeks) | The habit is the point; the card starts pre-filled with one (endowed progress: 19% → 34% completion for identical effort) |
+| Reward | Amount | Notes |
+|---|---|---|
+| First payment | **250 SKR** | once per Seeker, on the first completed payment — never on install |
+| Each rewarded payment | **50 SKR** flat | ~$0.96; a flat amount, not a percentage, so nobody inflates a payment to themselves |
+| Weekly streak | **200 SKR** | for 4 rewarded payments in a week |
+| Per user per month | **500 SKR cap** | has to exceed a full streak week (400) or the cap silently eats the streak |
+| Per user per campaign | **2,500 SKR cap** | |
+| Weekly pool | **2,400 SKR**, first come | when it is out, the app says so — no open-ended promise |
 
-**Per-user campaign cap: 2,500 SKR.** So the pool is 400 users at the cap, or roughly
-800–1,200 in practice. Budget against the real audience — about 43,669 wallets hold SKR and
-Season 2 runs about 9,000 daily actives — not the 150k phones.
+**Every one of these is changeable while the server runs** — they live in the database, not the
+code: `GET /v1/rewards/config` reads them (the app shows the live amounts), and a `POST` with
+the admin token changes them. Unknown names and unusable values are ignored rather than
+guessed at. Setting `weekly_pool` to 0 switches rewards off without a deploy.
 
-**The bar this had to clear:** an average Season 1 holder (18,033 SKR) earns about **83 SKR a
-week just by staking** at 24%. A user doing two payments a week earns 100 SKR; a full week
-with the streak earns 450. Below that bar nobody would tap for it.
+### How Duffle makes money (and stops spending ours)
+
+| Line | Amount |
+|---|---|
+| dApp offers | a dApp pays **500 SKR** per verified new paying user → **300 to the user, 200 to Duffle** |
+| Sponsored campaigns | Duffle runs a sponsor's budget and keeps **15%** — one 100k SKR campaign ≈ $288, more than a month of costs |
+| Later | a percentage of merchant payments |
+
+**We stop paying at about 65 offer conversions a month**, or one sponsored campaign. Until
+then: reinvest everything; from the point revenue covers costs, keep half; later keep more.
+
+**What $200 a month buys:** ~208 rewarded payments, spread across roughly 20 users at the full
+cap and 40–60 in practice. That is the right size for launch — the whole Seeker ecosystem is
+about 9,000 daily actives, and a meetup is 20–50 people.
 
 **Fixed, never random.** Uncertain rewards outperform fixed ones in the lab, but that is the
 scratch-card mechanic Google pulled Paytm over in 2020, and it meets the sweepstakes test.
-Not worth it.
 
 **Review trigger:** if SKR moves ±40% from $0.0192, revisit every amount here.
 
@@ -43,7 +55,8 @@ A payment earns a reward only when **all** of these hold:
 | Paid in person | the payment came from an NFC tap in Duffle | an online transfer can't prove two phones were together — our anti-farm edge |
 | Minimum amount | **$5 equivalent**, per token in config (5 USDC/EURC, 0.05 SOL, 250 SKR) | $1 earns dust and clutters the ledger; $5 plus the weekly cap is the anti-wash mechanism |
 | Reward size | **50 SKR flat** | see above |
-| Rate limit | **4 rewarded payments a week**, 2,500 SKR per user per campaign | Tez's rule, which worked; the campaign cap bounds the worst case |
+| Rate limit | **4 rewarded payments a week**, 500 SKR a month, 2,500 SKR a campaign | Tez's rule, which worked; the caps bound the worst case and spread the budget |
+| Funded | only what is in this week's pool | an empty pool pays nothing and says so |
 | Real counterparty | their wallet has a transaction older than **7 days**, **or** holds Genesis | wallets are free: without this, one Seeker + a spare phone farms itself |
 | Counterparty cooldown | the same person earns you a reward once per **30 days** | stops two friends paying each other in circles |
 | Fixed, never random | no lottery or scratch-card mechanics | Google pulled Paytm in 2020 over scratch cards it called gambling |

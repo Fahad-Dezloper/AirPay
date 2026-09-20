@@ -27,7 +27,9 @@ UNKNOWN_TOKEN = "unknown_token"
 NEW_COUNTERPARTY = "new_counterparty"
 COUNTERPARTY_COOLDOWN = "counterparty_cooldown"
 WEEKLY_CAP = "weekly_cap"
+MONTHLY_CAP = "monthly_cap"
 CAMPAIGN_CAP = "campaign_cap"
+POOL_EMPTY = "pool_empty"
 
 # What a reward is for.
 FIRST_PAYMENT = "first_payment"
@@ -37,17 +39,31 @@ STREAK = "streak"
 
 @dataclass(frozen=True)
 class Config:
-    """Every number the rules use. Amounts are whole SKR."""
+    """
+    Every number the rules use, in whole SKR. Stored in the database and editable while the
+    server runs (`Store.reward_config`, `PUT /v1/rewards/config`) — these are only the defaults
+    for a database that has never been told otherwise.
 
-    first_payment: int = 1_000
+    The defaults are sized for a $200-a-month budget: about 10,400 SKR a month. The monthly
+    cap has to be larger than a good week, or the cap silently eats the streak and the
+    first-payment bonus — 500 SKR covers a full streak week (400) with room, and spreads the
+    budget across roughly 20 users at the cap, more in practice.
+    """
+
+    first_payment: int = 250
     per_payment: int = 50
-    streak: int = 250
+    streak: int = 200
     #: Rewarded payments in one week that complete a streak.
     streak_needed: int = 4
     #: Rewarded payments allowed per week (the streak is the last of them).
     weekly_payments: int = 4
+    #: Everything one Seeker can earn in a month — spreads the budget across people.
+    monthly_cap: int = 500
     #: Everything one Seeker can earn in a campaign.
     user_cap: int = 2_500
+    #: What may be paid out in one week, across everyone. Empty pool, no rewards — the app
+    #: says so rather than promising what isn't funded.
+    weekly_pool: int = 2_400
     #: The same counterparty only earns you a reward this often.
     cooldown_days: int = 30
     #: Their wallet must have been active at least this long — unless they are a Seeker too.
@@ -65,6 +81,28 @@ class Config:
 
     def minimum_for(self, token: str) -> int | None:
         return self.minimums.get(token)
+
+    #: Names that may be changed at runtime. Anything else is refused, so a typo can't
+    #: silently invent a setting nobody reads.
+    TUNABLE = ("first_payment", "per_payment", "streak", "streak_needed", "weekly_payments",
+               "monthly_cap", "user_cap", "weekly_pool", "cooldown_days",
+               "counterparty_min_age_days", "lock_days")
+
+    def with_overrides(self, values: dict) -> "Config":
+        """A copy with whatever the database says on top. Unknown or unusable values are
+        ignored, never guessed at — a bad row must not stop rewards working."""
+        clean = {}
+        for k, v in (values or {}).items():
+            if k == "minimums" and isinstance(v, dict):
+                clean[k] = {str(t): int(m) for t, m in v.items()}
+            elif k in self.TUNABLE:
+                try:
+                    n = int(v)
+                except (TypeError, ValueError):
+                    continue
+                if n >= 0:
+                    clean[k] = n
+        return replace(self, **clean) if clean else self
 
 
 @dataclass(frozen=True)
@@ -95,6 +133,10 @@ class History:
     rewarded_this_week: int = 0
     #: SKR this payer has earned in the campaign.
     earned_in_campaign: int = 0
+    #: SKR this payer has earned this month.
+    earned_this_month: int = 0
+    #: SKR left in this week's pool, across everyone. None means "no pool set" (unlimited).
+    pool_left: int | None = None
     #: When this pair last earned, if ever.
     last_reward_with_counterparty: float | None = None
     #: True once the first-payment bonus has been paid.
@@ -164,6 +206,16 @@ def evaluate(payment: Payment, history: History, now: float, config: Config | No
     remaining = c.user_cap - history.earned_in_campaign
     if remaining <= 0:
         return Decision(refused=CAMPAIGN_CAP)
+    monthly_left = c.monthly_cap - history.earned_this_month
+    if monthly_left <= 0:
+        return Decision(refused=MONTHLY_CAP)
+    remaining = min(remaining, monthly_left)
+
+    # Only what is actually funded this week can be paid.
+    if history.pool_left is not None:
+        if history.pool_left <= 0:
+            return Decision(refused=POOL_EMPTY)
+        remaining = min(remaining, history.pool_left)
 
     # What it earns. The first payment is the big one; the streak lands on the payment that
     # completes the week.
@@ -174,7 +226,7 @@ def evaluate(payment: Payment, history: History, now: float, config: Config | No
     if history.rewarded_this_week + 1 >= c.streak_needed:
         wanted.append(Award(STREAK, c.streak))
 
-    # The campaign cap trims the last awards rather than refusing the payment outright.
+    # The caps and the pool trim the last awards rather than refusing the payment outright.
     awards: list[Award] = []
     left = remaining
     for a in wanted:

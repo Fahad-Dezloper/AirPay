@@ -42,6 +42,37 @@ class Store:
                 );
                 CREATE INDEX IF NOT EXISTS due ON requests(status, next_check);
                 CREATE INDEX IF NOT EXISTS by_recipient ON requests(recipient, status);
+                CREATE TABLE IF NOT EXISTS rewards (
+                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                    reference  TEXT NOT NULL,
+                    payer      TEXT NOT NULL,
+                    counterparty TEXT NOT NULL,
+                    kind       TEXT NOT NULL,
+                    skr        INTEGER NOT NULL,
+                    -- locked (reversible) -> settled, or reversed
+                    state      TEXT NOT NULL DEFAULT 'locked',
+                    reason     TEXT,
+                    week       INTEGER NOT NULL,
+                    created_at REAL NOT NULL,
+                    unlock_at  REAL NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS rewards_payer ON rewards(payer, created_at);
+                CREATE UNIQUE INDEX IF NOT EXISTS rewards_once ON rewards(reference, kind);
+                -- Every payment that was looked at, earning or not: the refusals are how we
+                -- see farming attempts and answer "why didn't I get anything?".
+                CREATE TABLE IF NOT EXISTS reward_attempts (
+                    reference  TEXT PRIMARY KEY,
+                    payer      TEXT NOT NULL,
+                    counterparty TEXT NOT NULL,
+                    refused    TEXT,
+                    skr        INTEGER NOT NULL DEFAULT 0,
+                    at         REAL NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS reward_config (
+                    key        TEXT PRIMARY KEY,
+                    value      TEXT NOT NULL,
+                    updated_at REAL NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS devices (
                     recipient  TEXT NOT NULL,
                     token      TEXT NOT NULL,
@@ -179,6 +210,88 @@ class Store:
             return self._db.execute("SELECT COUNT(*) FROM requests WHERE status='open'").fetchone()[0]
 
     # -- devices ----------------------------------------------------------------------------
+
+    # -- rewards ----------------------------------------------------------------------------
+
+    def reward_config(self) -> dict:
+        """Whatever has been changed at runtime. The defaults live in rewards.Config."""
+        with self._lock:
+            return {r["key"]: r["value"] for r in self._db.execute("SELECT key, value FROM reward_config")}
+
+    def set_reward_config(self, values: dict) -> dict:
+        now = time.time()
+        with self._lock, self._db:
+            for k, v in values.items():
+                self._db.execute(
+                    "INSERT INTO reward_config(key,value,updated_at) VALUES (?,?,?)"
+                    " ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+                    (str(k), str(v), now),
+                )
+        return self.reward_config()
+
+    def reward_history(self, payer: str, counterparty: str, now: float, week: int, month_start: float) -> dict:
+        """The payer's side of the rules: what they have earned, when, and with whom."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT kind, skr, week, created_at, counterparty FROM rewards"
+                " WHERE payer=? AND state!='reversed'", (payer,),
+            ).fetchall()
+            spent = self._db.execute(
+                "SELECT COALESCE(SUM(skr),0) FROM rewards WHERE week=? AND state!='reversed'", (week,),
+            ).fetchone()[0]
+        with_them = [r["created_at"] for r in rows if r["counterparty"] == counterparty]
+        return {
+            "rewarded_this_week": sum(1 for r in rows if r["week"] == week and r["kind"] == "per_payment"),
+            "earned_in_campaign": sum(r["skr"] for r in rows),
+            "earned_this_month": sum(r["skr"] for r in rows if r["created_at"] >= month_start),
+            "last_reward_with_counterparty": max(with_them) if with_them else None,
+            "had_first_payment": any(r["kind"] == "first_payment" for r in rows),
+            "week_spent": spent,
+        }
+
+    def record_rewards(self, reference: str, payer: str, counterparty: str, awards: list,
+                       week: int, now: float, unlock_at: float) -> int:
+        """Writes one row per award. The unique index on (reference, kind) means a payment
+        checked twice — two watchers, a webhook and a sweep — still pays once."""
+        written = 0
+        with self._lock, self._db:
+            for kind, skr in awards:
+                try:
+                    self._db.execute(
+                        "INSERT INTO rewards(reference,payer,counterparty,kind,skr,week,created_at,unlock_at)"
+                        " VALUES (?,?,?,?,?,?,?,?)",
+                        (reference, payer, counterparty, kind, int(skr), week, now, unlock_at),
+                    )
+                    written += 1
+                except sqlite3.IntegrityError:
+                    pass  # already paid for this payment
+        return written
+
+    def record_attempt(self, reference: str, payer: str, counterparty: str, refused: str | None,
+                       skr: int, at: float) -> None:
+        with self._lock, self._db:
+            self._db.execute(
+                "INSERT INTO reward_attempts(reference,payer,counterparty,refused,skr,at) VALUES (?,?,?,?,?,?)"
+                " ON CONFLICT(reference) DO UPDATE SET refused=excluded.refused, skr=excluded.skr, at=excluded.at",
+                (reference, payer, counterparty, refused, int(skr), at),
+            )
+
+    def rewards_for(self, payer: str, limit: int = 50) -> list[dict]:
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT * FROM rewards WHERE payer=? ORDER BY created_at DESC LIMIT ?", (payer, limit),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def reward_balance(self, payer: str, now: float) -> dict:
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT state, skr, unlock_at FROM rewards WHERE payer=?", (payer,)).fetchall()
+        locked = sum(r["skr"] for r in rows if r["state"] == "locked" and r["unlock_at"] > now)
+        ready = sum(r["skr"] for r in rows if r["state"] == "locked" and r["unlock_at"] <= now)
+        return {"locked": locked, "ready": ready,
+                "settled": sum(r["skr"] for r in rows if r["state"] == "settled"),
+                "total": locked + ready + sum(r["skr"] for r in rows if r["state"] == "settled")}
 
     def add_device(self, recipient: str, token: str) -> None:
         with self._lock, self._db:

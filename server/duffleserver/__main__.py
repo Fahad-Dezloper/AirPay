@@ -58,7 +58,9 @@ def main() -> None:
     threading.Thread(target=service.run_watcher, args=(stop,), name="watcher", daemon=True).start()
 
     host, port = env("HOST", "0.0.0.0"), int(env("PORT", "8787"))
-    httpd = serve(service, host, port, env("HELIUS_AUTH"))
+    # Set DUFFLE_ADMIN_TOKEN to be able to change the reward amounts while it runs; without
+    # one, the numbers are read-only.
+    httpd = serve(service, host, port, env("HELIUS_AUTH"), admin_token=env("DUFFLE_ADMIN_TOKEN"))
     logging.getLogger("duffle").info(
         "listening on %s:%d · rpc %s · push %s · helius webhook %s", host, port,
         rpc_url.split("?")[0],

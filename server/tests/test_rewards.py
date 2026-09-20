@@ -11,6 +11,8 @@ import unittest
 
 from duffleserver.rewards import (
     BELOW_MINIMUM,
+    MONTHLY_CAP,
+    POOL_EMPTY,
     CAMPAIGN_CAP,
     COUNTERPARTY_COOLDOWN,
     FIRST_PAYMENT,
@@ -50,8 +52,8 @@ def history(**kw) -> History:
 class EarnsTest(unittest.TestCase):
     def test_a_first_tap_earns_the_bonus_and_the_payment(self):
         d = evaluate(payment(), history(), NOW, CFG)
-        self.assertEqual([(FIRST_PAYMENT, 1_000), (PER_PAYMENT, 50)], [(a.kind, a.skr) for a in d.awards])
-        self.assertEqual(1_050, d.total)
+        self.assertEqual([(FIRST_PAYMENT, 250), (PER_PAYMENT, 50)], [(a.kind, a.skr) for a in d.awards])
+        self.assertEqual(300, d.total)
         self.assertIsNone(d.refused)
 
     def test_later_taps_earn_the_flat_amount(self):
@@ -60,8 +62,8 @@ class EarnsTest(unittest.TestCase):
 
     def test_the_fourth_payment_of_a_week_completes_the_streak(self):
         d = evaluate(payment(), history(had_first_payment=True, rewarded_this_week=3), NOW, CFG)
-        self.assertEqual([(PER_PAYMENT, 50), (STREAK, 250)], [(a.kind, a.skr) for a in d.awards])
-        self.assertEqual(300, d.total)
+        self.assertEqual([(PER_PAYMENT, 50), (STREAK, 200)], [(a.kind, a.skr) for a in d.awards])
+        self.assertEqual(250, d.total)
 
     def test_rewards_are_locked_before_they_settle(self):
         d = evaluate(payment(), history(), NOW, CFG)
@@ -105,6 +107,28 @@ class RefusesTest(unittest.TestCase):
         self.assertEqual(100, d.total)
         self.assertEqual([FIRST_PAYMENT], [a.kind for a in d.awards])
 
+    def test_the_monthly_cap_spreads_the_budget_across_people(self):
+        self.assertEqual(MONTHLY_CAP, evaluate(payment(), history(had_first_payment=True, earned_this_month=500),
+                                               NOW, CFG).refused)
+        trimmed = evaluate(payment(), history(had_first_payment=True, earned_this_month=470), NOW, CFG)
+        self.assertEqual(30, trimmed.total)
+
+    def test_a_full_streak_week_fits_inside_the_monthly_cap(self):
+        # Otherwise the cap silently eats the streak, and nobody can ever complete one.
+        full_week = CFG.weekly_payments * CFG.per_payment + CFG.streak
+        self.assertLessEqual(full_week, CFG.monthly_cap)
+        self.assertLessEqual(CFG.first_payment + CFG.per_payment, CFG.monthly_cap)
+
+    def test_nothing_is_paid_from_an_empty_pool(self):
+        self.assertEqual(POOL_EMPTY, evaluate(payment(), history(had_first_payment=True, pool_left=0), NOW, CFG).refused)
+
+    def test_the_pool_trims_the_last_reward_of_the_week(self):
+        d = evaluate(payment(), history(had_first_payment=True, pool_left=20), NOW, CFG)
+        self.assertEqual(20, d.total)
+
+    def test_no_pool_set_means_no_pool_limit(self):
+        self.assertTrue(evaluate(payment(), history(had_first_payment=True, pool_left=None), NOW, CFG).earned)
+
 
 class FarmingTest(unittest.TestCase):
     """Each of these is a way to pay yourself. None of them may earn."""
@@ -146,9 +170,11 @@ class FarmingTest(unittest.TestCase):
 
     def test_a_farmer_at_full_tilt_cannot_exceed_the_campaign_cap(self):
         # Four new, established counterparties a week, every week, first payment included.
+        # Months roll over, so only the campaign cap and the pool are left to stop them.
         earned = 0
-        for i in range(60):
-            h = history(had_first_payment=i > 0, rewarded_this_week=i % 4, earned_in_campaign=earned)
+        for i in range(200):
+            h = history(had_first_payment=i > 0, rewarded_this_week=i % 4, earned_in_campaign=earned,
+                        earned_this_month=0)
             earned += evaluate(payment(counterparty=f"cp{i}"), h, NOW + (i // 4) * 7 * DAY, CFG).total
         self.assertLessEqual(earned, CFG.user_cap)
         self.assertEqual(CFG.user_cap, earned, "a determined user should be able to reach the cap")
@@ -168,11 +194,46 @@ class BudgetTest(unittest.TestCase):
         pool = 1_000_000
         self.assertEqual(400, pool // CFG.user_cap)  # users at the full cap
 
-    def test_a_full_week_beats_leaving_the_skr_staked(self):
-        # An average Season 1 holder (18,033 SKR) earns about 83 SKR a week at 24% APY.
-        passive = 18_033 * 0.24 / 52
-        full_week = CFG.weekly_payments * CFG.per_payment + CFG.streak
-        self.assertGreater(full_week, passive * 3)
+    def test_a_month_of_rewards_beats_what_a_typical_holder_earns_staking(self):
+        # A 5,000 SKR holder (the smallest Season 1 tier) earns 100 SKR a month at 24% APY.
+        self.assertGreater(CFG.monthly_cap, 5_000 * 0.24 / 12)
+
+    def test_the_monthly_budget_reaches_enough_people(self):
+        monthly_budget = CFG.weekly_pool * 52 / 12  # about 10,400 SKR at $200
+        self.assertGreaterEqual(monthly_budget / CFG.monthly_cap, 20)
+
+
+class ConfigTest(unittest.TestCase):
+    """The amounts have to be changeable while it runs, without a rebuild or a restart."""
+
+    def setUp(self):
+        from duffleserver.service import Service
+        from duffleserver.store import Store
+        from tests.test_server import FakeRpc
+        self.svc = Service(Store(), FakeRpc())
+
+    def test_defaults_until_told_otherwise(self):
+        self.assertEqual(Config().per_payment, self.svc.reward_config().per_payment)
+
+    def test_a_change_takes_effect_on_the_next_payment(self):
+        self.svc.set_reward_config({"per_payment": 75})
+        d = evaluate(payment(), history(had_first_payment=True), NOW, self.svc.reward_config())
+        self.assertEqual(75, d.total)
+
+    def test_unknown_settings_are_ignored_not_invented(self):
+        out = self.svc.set_reward_config({"per_payment": 60, "pre_payment": 999, "nonsense": 1})
+        self.assertEqual({"per_payment": 60}, out["changed"])
+        self.assertEqual(["nonsense", "pre_payment"], out["ignored"])
+
+    def test_a_nonsense_value_is_dropped_rather_than_breaking_rewards(self):
+        self.svc.store.set_reward_config({"per_payment": "fifty"})
+        self.assertEqual(Config().per_payment, self.svc.reward_config().per_payment)
+
+    def test_rewards_can_be_switched_off_by_emptying_the_pool(self):
+        self.svc.set_reward_config({"weekly_pool": 0})
+        cfg = self.svc.reward_config()
+        d = evaluate(payment(), history(had_first_payment=True, pool_left=cfg.weekly_pool), NOW, cfg)
+        self.assertEqual(POOL_EMPTY, d.refused)
 
 
 if __name__ == "__main__":
