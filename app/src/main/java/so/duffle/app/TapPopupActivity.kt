@@ -77,6 +77,14 @@ class TapPopupActivity : ComponentActivity() {
     private var cameFrom by mutableStateOf<String?>(null)
     /** Debug preview only: the amount to show in the "working" state. */
     private var previewAmount by mutableStateOf<String?>(null)
+    /**
+     * "They will pay later", while we keep waiting.
+     *
+     * A deferral is not an ending, so it does not change the phase — the money can still
+     * arrive and this sheet must still be here to catch it. It only replaces the line under
+     * the amount, so the person holding the phone stops wondering.
+     */
+    private var waitingNote by mutableStateOf<String?>(null)
     /** SKR this payment earned, once the server has seen it settle. Null until then, and if
      *  nothing was earned — an empty space is better than a nil. */
     private var earned by mutableStateOf<Rewards.Earned?>(null)
@@ -110,6 +118,7 @@ class TapPopupActivity : ComponentActivity() {
                     onRetry = { phase = Phase.Ready },
                     onExplorer = { sig -> runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(Chain.explorerUrl(sig)))) } },
                     previewAmount = previewAmount,
+                    waitingNote = waitingNote,
                     holdings = holdings,
                     earned = earned,
                     cameFrom = cameFrom,
@@ -371,6 +380,9 @@ class TapPopupActivity : ComponentActivity() {
             // push, and both write it to the watch list — so reading that covers either route,
             // including when this popup is the only part of the app on screen.
             val entry = Watch(this).all().firstOrNull { it.reference == w.reference }
+            // Written by the live stream or by the push handler, whichever reached us — this
+            // sheet is often the only part of the app on screen, and then it is the push.
+            waitingNote = entry?.deferredBy?.takeIf { !entry.paid && !entry.rejected }?.let { "$it will pay later" }
             if (entry?.rejected == true) {
                 Haptics.failure(this)
                 phase = Phase.Error("${entry.rejectedBy} declined", "Nothing was paid. You can ask again.")

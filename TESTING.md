@@ -89,6 +89,28 @@ the Seeker raised "Seeker requests 1 USDC" **on the Seeker**. Two mistakes in on
 
 Still owed from this session: push to a closed app. (Expiry is gone — see item 9.)
 
+## Run on 2026-09-21 — "Later", and the only expiry there is
+
+| | |
+|---|---|
+| Later reaches the asker | ✅ `POST /v1/deferrals` → push on the OnePlus 1.8s later |
+| The waiting sheet shows it | ✅ after a fix — it only ever checked "paid" and "rejected", so a
+  deferral left it silent even though the notification had already arrived |
+| Decline still separate | ✅ |
+| **Wallet expiry: nothing was sent** | ✅ wallet returned after **72,000ms**, no `SENT`, and **no
+  transaction on-chain** from that attempt — the claim in the error message is literally true |
+| Retry after expiry | ✅ fresh blockhash, 13s, paid first time |
+| USDC over a tap | ✅ twice |
+
+**Still not tested, despite the session being called done:** paying a request that was deferred.
+Both deferrals (`F3ro5c6K…`, `3H8tt4YN…`, 0.5 USDC each) are still `open` and unpaid; the two
+payments that landed were *new* references from fresh taps. "A deferred request is still
+payable" is the whole difference between Later and Decline and remains unproven. Test it from
+the Seeker's **Requests** tab — no tap needed.
+
+**Also still not tested:** push to a genuinely closed app. Every push in this session arrived
+with the popup open. Swipe Duffle out of recents on the asker first.
+
 ## New, never run on the phones (added 2026-09-21)
 
 13. **"Later" is now an answer.** The payer taps Later → the asker's row shows **PENDING ·

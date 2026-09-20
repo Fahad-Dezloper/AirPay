@@ -163,6 +163,8 @@ internal fun PopupScreen(
     onRetry: () -> Unit,
     onExplorer: (String) -> Unit,
     previewAmount: String? = null,
+    /** Shown on the waiting screen when the payer has answered without paying yet. */
+    waitingNote: String? = null,
     holdings: List<Tokens.Holding>? = null,
     /** What the payment just made earned, once the server knows. Shown on the ✓ screen. */
     earned: Rewards.Earned? = null,
@@ -328,7 +330,7 @@ internal fun PopupScreen(
                             },
                             second = { AboutThem(peer, history, genesis, wallet, cameFrom, onBack = { aboutThem = false }) },
                         )
-                        "waiting" -> (phase as? Phase.Waiting)?.let { WaitingBody(peer.label, it.amount, it.symbol, close) }
+                        "waiting" -> (phase as? Phase.Waiting)?.let { WaitingBody(peer.label, it.amount, it.symbol, waitingNote, close) }
                         "success" -> (phase as? Phase.Success)?.let {
                             ResultBody(Result.Success, it.title, it.detail, it.signature, onExplorer, earned) {
                                 PrimaryButton("Done", close)
@@ -1058,14 +1060,31 @@ private fun ConnectBody(working: String?, onConnect: () -> Unit) {
 // ---------------------------------------------------------------------------------- outcomes
 
 @Composable
-private fun WaitingBody(label: String, amount: String, symbol: String, onClose: () -> Unit) {
+private fun WaitingBody(label: String, amount: String, symbol: String, note: String?, onClose: () -> Unit) {
     Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
         TickingClock()
         Spacer(Modifier.height(14.dp))
         Text("Waiting for ${label.ifBlank { "them" }}", color = D.Black, fontSize = 20.sp, fontWeight = FontWeight.Bold)
         Text("$amount $symbol", color = D.Black, fontSize = 34.sp, fontWeight = FontWeight.ExtraBold, style = Figures)
         Spacer(Modifier.height(4.dp))
-        Text("You can close this — it stays in Requests.", color = D.Quiet, fontSize = 13.5.sp, textAlign = TextAlign.Center)
+        // "Later" lands here. The clock keeps running, because it is still true that we are
+        // waiting — only now we know why, and that somebody looked.
+        AnimatedVisibility(visible = note != null) {
+            Row(
+                Modifier.padding(bottom = 8.dp).background(D.Blue.copy(alpha = .08f), RoundedCornerShape(999.dp))
+                    .padding(horizontal = 12.dp, vertical = 7.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                HIcon(R.drawable.hi_clock, D.Blue, 15.dp)
+                Spacer(Modifier.width(6.dp))
+                Text(note.orEmpty(), color = D.Blue, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+            }
+        }
+        Text(
+            if (note != null) "Still watching for it — you can close this."
+            else "You can close this — it stays in Requests.",
+            color = D.Quiet, fontSize = 13.5.sp, textAlign = TextAlign.Center,
+        )
         Spacer(Modifier.height(20.dp))
         SecondaryButton("Close", onClose, Modifier.fillMaxWidth())
     }
