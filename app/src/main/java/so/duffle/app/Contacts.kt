@@ -39,6 +39,14 @@ class Contacts(ctx: Context) {
      * about, because a new counterparty grows the network and a repeat one does not, and
      * tapping the same friend five times is the obvious way to farm.
      */
+    /**
+     * Records a tap.
+     *
+     * `seeker` is what the **chain** said, never what the tap claimed. A payload can carry any
+     * Genesis mint it likes, and a badge earned by claiming it is worth nothing — the same
+     * mistake the confirm sheet made before it waited for the mainnet lookup. Callers who have
+     * only the claim pass false and let [verify] fill it in when the answer arrives.
+     */
     fun record(address: String, label: String, seeker: Boolean, paid: Double = 0.0): Boolean {
         val list = load().toMutableList()
         val now = System.currentTimeMillis()
@@ -60,6 +68,22 @@ class Contacts(ctx: Context) {
         }
         save(list)
         return isNew
+    }
+
+    /**
+     * The chain's answer about a contact's Genesis token, once it lands.
+     *
+     * Only ever grants the badge. A lookup that fails, or a wallet queried while offline, must
+     * not strip a badge that was verified on a day the network worked — absence of evidence is
+     * not evidence of absence, and Genesis is soulbound, so a true answer stays true.
+     */
+    fun verify(address: String, held: Boolean) {
+        if (!held) return
+        val list = load().toMutableList()
+        val i = list.indexOfFirst { it.address == address }
+        if (i < 0 || list[i].seeker) return
+        list[i] = list[i].copy(seeker = true)
+        save(list)
     }
 
     fun count(): Int = load().size

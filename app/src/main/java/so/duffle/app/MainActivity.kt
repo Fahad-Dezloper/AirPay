@@ -5,6 +5,18 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
@@ -75,6 +87,8 @@ class MainActivity : ComponentActivity() {
     private var lastAmount = "0.01"
     private var connected by mutableStateOf<String?>(null)
     private var tab by mutableStateOf(Tab.TAP)
+    /** "check" is open: the diagnostics and the exchange log, which are for us, not the user. */
+    private var checking by mutableStateOf(false)
     /** What the other phone shows when you tap them. A model number is not a name. */
     private var myName by mutableStateOf("")
     private var renaming by mutableStateOf(false)
@@ -129,7 +143,7 @@ class MainActivity : ComponentActivity() {
         )
 
         setContent {
-            MaterialTheme(colorScheme = darkColorScheme(background = Ink, surface = Ink)) {
+            MaterialTheme(colorScheme = lightColorScheme(background = D.White, surface = D.White)) {
                 val scope = rememberCoroutineScope()
                 var amount by rememberSaveable { mutableStateOf(lastAmount) }
                 var busy by remember { mutableStateOf(false) }
@@ -252,29 +266,29 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                Surface(Modifier.fillMaxSize(), color = Ink) {
+                Surface(Modifier.fillMaxSize(), color = D.White) {
                     Column(Modifier.fillMaxSize().padding(20.dp)) {
-                        Header(diag)
-                        Spacer(Modifier.height(12.dp))
+                        Header(diag, checking) { checking = !checking }
+                        Spacer(Modifier.height(14.dp))
                         val openCount = toPay.count { !it.paid } + owed.count { !it.paid }
                         TabBar(tab, openCount) { tab = it }
                         Spacer(Modifier.height(12.dp))
 
                         when (val st = status) {
-                            is Status.Working -> { Banner("…", st.what, Dim); Spacer(Modifier.height(10.dp)) }
+                            is Status.Working -> { Banner("…", st.what, D.Quiet); Spacer(Modifier.height(10.dp)) }
                             is Status.Problem -> {
-                                Banner(st.title, st.detail, Warn, onDismiss = { status = Status.Idle })
+                                Banner(st.title, st.detail, D.Danger, onDismiss = { status = Status.Idle })
                                 Spacer(Modifier.height(10.dp))
                             }
                             is Status.Sent -> {
-                                Banner("✓ Sent", st.signature, Accent, mono = true,
+                                Banner("✓ Sent", st.signature, D.Blue, mono = true,
                                     onDismiss = { status = Status.Idle })
                                 Spacer(Modifier.height(10.dp))
                             }
                             Status.Idle -> Unit
                         }
                         paidSignature?.let { sig ->
-                            Banner("✓ Paid", sig, Accent, mono = true, onDismiss = { paidSignature = null })
+                            Banner("✓ Paid", sig, D.Blue, mono = true, onDismiss = { paidSignature = null })
                             Spacer(Modifier.height(10.dp))
                         }
 
@@ -355,13 +369,28 @@ class MainActivity : ComponentActivity() {
 
                         Spacer(Modifier.height(10.dp))
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("They see you as ", color = Dim, fontSize = 12.sp)
+                            Text("They see you as ", color = D.Quiet, fontSize = 12.sp)
                             TextButton(onClick = { renaming = true }, contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)) {
-                                Text(myName, color = Accent, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                                Text(myName, color = D.Blue, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                             }
                         }
 
                         Spacer(Modifier.height(6.dp))
+
+                        val waiting = owed.count { !it.paid }
+                        if (!checking) {
+                            Spacer(Modifier.weight(1f))
+                            Invitation(
+                                hint = when {
+                                    connected == null -> "Your wallet signs; Duffle never holds your keys."
+                                    mode == Mode.REQUEST && waiting > 0 -> "$waiting waiting in Requests"
+                                    mode == Mode.REQUEST -> "They will see what you are asking for."
+                                    else -> "Whoever you tap can pay you, or be paid."
+                                },
+                                ready = connected != null,
+                            )
+                            Spacer(Modifier.weight(1f))
+                        }
 
                         if (mode == Mode.REQUEST) {
                             val amountProblem = when {
@@ -380,7 +409,7 @@ class MainActivity : ComponentActivity() {
                                 label = { Text("Amount (SOL, devnet)") },
                                 singleLine = true,
                                 isError = amountProblem != null,
-                                supportingText = amountProblem?.let { { Text(it, color = Warn) } },
+                                supportingText = amountProblem?.let { { Text(it, color = D.Danger) } },
                                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                                 modifier = Modifier.fillMaxWidth(),
                             )
@@ -401,28 +430,19 @@ class MainActivity : ComponentActivity() {
                             }
                         }
 
-                        Spacer(Modifier.height(12.dp))
-                        val waiting = owed.count { !it.paid }
-                        Text(
-                            when {
-                                connected == null -> "Connect a wallet first."
-                                mode == Mode.REQUEST && waiting > 0 ->
-                                    "Touch the backs of the phones together · $waiting waiting in Requests"
-                                mode == Mode.REQUEST -> "Touch the backs of the phones together."
-                                else -> "Ready. Touch backs with someone's phone to pay them."
-                            },
-                            color = Dim, fontSize = 13.sp,
-                        )
-
                         if (contactCount > 0) {
-                            Spacer(Modifier.height(14.dp))
+                            Spacer(Modifier.height(22.dp))
                             ContactStrip(contacts.all())
                         }
 
-                        Spacer(Modifier.height(16.dp))
-                        Text("EXCHANGE", color = Dim, fontSize = 10.sp, letterSpacing = 2.sp)
-                        Spacer(Modifier.height(6.dp))
-                        LogView(log)
+                        // The log is ours, not theirs: it only exists while "check" is open.
+                        if (checking) {
+                            Spacer(Modifier.height(16.dp))
+                            SectionLabel("EXCHANGE")
+                            LogView(log)
+                        } else {
+                            Spacer(Modifier.weight(1f))
+                        }
                     }
                 }
 
@@ -505,7 +525,7 @@ class MainActivity : ComponentActivity() {
         if (known == null) {
             inbox.add(req)
             refreshLists()
-            val isNew = contacts.record(req.recipient, req.label, req.genesis != null)
+            val isNew = contacts.record(req.recipient, req.label, false)
             contactCount = contacts.count()
             push(if (isNew) "+ new contact ${req.label}" else "— known contact ${req.label}")
             // The payer registers too, so the server watches this request even if the payee's
@@ -605,7 +625,7 @@ class MainActivity : ComponentActivity() {
                 status = Status.Sent(result.signature)
                 Haptics.success(this)
                 push("✓ CONFIRMED — ${Chain.explorerUrl(result.signature)}")
-                contacts.record(req.recipient, req.label, req.genesis != null, paid = req.amount.toDoubleOrNull() ?: 0.0)
+                contacts.record(req.recipient, req.label, false, paid = req.amount.toDoubleOrNull() ?: 0.0)
                 contactCount = contacts.count()
                 // Nudge the server to look now rather than on its next sweep.
                 lifecycleScope.launch {
@@ -742,23 +762,22 @@ private fun Banner(
     onDismiss: (() -> Unit)? = null,
 ) {
     Row(
-        Modifier.fillMaxWidth()
-            .background(tone.copy(alpha = .10f), RoundedCornerShape(8.dp))
-            .border(1.dp, tone.copy(alpha = .55f), RoundedCornerShape(8.dp))
-            .padding(12.dp),
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(tone.copy(alpha = .08f))
+            .padding(horizontal = 14.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(Modifier.weight(1f)) {
             Text(title, color = tone, fontSize = 15.sp, fontWeight = FontWeight.Bold)
             if (detail.isNotBlank()) {
                 Spacer(Modifier.height(2.dp))
-                Text(detail, color = Dim, fontSize = if (mono) 9.sp else 12.sp,
-                    fontFamily = if (mono) FontFamily.Monospace else FontFamily.Default,
-                    lineHeight = 16.sp)
+                Text(detail, color = D.Quiet, fontSize = if (mono) 10.sp else 13.sp,
+                    fontFamily = if (mono) FontFamily.Monospace else Ui, lineHeight = 17.sp)
             }
         }
         if (onDismiss != null) {
-            TextButton(onClick = onDismiss) { Text("OK", color = tone, fontSize = 12.sp) }
+            Text("OK", color = tone, fontSize = 14.sp, fontWeight = FontWeight.Bold,
+                modifier = Modifier.clip(RoundedCornerShape(10.dp)).clickable(onClick = onDismiss)
+                    .padding(horizontal = 10.dp, vertical = 6.dp))
         }
     }
 }
@@ -771,31 +790,32 @@ private fun WalletRow(
     onConnect: () -> Unit,
 ) {
     Row(
-        Modifier.fillMaxWidth().background(Panel, RoundedCornerShape(8.dp))
-            .border(1.dp, if (address == null) Warn.copy(alpha = .5f) else Line, RoundedCornerShape(8.dp))
-            .padding(12.dp),
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(D.Fill)
+            .padding(horizontal = 14.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        HIcon(R.drawable.hi_wallet, if (address == null) D.Danger else D.Quiet, 18.dp)
+        Spacer(Modifier.width(10.dp))
         Column(Modifier.weight(1f)) {
-            Text(if (address == null) "No wallet" else "Wallet",
-                color = Dim, fontSize = 10.sp, letterSpacing = 1.sp)
             Text(
-                address?.let { "${it.take(10)}…${it.takeLast(6)}" } ?: "connect to send or receive",
-                color = if (address == null) Warn else Fg,
-                fontSize = 12.sp, fontFamily = FontFamily.Monospace,
+                address?.let { "${it.take(6)}…${it.takeLast(4)}" } ?: "No wallet connected",
+                color = if (address == null) D.Danger else D.Black,
+                fontSize = 14.sp, fontWeight = FontWeight.SemiBold, style = Figures,
             )
         }
         if (address == null) {
-            Button(
-                onClick = onConnect, enabled = !busy,
-                colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = Ink),
-            ) { Text(if (busy) "…" else "Connect", fontWeight = FontWeight.SemiBold) }
+            Box(
+                Modifier.clip(RoundedCornerShape(11.dp)).background(D.Blue)
+                    .clickable(enabled = !busy, onClick = onConnect)
+                    .padding(horizontal = 16.dp, vertical = 9.dp),
+            ) { Text(if (busy) "…" else "Connect", color = D.White, fontSize = 14.sp, fontWeight = FontWeight.Bold) }
         } else {
             // The escape hatch for a session the wallet no longer honours. Without it the only
             // cure for a stale token is reinstalling the app.
-            TextButton(onClick = onDisconnect, enabled = !busy) {
-                Text("Disconnect", color = Dim, fontSize = 12.sp)
-            }
+            Text("Disconnect", color = D.Quiet, fontSize = 13.sp, fontWeight = FontWeight.Medium,
+                modifier = Modifier.clip(RoundedCornerShape(10.dp))
+                    .clickable(enabled = !busy, onClick = onDisconnect)
+                    .padding(horizontal = 8.dp, vertical = 6.dp))
         }
     }
 }
@@ -807,69 +827,117 @@ private fun WalletRow(
  */
 @Composable
 private fun ContactStrip(list: List<Contact>) {
-    Column {
-        Text("TAPPED ${list.size}", color = Dim, fontSize = 10.sp, letterSpacing = 2.sp)
-        Spacer(Modifier.height(6.dp))
-        list.take(3).forEach { c ->
-            Row(
-                Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Box(
-                    Modifier.size(26.dp)
-                        .background(if (c.seeker) Accent.copy(alpha = .18f) else Panel, RoundedCornerShape(13.dp)),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(c.label.take(1).uppercase(),
-                        color = if (c.seeker) Accent else Dim,
-                        fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                }
-                Spacer(Modifier.width(10.dp))
-                Column(Modifier.weight(1f)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(c.label, color = Fg, fontSize = 13.sp)
+    Column(Modifier.fillMaxWidth()) {
+        SectionLabel("PEOPLE YOU'VE TAPPED")
+        Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+            list.take(5).forEach { c ->
+                Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(56.dp)) {
+                    Box(
+                        Modifier.size(46.dp).background(if (c.seeker) D.Blue.copy(alpha = .1f) else D.Fill, CircleShape),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(c.label.take(1).uppercase(), color = if (c.seeker) D.Blue else D.Quiet,
+                            fontSize = 18.sp, fontWeight = FontWeight.Bold, fontFamily = Display)
                         if (c.seeker) {
-                            Spacer(Modifier.width(6.dp))
-                            Text("SEEKER", color = Accent, fontSize = 8.sp,
-                                letterSpacing = 1.sp, fontWeight = FontWeight.Bold)
+                            // The badge sits on the face, where a Seeker owner is recognised.
+                            Box(Modifier.align(Alignment.BottomEnd).size(16.dp).background(D.White, CircleShape),
+                                contentAlignment = Alignment.Center) {
+                                HIcon(R.drawable.hi_verified, D.Blue, 14.dp)
+                            }
                         }
                     }
-                    Text(c.short, color = Dim, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
+                    Spacer(Modifier.height(6.dp))
+                    Text(c.label, color = D.Black, fontSize = 12.sp, fontWeight = FontWeight.Medium,
+                        maxLines = 1, textAlign = TextAlign.Center)
                 }
-                Text(
-                    if (c.totalPaid > 0) "${"%.3f".format(c.totalPaid)} SOL" else "${c.taps} tap${if (c.taps > 1) "s" else ""}",
-                    color = Dim, fontSize = 10.sp,
-                )
+            }
+            if (list.size > 5) {
+                Box(Modifier.size(46.dp).background(D.Fill, CircleShape), contentAlignment = Alignment.Center) {
+                    Text("+${list.size - 5}", color = D.Quiet, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                }
             }
         }
     }
 }
 
+/**
+ * The screen at rest: an invitation, not a console.
+ *
+ * Rings travel outward from the phone's own back, which is where the other phone goes — the
+ * gesture drawn rather than described. They are slow and low-contrast on purpose: this runs
+ * for as long as the app is open and sits behind everything else on the screen.
+ */
 @Composable
-private fun Header(d: Diagnostics) {
-    var open by remember { mutableStateOf(d.blocker != null) }
-    Column {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("DUFFLE", color = Fg, fontSize = 28.sp, fontWeight = FontWeight.Bold, letterSpacing = 4.sp)
-            Spacer(Modifier.weight(1f))
-            TextButton(onClick = { open = !open }) {
-                Text(if (open) "hide" else "check", color = Dim, fontSize = 12.sp)
+private fun Invitation(hint: String, ready: Boolean) {
+    val pulse = rememberInfiniteTransition(label = "pulse")
+    Column(
+        Modifier.fillMaxWidth().padding(vertical = 8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Box(Modifier.size(132.dp), contentAlignment = Alignment.Center) {
+            if (ready) {
+                repeat(3) { i ->
+                    val t by pulse.animateFloat(
+                        initialValue = 0f, targetValue = 1f,
+                        animationSpec = infiniteRepeatable(
+                            tween(2600, delayMillis = i * 850, easing = LinearEasing), RepeatMode.Restart,
+                        ),
+                        label = "ring$i",
+                    )
+                    Box(
+                        Modifier.size(52.dp + (80.dp - 52.dp) * t * 2f)
+                            .background(D.Blue.copy(alpha = .16f * (1f - t)), CircleShape),
+                    )
+                }
+            }
+            Box(Modifier.size(78.dp).background(if (ready) D.Blue else D.Fill, CircleShape),
+                contentAlignment = Alignment.Center) {
+                HIcon(R.drawable.hi_nfc, if (ready) D.White else D.Quiet, 36.dp)
             }
         }
-        Text(d.blocker ?: "Ready · ${d.model} · devnet",
-            color = if (d.blocker != null) Warn else Accent, fontSize = 12.sp)
-        if (open) {
-            Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(14.dp))
+        Text(
+            if (ready) "Hold your phone to theirs" else "Connect a wallet to start",
+            color = D.Black, fontSize = 22.sp, fontWeight = FontWeight.ExtraBold,
+            fontFamily = Display, textAlign = TextAlign.Center,
+        )
+        Spacer(Modifier.height(5.dp))
+        Text(hint, color = D.Quiet, fontSize = 14.sp, textAlign = TextAlign.Center)
+    }
+}
+@Composable
+private fun Header(d: Diagnostics, checking: Boolean, onCheck: () -> Unit) {
+    Column {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Duffle", color = D.Black, fontSize = 30.sp, fontWeight = FontWeight.ExtraBold,
+                fontFamily = Display, letterSpacing = (-0.5).sp)
+            Spacer(Modifier.weight(1f))
+            // "check" is ours, not theirs: the diagnostics and the exchange log both live
+            // behind it, so the screen someone opens is an invitation rather than a console.
+            Text(if (checking) "hide" else "check", color = D.Quiet, fontSize = 14.sp,
+                fontWeight = FontWeight.Medium,
+                modifier = Modifier.clip(RoundedCornerShape(10.dp)).clickable(onClick = onCheck)
+                    .padding(horizontal = 10.dp, vertical = 6.dp))
+        }
+        Spacer(Modifier.height(2.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            val ok = d.blocker == null
+            Box(Modifier.size(7.dp).background(if (ok) D.Success else D.Danger, CircleShape))
+            Spacer(Modifier.width(7.dp))
+            Text(d.blocker ?: "Ready · ${d.model} · devnet",
+                color = if (ok) D.Quiet else D.Danger, fontSize = 13.sp)
+        }
+        AnimatedVisibility(visible = checking) {
             Column(
-                Modifier.fillMaxWidth().background(Panel, RoundedCornerShape(8.dp))
-                    .border(1.dp, Line, RoundedCornerShape(8.dp)).padding(12.dp)
+                Modifier.padding(top = 10.dp).fillMaxWidth().clip(RoundedCornerShape(14.dp))
+                    .cardShadow(14.dp).background(D.White).padding(14.dp)
             ) {
                 d.lines().forEach { (label, ok) ->
-                    Row(Modifier.padding(vertical = 3.dp)) {
-                        Text(if (ok) "✓" else "✗", color = if (ok) Accent else Warn,
-                            fontSize = 12.sp, fontFamily = FontFamily.Monospace)
-                        Spacer(Modifier.width(10.dp))
-                        Text(label, color = if (ok) Dim else Warn, fontSize = 12.sp)
+                    Row(Modifier.padding(vertical = 3.dp), verticalAlignment = Alignment.CenterVertically) {
+                        HIcon(if (ok) R.drawable.hi_tick else R.drawable.hi_alert,
+                            if (ok) D.Success else D.Danger, 15.dp)
+                        Spacer(Modifier.width(9.dp))
+                        Text(label, color = if (ok) D.Quiet else D.Danger, fontSize = 13.sp)
                     }
                 }
             }
@@ -879,16 +947,20 @@ private fun Header(d: Diagnostics) {
 
 @Composable
 private fun ModeButton(label: String, active: Boolean, enabled: Boolean, m: Modifier, onClick: () -> Unit) {
-    Button(
-        onClick = onClick, enabled = enabled, modifier = m.height(52.dp),
-        shape = RoundedCornerShape(10.dp),
-        colors = ButtonDefaults.buttonColors(
-            containerColor = if (active) Accent else Panel,
-            contentColor = if (active) Ink else Fg,
-            disabledContainerColor = Panel.copy(alpha = .5f),
-            disabledContentColor = Dim.copy(alpha = .5f),
-        ),
-    ) { Text(label, fontWeight = FontWeight.SemiBold) }
+    val interaction = remember { MutableInteractionSource() }
+    val bg = when {
+        !enabled -> D.Fill
+        active -> D.Blue
+        else -> D.Fill
+    }
+    Box(
+        m.then(PressScale(interaction)).height(56.dp).clip(RoundedCornerShape(16.dp)).background(bg)
+            .clickable(interaction, indication = null, enabled = enabled, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(label, color = if (active && enabled) D.White else if (enabled) D.Black else D.Quiet,
+            fontSize = 16.sp, fontWeight = FontWeight.Bold, style = Figures)
+    }
 }
 
 @Composable
@@ -897,15 +969,14 @@ private fun LogView(log: List<String>) {
     LaunchedEffect(log.size) { if (log.isNotEmpty()) state.animateScrollToItem(log.size - 1) }
     LazyColumn(
         state = state,
-        modifier = Modifier.fillMaxSize().background(Panel, RoundedCornerShape(8.dp))
-            .border(1.dp, Line, RoundedCornerShape(8.dp)).padding(12.dp),
+        modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(14.dp)).background(D.Fill).padding(14.dp),
     ) {
         items(log) { line ->
             Text(line,
                 color = when {
-                    line.startsWith("✓") -> Accent
-                    line.startsWith("✗") -> Warn
-                    else -> Dim
+                    line.startsWith("✓") -> D.Success
+                    line.startsWith("✗") -> D.Danger
+                    else -> D.Quiet
                 },
                 fontSize = 11.sp, fontFamily = FontFamily.Monospace,
                 modifier = Modifier.padding(vertical = 1.dp))
@@ -924,32 +995,32 @@ private fun ConfirmSheet(
     AlertDialog(
         // Tapping outside is "later", never "gone": the request is already saved.
         onDismissRequest = onLater,
-        containerColor = Panel,
-        title = { Text("Pay ${req.label}?", color = Fg) },
+        containerColor = D.White,
+        title = { Text("Pay ${req.label}?", color = D.Black) },
         text = {
             Column {
-                Text("${req.amount} ${req.token}", color = Accent,
+                Text("${req.amount} ${req.token}", color = D.Blue,
                     fontSize = 30.sp, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(8.dp))
                 Text("to ${req.recipient.take(8)}…${req.recipient.takeLast(6)}",
-                    color = Dim, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
+                    color = D.Quiet, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
                 if (req.genesis != null) {
                     Spacer(Modifier.height(6.dp))
-                    Text("✓ Verified Seeker", color = Accent, fontSize = 12.sp)
+                    Text("✓ Verified Seeker", color = D.Blue, fontSize = 12.sp)
                 }
                 Spacer(Modifier.height(10.dp))
-                Text("No rush — this stays in Requests until you pay it.", color = Dim, fontSize = 11.sp)
+                Text("No rush — this stays in Requests until you pay it.", color = D.Quiet, fontSize = 11.sp)
             }
         },
         confirmButton = {
             TextButton(onClick = onPay, enabled = !busy) {
-                Text(if (busy) "…" else "Pay", color = Accent, fontWeight = FontWeight.Bold)
+                Text(if (busy) "…" else "Pay", color = D.Blue, fontWeight = FontWeight.Bold)
             }
         },
         dismissButton = {
             Row {
-                TextButton(onClick = onDecline, enabled = !busy) { Text("Decline", color = Warn) }
-                TextButton(onClick = onLater) { Text("Later", color = Dim) }
+                TextButton(onClick = onDecline, enabled = !busy) { Text("Decline", color = D.Danger) }
+                TextButton(onClick = onLater) { Text("Later", color = D.Quiet) }
             }
         },
     )
@@ -960,21 +1031,22 @@ private fun TabBar(current: Tab, openCount: Int, onSelect: (Tab) -> Unit) {
     // Rewards only appears in a build that has them; without it the tab would open a screen
     // that can never say anything.
     Row(
-        Modifier.fillMaxWidth().background(Panel, RoundedCornerShape(10.dp))
-            .border(1.dp, Line, RoundedCornerShape(10.dp)).padding(4.dp),
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(D.Fill).padding(4.dp),
         horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         (listOf(Tab.TAP to "Tap", Tab.REQUESTS to if (openCount > 0) "Requests · $openCount" else "Requests") +
             if (Rewards.enabled) listOf(Tab.REWARDS to "Rewards") else emptyList())
             .forEach { (t, label) ->
                 val on = t == current
-                TextButton(
-                    onClick = { onSelect(t) },
-                    modifier = Modifier.weight(1f)
-                        .background(if (on) Line else Color.Transparent, RoundedCornerShape(8.dp)),
+                Box(
+                    Modifier.weight(1f).height(40.dp).clip(RoundedCornerShape(11.dp))
+                        .then(if (on) Modifier.cardShadow(11.dp).background(D.White) else Modifier)
+                        .clickable(remember { MutableInteractionSource() }, indication = null) { onSelect(t) },
+                    contentAlignment = Alignment.Center,
                 ) {
-                    Text(label, color = if (on) Fg else Dim, fontSize = 13.sp,
-                        fontWeight = if (on) FontWeight.SemiBold else FontWeight.Normal)
+                    Text(label, color = if (on) D.Black else D.Quiet, fontSize = 14.sp,
+                        fontWeight = if (on) FontWeight.Bold else FontWeight.Medium,
+                        maxLines = 1, style = Figures)
                 }
             }
     }
@@ -1005,9 +1077,9 @@ private fun RequestsTab(
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
         if (openToPay.isEmpty() && openOwed.isEmpty() && history.isEmpty()) {
             Spacer(Modifier.height(40.dp))
-            Text("Nothing here yet", color = Fg, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+            Text("Nothing here yet", color = D.Black, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.height(6.dp))
-            Text("Requests you tap land here, and stay until they're paid.", color = Dim, fontSize = 13.sp)
+            Text("Requests you tap land here, and stay until they're paid.", color = D.Quiet, fontSize = 13.sp)
             return@Column
         }
 
@@ -1021,32 +1093,32 @@ private fun RequestsTab(
                 Row(RowStyle, verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("${item.request.amount} ${item.request.symbol}", color = if (gone) Dim else Fg,
+                            Text("${item.request.amount} ${item.request.symbol}", color = if (gone) D.Quiet else D.Black,
                                 fontSize = 16.sp, fontWeight = FontWeight.Bold)
                             if (gone) {
                                 Spacer(Modifier.width(8.dp))
-                                Text("WITHDRAWN BY ${item.request.label.uppercase()}", color = Warn,
+                                Text("WITHDRAWN BY ${item.request.label.uppercase()}", color = D.Danger,
                                     fontSize = 8.sp, letterSpacing = 1.sp, fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.background(Warn.copy(alpha = .12f), RoundedCornerShape(4.dp))
+                                    modifier = Modifier.background(D.Danger.copy(alpha = .12f), RoundedCornerShape(4.dp))
                                         .padding(horizontal = 6.dp, vertical = 2.dp))
                             } else if (item.request.genesis != null) {
                                 Spacer(Modifier.width(6.dp))
-                                Text("SEEKER", color = Accent, fontSize = 8.sp, letterSpacing = 1.sp, fontWeight = FontWeight.Bold)
+                                Text("SEEKER", color = D.Blue, fontSize = 8.sp, letterSpacing = 1.sp, fontWeight = FontWeight.Bold)
                             }
                         }
                         Text(
                             if (gone) "${item.request.label} took this back"
                             else "${item.request.label} · tapped ${ago(item.readAt)}",
-                            color = Dim, fontSize = 11.sp,
+                            color = D.Quiet, fontSize = 11.sp,
                         )
                     }
                     TextButton(onClick = { onDismissToPay(item) }, enabled = paying == null) {
-                        Text("Remove", color = Dim, fontSize = 12.sp)
+                        Text("Remove", color = D.Quiet, fontSize = 12.sp)
                     }
                     if (!gone) {
                         Button(
                             onClick = { onPay(item) }, enabled = paying == null,
-                            colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = Ink),
+                            colors = ButtonDefaults.buttonColors(containerColor = D.Blue, contentColor = D.White),
                         ) { Text(if (paying == item.request.reference) "…" else "Pay", fontWeight = FontWeight.SemiBold) }
                     }
                 }
@@ -1067,10 +1139,10 @@ private fun RequestsTab(
                 Row(RowStyle, verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("${e.amount} ${e.symbol}", color = if (no) Dim else Fg, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                            Text("${e.amount} ${e.symbol}", color = if (no) D.Quiet else D.Black, fontSize = 16.sp, fontWeight = FontWeight.Bold)
                             if (no || later) {
                                 val tag = if (no) "DECLINED BY ${e.rejectedBy!!.uppercase()}" else "PENDING"
-                                val tone = if (no) Warn else Accent
+                                val tone = if (no) D.Danger else D.Blue
                                 Spacer(Modifier.width(8.dp))
                                 Text(tag, color = tone, fontSize = 8.sp,
                                     letterSpacing = 1.sp, fontWeight = FontWeight.Bold,
@@ -1084,11 +1156,11 @@ private fun RequestsTab(
                                 later -> "${e.deferredBy} will pay later · still watching for it"
                                 else -> "requested ${ago(e.createdAt)} · ${e.reference.take(8)}…"
                             },
-                            color = Dim, fontSize = 11.sp,
+                            color = D.Quiet, fontSize = 11.sp,
                             fontFamily = if (no || later) FontFamily.Default else FontFamily.Monospace,
                         )
                     }
-                    TextButton(onClick = { onDismissOwed(e) }) { Text("Remove", color = Dim, fontSize = 12.sp) }
+                    TextButton(onClick = { onDismissOwed(e) }) { Text("Remove", color = D.Quiet, fontSize = 12.sp) }
                 }
             }
             Spacer(Modifier.height(16.dp))
@@ -1098,11 +1170,11 @@ private fun RequestsTab(
             SectionLabel("DONE")
             history.forEach { (at, what, sig) ->
                 Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text("✓", color = Accent, fontSize = 13.sp)
+                    Text("✓", color = D.Blue, fontSize = 13.sp)
                     Spacer(Modifier.width(10.dp))
                     Column(Modifier.weight(1f)) {
-                        Text(what, color = Fg, fontSize = 13.sp)
-                        Text("${ago(at)} · ${sig.take(10)}…", color = Dim, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                        Text(what, color = D.Black, fontSize = 13.sp)
+                        Text("${ago(at)} · ${sig.take(10)}…", color = D.Quiet, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
                     }
                 }
             }
@@ -1152,20 +1224,20 @@ private fun RewardsTab(connected: String?, isSeeker: Boolean) {
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
         if (connected == null) {
             Spacer(Modifier.height(40.dp))
-            Text("Connect a wallet", color = Fg, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+            Text("Connect a wallet", color = D.Black, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.height(6.dp))
             Text("Rewards are earned by the wallet that pays, so there is nothing to show until one is connected.",
-                color = Dim, fontSize = 13.sp)
+                color = D.Quiet, fontSize = 13.sp)
             return@Column
         }
         val s = summary
         if (s == null) {
             Spacer(Modifier.height(40.dp))
-            Text(if (loading) "Checking…" else "Can't reach the server", color = Fg, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+            Text(if (loading) "Checking…" else "Can't reach the server", color = D.Black, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
             if (!loading) {
                 Spacer(Modifier.height(6.dp))
                 Text("Your rewards are safe on the server — this screen just can't read them right now.",
-                    color = Dim, fontSize = 13.sp)
+                    color = D.Quiet, fontSize = 13.sp)
             }
             return@Column
         }
@@ -1173,7 +1245,7 @@ private fun RewardsTab(connected: String?, isSeeker: Boolean) {
         // Offers first: they are the thing to do, the balance is the thing that happened.
         if (loading && offers.isEmpty()) {
             SectionLabel("OFFERS")
-            Text("Checking…", color = Dim, fontSize = 13.sp, modifier = Modifier.padding(bottom = 14.dp))
+            Text("Checking…", color = D.Quiet, fontSize = 13.sp, modifier = Modifier.padding(bottom = 14.dp))
         }
         if (offers.isNotEmpty()) {
             SectionLabel("OFFERS")
@@ -1181,36 +1253,36 @@ private fun RewardsTab(connected: String?, isSeeker: Boolean) {
                 Column(RowStyle) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
-                            Text(offer.what, color = Fg, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                            Text(offer.what, color = D.Black, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
                             Text(
                                 if (offer.funder == "duffle") "${offer.app} · from Duffle"
                                 else "${offer.app} · from ${offer.funder}",
-                                color = Dim, fontSize = 12.sp,
+                                color = D.Quiet, fontSize = 12.sp,
                             )
                         }
                         if (offer.reward > 0) {
-                            Text("${offer.reward} SKR", color = Accent, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                            Text("${offer.reward} SKR", color = D.Blue, fontSize = 14.sp, fontWeight = FontWeight.Bold)
                         }
                     }
                     Spacer(Modifier.height(8.dp))
                     when {
                         offer.state == "paid" ->
-                            Text("✓ Earned ${offer.earned} SKR", color = Accent, fontSize = 13.sp)
+                            Text("✓ Earned ${offer.earned} SKR", color = D.Blue, fontSize = 13.sp)
                         offer.waiting -> {
                             // Claimed and waiting. The reason it hasn't paid is worth showing:
                             // "pay again" is actionable, "nothing happened" is not.
                             Text(Rewards.offerWhy(offer.refused)
                                 ?: "Claimed · pay ${offer.app} within ${offer.windowHours}h",
-                                color = Dim, fontSize = 13.sp)
+                                color = D.Quiet, fontSize = 13.sp)
                         }
                         offer.state == "expired" ->
-                            Text("The window closed — claim it again", color = Dim, fontSize = 13.sp)
+                            Text("The window closed — claim it again", color = D.Quiet, fontSize = 13.sp)
                         // Say it before, not after. A green Claim button on a phone that can
                         // never claim is the same mistake as a reward rule nobody hears about
                         // until they are not paid — and this one is answerable on the spot,
                         // because the app already knows whether this wallet holds Genesis.
                         !isSeeker -> Text("Seeker only — this wallet holds no Genesis Token",
-                            color = Dim, fontSize = 13.sp)
+                            color = D.Quiet, fontSize = 13.sp)
                         else -> Button(
                             onClick = {
                                 val me = connected ?: return@Button
@@ -1222,7 +1294,7 @@ private fun RewardsTab(connected: String?, isSeeker: Boolean) {
                                 }
                             },
                             enabled = claiming == null,
-                            colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = Ink),
+                            colors = ButtonDefaults.buttonColors(containerColor = D.Blue, contentColor = D.White),
                             shape = RoundedCornerShape(8.dp),
                         ) { Text(if (claiming == offer.id) "…" else "Claim", fontWeight = FontWeight.Bold) }
                     }
@@ -1230,7 +1302,7 @@ private fun RewardsTab(connected: String?, isSeeker: Boolean) {
             }
             claimProblem?.let {
                 Spacer(Modifier.height(6.dp))
-                Text(it, color = Warn, fontSize = 12.sp)
+                Text(it, color = D.Danger, fontSize = 12.sp)
             }
             Spacer(Modifier.height(14.dp))
         }
@@ -1238,13 +1310,12 @@ private fun RewardsTab(connected: String?, isSeeker: Boolean) {
         // The total, with the split underneath. "Locked" is not a footnote: a reward can still
         // be reversed for a week, and saying so now is cheaper than explaining it after.
         Column(
-            Modifier.fillMaxWidth().background(Panel, RoundedCornerShape(10.dp))
-                .border(1.dp, Line, RoundedCornerShape(10.dp)).padding(16.dp),
+            Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(D.Fill).padding(16.dp),
         ) {
             Row(verticalAlignment = Alignment.Bottom) {
-                Text("${s.total}", color = Accent, fontSize = 40.sp, fontWeight = FontWeight.Bold)
+                Text("${s.total}", color = D.Blue, fontSize = 40.sp, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.width(6.dp))
-                Text("SKR", color = Accent, fontSize = 16.sp, fontWeight = FontWeight.SemiBold,
+                Text("SKR", color = D.Blue, fontSize = 16.sp, fontWeight = FontWeight.SemiBold,
                     modifier = Modifier.padding(bottom = 6.dp))
             }
             Spacer(Modifier.height(4.dp))
@@ -1257,11 +1328,11 @@ private fun RewardsTab(connected: String?, isSeeker: Boolean) {
                     s.locked > 0 -> "Locked for ${s.lockDays} days, then yours"
                     else -> "${s.ready} ready"
                 },
-                color = Dim, fontSize = 13.sp,
+                color = D.Quiet, fontSize = 13.sp,
             )
             if (s.settled > 0) {
                 Spacer(Modifier.height(2.dp))
-                Text("${s.settled} paid out", color = Dim, fontSize = 12.sp)
+                Text("${s.settled} paid out", color = D.Quiet, fontSize = 12.sp)
             }
         }
 
@@ -1271,16 +1342,16 @@ private fun RewardsTab(connected: String?, isSeeker: Boolean) {
         // the streak is the thing worth finishing.
         Column(RowStyle) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("This week", color = Fg, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                Text("This week", color = D.Black, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.weight(1f))
-                Text("${s.weekPayments} of ${s.weekAllows}", color = Dim, fontSize = 13.sp)
+                Text("${s.weekPayments} of ${s.weekAllows}", color = D.Quiet, fontSize = 13.sp)
             }
             Spacer(Modifier.height(8.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
                 repeat(s.weekAllows) { i ->
                     Box(
                         Modifier.weight(1f).height(6.dp)
-                            .background(if (i < s.weekPayments) Accent else Line, RoundedCornerShape(3.dp)),
+                            .background(if (i < s.weekPayments) D.Blue else D.Line, RoundedCornerShape(3.dp)),
                     )
                 }
             }
@@ -1288,22 +1359,22 @@ private fun RewardsTab(connected: String?, isSeeker: Boolean) {
             Text(
                 if (s.weekPayments >= s.streakNeeded) "Streak complete — ${s.streak} SKR earned"
                 else "${s.streakNeeded - s.weekPayments} more this week for the ${s.streak} SKR streak",
-                color = Dim, fontSize = 12.sp,
+                color = D.Quiet, fontSize = 12.sp,
             )
         }
 
         Column(RowStyle) {
             Row {
-                Text("This month", color = Dim, fontSize = 13.sp, modifier = Modifier.weight(1f))
-                Text("${s.monthEarned} of ${s.monthCap} SKR", color = Fg, fontSize = 13.sp)
+                Text("This month", color = D.Quiet, fontSize = 13.sp, modifier = Modifier.weight(1f))
+                Text("${s.monthEarned} of ${s.monthCap} SKR", color = D.Black, fontSize = 13.sp)
             }
             Spacer(Modifier.height(4.dp))
             Row {
-                Text("Left in this week's pool", color = Dim, fontSize = 13.sp, modifier = Modifier.weight(1f))
+                Text("Left in this week's pool", color = D.Quiet, fontSize = 13.sp, modifier = Modifier.weight(1f))
                 // An empty pool pays nobody, and the screen says so rather than letting the
                 // next payment quietly earn nothing.
                 Text(if (s.poolLeft > 0) "${s.poolLeft} SKR" else "empty — nothing earns until it refills",
-                    color = if (s.poolLeft > 0) Fg else Warn, fontSize = 13.sp)
+                    color = if (s.poolLeft > 0) D.Black else D.Danger, fontSize = 13.sp)
             }
         }
 
@@ -1313,7 +1384,7 @@ private fun RewardsTab(connected: String?, isSeeker: Boolean) {
             s.rows.forEach { row ->
                 Row(RowStyle, verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
-                        Text(Rewards.nameOf(row.kind), color = Fg, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                        Text(Rewards.nameOf(row.kind), color = D.Black, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
                         // A reward taken back says why, in the same place the reward was. It
                         // is not deleted: someone who saw 300 SKR and later sees 0 deserves
                         // the reason on the same screen rather than a number that changed.
@@ -1323,11 +1394,11 @@ private fun RewardsTab(connected: String?, isSeeker: Boolean) {
                                 row.state == "locked" -> "with ${row.counterparty.take(4)}…${row.counterparty.takeLast(4)} · locked"
                                 else -> "with ${row.counterparty.take(4)}…${row.counterparty.takeLast(4)}"
                             },
-                            color = if (row.state == "reversed") Warn else Dim, fontSize = 12.sp,
+                            color = if (row.state == "reversed") D.Danger else D.Quiet, fontSize = 12.sp,
                         )
                     }
                     Text(if (row.state == "reversed") "−${row.skr}" else "+${row.skr}",
-                        color = if (row.state == "reversed") Warn else Accent,
+                        color = if (row.state == "reversed") D.Danger else D.Blue,
                         fontSize = 15.sp, fontWeight = FontWeight.Bold)
                 }
             }
@@ -1339,8 +1410,8 @@ private fun RewardsTab(connected: String?, isSeeker: Boolean) {
             s.refusals.forEach { ref ->
                 Row(RowStyle, verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
-                        Text(refusalText(ref.why), color = Fg, fontSize = 13.sp)
-                        Text("${ref.counterparty.take(4)}…${ref.counterparty.takeLast(4)}", color = Dim, fontSize = 12.sp)
+                        Text(refusalText(ref.why), color = D.Black, fontSize = 13.sp)
+                        Text("${ref.counterparty.take(4)}…${ref.counterparty.takeLast(4)}", color = D.Quiet, fontSize = 12.sp)
                     }
                 }
             }
@@ -1372,14 +1443,14 @@ private fun refusalText(why: String): String = when (why) {
 
 @Composable
 private fun SectionLabel(text: String) {
-    Text(text, color = Dim, fontSize = 10.sp, letterSpacing = 2.sp)
-    Spacer(Modifier.height(6.dp))
+    Text(text, color = D.Quiet, fontSize = 11.sp, letterSpacing = 1.5.sp, fontWeight = FontWeight.SemiBold)
+    Spacer(Modifier.height(8.dp))
 }
 
 private val RowStyle = Modifier.fillMaxWidth().padding(vertical = 4.dp)
-    .background(Panel, RoundedCornerShape(8.dp))
-    .border(1.dp, Line, RoundedCornerShape(8.dp))
-    .padding(horizontal = 12.dp, vertical = 8.dp)
+    .clip(RoundedCornerShape(14.dp))
+    .background(D.Fill)
+    .padding(horizontal = 14.dp, vertical = 12.dp)
 
 /**
  * Naming yourself. Until someone does, they are a phone model to everybody they tap — and
@@ -1390,27 +1461,27 @@ private fun NameDialog(current: String, onDismiss: () -> Unit, onSave: (String) 
     var text by rememberSaveable { mutableStateOf(current) }
     AlertDialog(
         onDismissRequest = onDismiss,
-        containerColor = Panel,
-        title = { Text("Your name", color = Fg) },
+        containerColor = D.White,
+        title = { Text("Your name", color = D.Black) },
         text = {
             Column {
-                Text("Shown on the other phone when you tap someone.", color = Dim, fontSize = 13.sp)
+                Text("Shown on the other phone when you tap someone.", color = D.Quiet, fontSize = 13.sp)
                 Spacer(Modifier.height(12.dp))
                 OutlinedTextField(
                     value = text,
                     onValueChange = { if (it.length <= 40) text = it },
                     singleLine = true,
-                    placeholder = { Text(android.os.Build.MODEL, color = Dim) },
-                    supportingText = { Text("${text.trim().length}/40", color = Dim) },
+                    placeholder = { Text(android.os.Build.MODEL, color = D.Quiet) },
+                    supportingText = { Text("${text.trim().length}/40", color = D.Quiet) },
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
         },
         confirmButton = {
             TextButton(onClick = { onSave(text) }, enabled = text.isNotBlank()) {
-                Text("Save", color = Accent, fontWeight = FontWeight.Bold)
+                Text("Save", color = D.Blue, fontWeight = FontWeight.Bold)
             }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel", color = Dim) } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel", color = D.Quiet) } },
     )
 }

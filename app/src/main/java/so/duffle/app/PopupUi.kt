@@ -154,6 +154,8 @@ internal fun PopupScreen(
     earned: Rewards.Earned? = null,
     /** How the sheet was opened: "nfc", "hce", "app" (in person) or "server", "notification". */
     cameFrom: String? = null,
+    /** The chain's answer on this peer's Genesis token, for whoever wants to remember it. */
+    onVerified: (Boolean) -> Unit = {},
 ) {
     // Hoisted so the amount survives the switch from typing to paying: the same number stays on
     // screen while the button below it reports progress.
@@ -168,6 +170,8 @@ internal fun PopupScreen(
     // mainnet (where Genesis lives), and the "Verified Seeker" badge waits for the answer.
     val genesis by produceState<Genesis.Check?>(initialValue = null, peer.address) {
         value = withContext(Dispatchers.IO) { Genesis.check(peer.address) }
+        // Only a held token is reported. "Couldn't check" must never look like "not a Seeker".
+        if (value is Genesis.Check.Held) onVerified(true)
     }
     // Fetched now, not when the device page opens: arriving mid-animation it changed "Checking…"
     // to a date while the sheet was still resizing, forcing a relayout during the move.

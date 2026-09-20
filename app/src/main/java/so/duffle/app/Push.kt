@@ -227,7 +227,9 @@ class TapMessagingService : FirebaseMessagingService() {
                 val card = TapCard(d["address"].orEmpty(), d["label"].orEmpty(), d["genesis"]?.takeIf { it.isNotBlank() },
                     d["brand"]?.takeIf { Brand.isKnown(it) })
                 if (card.validate() != null) return
-                Contacts(this).record(card.address, card.label, card.genesis != null)
+                // false, not `genesis != null`: that is their claim. Contacts.verify writes the
+                // chain's answer when the popup looks it up.
+                Contacts(this).record(card.address, card.label, false)
                 Push.showTapped(this, card)
             }
         }

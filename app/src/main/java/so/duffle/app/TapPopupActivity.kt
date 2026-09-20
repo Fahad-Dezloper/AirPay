@@ -115,6 +115,7 @@ class TapPopupActivity : ComponentActivity() {
                     onRequest = ::request,
                     onDecline = ::decline,
                     onLater = ::later,
+                    onVerified = { held -> Contacts(this).verify(p.address, held) },
                     onRetry = { phase = Phase.Ready },
                     onExplorer = { sig -> runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(Chain.explorerUrl(sig)))) } },
                     previewAmount = previewAmount,
@@ -198,7 +199,7 @@ class TapPopupActivity : ComponentActivity() {
         Log.i(TAG, "popup for ${payload.label} via ${intent.getStringExtra(EXTRA_FROM) ?: intent.action}")
         Push.cancel(this, payload.address)
         Haptics.contact(this)
-        Contacts(this).record(payload.address, payload.label, payload.genesis != null)
+        Contacts(this).record(payload.address, payload.label, false)
 
         if (payload is TapPayload.Request) {
             Push.cancel(this, payload.request.reference)
