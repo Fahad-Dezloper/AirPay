@@ -12,7 +12,7 @@ import time
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 
-from . import chain, patrol, rewards, verify
+from . import chain, offers, patrol, rewards, verify
 from .helius import AddressSync, signatures_in
 from .notify import Fcm, Hub
 from .store import Store
@@ -274,6 +274,140 @@ class Service:
                 "kinds": [a.kind for a in d.awards],
                 "min_age_days": config.counterparty_min_age_days}
 
+    # -- offers ----------------------------------------------------------------------------
+
+    def offers_for(self, address: str) -> list[dict]:
+        """Every live offer, with this person's own state on each. One call, because the app
+        shows them in one list and a second round trip per offer would be absurd."""
+        now = time.time()
+        mine = {c["offer_id"]: c for c in self.store.claims_for(address)} if address else {}
+        out = []
+        for o in self.store.offers(live_at=now):
+            c = mine.get(o["id"])
+            out.append({**o, "spent": self.store.offer_spent(o["id"]),
+                        "state": (c or {}).get("state", "available"),
+                        "skr_earned": (c or {}).get("skr", 0),
+                        "signature": (c or {}).get("signature"),
+                        "refused": (c or {}).get("refused"),
+                        "claimed_at": (c or {}).get("claimed_at")})
+        return out
+
+    def put_offer(self, body: dict) -> dict:
+        """Creates or replaces an offer. Validated here rather than trusted: an offer with an
+        unpayable address would sit in the app collecting claims that can never be satisfied."""
+        now = time.time()
+        offer_id = str(body.get("id") or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", offer_id):
+            raise ValueError("id must be 1-64 characters of a-z, 0-9, - or _")
+        address = str(body.get("address") or "")
+        if not verify.is_address(address):
+            raise ValueError("invalid address")
+        token = str(body.get("token") or verify.SOL)
+        if token != verify.SOL and not verify.is_address(token):
+            raise ValueError("invalid token")
+        days = float(body.get("days") or 30)
+        row = {
+            "id": offer_id, "funder": str(body.get("funder") or "duffle")[:32],
+            "app": str(body.get("app") or "")[:48], "what": str(body.get("what") or "")[:120],
+            "address": address, "token": token,
+            "minimum": max(0, int(body.get("minimum") or 0)),
+            "reward": max(0, int(body.get("reward") or 0)),
+            "budget": max(0, int(body.get("budget") or 0)),
+            "starts": float(body.get("starts") or now),
+            "ends": float(body.get("ends") or (now + days * rewards.DAY)),
+            "window_hours": float(body.get("window_hours") or 48),
+            "link": str(body.get("link") or "")[:200],
+        }
+        if not row["app"] or not row["what"]:
+            raise ValueError("an offer needs an app and a line saying what to do")
+        self.store.put_offer(row)
+        log.info("offer %s: %s — %s SKR, budget %s", offer_id, row["what"], row["reward"], row["budget"])
+        return {"ok": True, "offer": row}
+
+    def claim_offer(self, offer_id: str, address: str) -> dict:
+        """Opens an offer for one person. The clock on the attribution window starts here, so
+        this is also the moment that makes any later payment provably caused by the offer."""
+        if not verify.is_address(address):
+            raise ValueError("invalid address")
+        row = self.store.offer(offer_id)
+        if row is None:
+            raise KeyError(offer_id)
+        offer = _offer(row)
+        now = time.time()
+        seeker = self.facts.is_seeker(address) if self.facts else False
+        if seeker is None:
+            return {"ok": False, "refused": rewards.CHAIN_UNREACHABLE}
+        existing = self.store.claim(offer_id, address)
+        why = offers.can_claim(offer, now, bool(seeker),
+                               offers.Claim(offer_id, address, existing["claimed_at"], existing["state"])
+                               if existing else None,
+                               self.store.offer_spent(offer_id))
+        if why:
+            return {"ok": False, "refused": why}
+        if not self.store.claim_offer(offer_id, address, now):
+            return {"ok": False, "refused": offers.ALREADY_CLAIMED}
+        log.info("offer %s opened by %s…", offer_id, address[:8])
+        return {"ok": True, "claimed_at": now, "window_hours": offer.window_hours}
+
+    def check_claims(self, now: float | None = None, limit: int = 20) -> int:
+        """Looks for the payment each open claim is waiting for.
+
+        It watches the **claimer's** wallet rather than the dApp's: a real app's address has
+        far too much traffic to read, while the set of people who opened an offer is small and
+        known. Settled claims stop being looked at.
+        """
+        now = now or time.time()
+        settled = 0
+        for c in self.store.open_claims(now - 60.0, limit):
+            row = self.store.offer(c["offer_id"])
+            if row is None:
+                continue
+            offer = _offer(row)
+            claim = offers.Claim(c["offer_id"], c["address"], c["claimed_at"], c["state"])
+            try:
+                payments = self._payments_from(c["address"], offer, claim.claimed_at)
+            except (chain.Offline, chain.RpcError) as e:
+                log.info("offer check for %s… deferred: %s", c["address"][:8], e)
+                continue
+            d = offers.settle(offer, claim, payments, now, self.store.offer_spent(offer.id),
+                              self._pool_left(now))
+            if d.earned:
+                if self.store.settle_claim(offer.id, c["address"], offers.PAID, d.skr,
+                                           d.signature, None, now):
+                    settled += 1
+                    log.info("offer %s paid %s SKR to %s… (%s…)", offer.id, d.skr,
+                             c["address"][:8], (d.signature or "")[:8])
+                    self._deliver(c["address"], {"type": "offer", "offer": offer.id, "app": offer.app,
+                                                 "skr": d.skr, "signature": d.signature or ""})
+            elif d.refused == offers.OUTSIDE_WINDOW:
+                self.store.settle_claim(offer.id, c["address"], offers.EXPIRED, 0, None, d.refused, now)
+            else:
+                self.store.touch_claim(offer.id, c["address"], now, d.refused)
+        return settled
+
+    def _payments_from(self, address: str, offer: offers.Offer, since: float) -> list[offers.Payment]:
+        """What this wallet paid the offer's address since it was opened."""
+        mint = None if offer.token == verify.SOL else offer.token
+        out: list[offers.Payment] = []
+        for entry in (self.rpc.signatures_with_time(address) if hasattr(self.rpc, "signatures_with_time")
+                      else [{"signature": s, "blockTime": None} for s in self.rpc.signatures(address)]):
+            at = entry.get("blockTime")
+            if at is not None and at < since:
+                continue  # older than the claim; cannot have been caused by it
+            tx = self.rpc.transaction(entry["signature"])
+            got = verify.received(tx, offer.address, mint)
+            if got > 0:
+                out.append(offers.Payment(entry["signature"], offer.address, offer.token, got,
+                                          float(at or (tx or {}).get("blockTime") or since)))
+        return out
+
+    def _pool_left(self, now: float) -> int:
+        """Offers spend the same weekly pool as tap rewards — that is what makes an unfunded
+        campaign cost nothing beyond what is already budgeted."""
+        config = self.reward_config()
+        spent = self.store.reward_history("", "", now, rewards.week_of(now), month_start(now))["week_spent"]
+        return max(0, config.weekly_pool - spent)
+
     # -- looking back --------------------------------------------------------------------
 
     def patrol(self, now: float | None = None) -> dict:
@@ -412,6 +546,7 @@ class Service:
     def run_watcher(self, stop: threading.Event, every: float = 1.0) -> None:
         while not stop.is_set():
             self._safe(self.sweep)
+            self._safe(self.check_claims)
             if time.time() - self._patrolled > self.PATROL_EVERY:
                 self._patrolled = time.time()
                 self._safe(self.patrol)
@@ -429,3 +564,13 @@ def month_start(at: float) -> float:
     """Midnight UTC on the first of the month `at` falls in — the monthly cap's window."""
     t = time.gmtime(at)
     return calendar.timegm((t.tm_year, t.tm_mon, 1, 0, 0, 0, 0, 0, 0))
+
+
+def _offer(row: dict) -> offers.Offer:
+    """A stored row as the rules want it."""
+    return offers.Offer(
+        id=row["id"], funder=row["funder"], app=row["app"], what=row["what"],
+        address=row["address"], token=row["token"], minimum=row["minimum"],
+        reward=row["reward"], budget=row["budget"], starts=row["starts"], ends=row["ends"],
+        window_hours=row["window_hours"], link=row["link"],
+    )

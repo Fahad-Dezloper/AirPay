@@ -19,6 +19,8 @@ log = logging.getLogger("duffle.web")
 
 MAX_BODY = 2 * 1024 * 1024
 HEARTBEAT = 15.0
+_PROOF_PATH = re.compile(r"^/v1/offers/([A-Za-z0-9_-]{1,64})/proof$")
+_CLAIM_PATH = re.compile(r"^/v1/offers/([A-Za-z0-9_-]{1,64})/claim$")
 _REWARDS_PATH = re.compile(r"^/v1/rewards/([1-9A-HJ-NP-Za-km-z]{32,44})$")
 _REQ_PATH = re.compile(r"^/v1/requests/([1-9A-HJ-NP-Za-km-z]{32,44})$")
 
@@ -89,6 +91,18 @@ def make_handler(service, helius_auth: str | None, limiter: RateLimit | None = N
                 if not is_address(m.group(1)):
                     return self._json(400, {"error": "invalid address"})
                 return self._json(200, service.reward_summary(m.group(1)))
+            if url.path == "/v1/offers":
+                # Public: the list is the same for everyone, and `address` only adds that
+                # person's own state to each row.
+                who = (parse_qs(url.query).get("address") or [""])[0]
+                return self._json(200, {"offers": service.offers_for(who)})
+            m = _PROOF_PATH.match(url.path)
+            if m:
+                # What a dApp is shown when asked to fund the next one. Admin-only: it is a
+                # list of their customers' signatures.
+                if not admin_token or self.headers.get("Authorization") != f"Bearer {admin_token}":
+                    return self._json(403, {"error": "admin token required"})
+                return self._json(200, service.store.offer_proof(m.group(1)))
             if url.path == "/v1/admin/rewards":
                 # What was paid, by rule and by day, and everything refused with its reason.
                 # Behind the admin token: it is the whole campaign's shape, including how to
@@ -155,6 +169,17 @@ def make_handler(service, helius_auth: str | None, limiter: RateLimit | None = N
                     return self._json(200, service.reward_preview(
                         body.get("payer") or "", body.get("counterparty") or "",
                         body.get("token") or "SOL", int(body.get("units") or 0)))
+                if path == "/v1/offers":
+                    # Creating an offer is ours, not a user's — it spends the pool.
+                    if not admin_token or self.headers.get("Authorization") != f"Bearer {admin_token}":
+                        return self._json(403, {"error": "admin token required"})
+                    return self._json(200, service.put_offer(body))
+                m = _CLAIM_PATH.match(path)
+                if m:
+                    try:
+                        return self._json(200, service.claim_offer(m.group(1), body.get("address") or ""))
+                    except KeyError:
+                        return self._json(404, {"error": "unknown offer"})
                 if path == "/v1/rewards/config":
                     # Changing what rewards cost is an owner's action, not a user's.
                     if not admin_token or self.headers.get("Authorization") != f"Bearer {admin_token}":

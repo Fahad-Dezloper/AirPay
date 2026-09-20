@@ -129,14 +129,29 @@ before the next one starts.
 - **Check:** streak advances once per day at most, resets on a missed week.
 - **Decision:** does a streak change behaviour at a meetup, or is it noise?
 
-### R4 · Offers (the layer that pays for itself)
-- Server: offers (dApp, address to pay, token, amount, window, budget, reward), claim rules.
-- Verification reuses the payment checker: a payment to the dApp's address, in the window,
-  from a verified Seeker.
-- App: an Offers tab, one seeded offer, claim + state.
-- **Check:** a devnet payment to the offer address pays out once; a payment outside the window
-  or from a non-Seeker pays nothing.
-- **Decision:** would a real dApp fund one? Worth asking two before building more.
+### R4 · Offers — **unfunded first** (decided 2026-09-20)
+
+Nobody will fund an offer for an app with no users, and waiting for a sponsor before building
+the rail means never having the numbers that would win one. So the first offers are **funded by
+Duffle out of the weekly pool that already exists** — no new money, the same 2,400 SKR a week —
+and the thing sold to dApps later is not the SKR at all. It is the proof:
+
+> *37 verified Seeker owners opened your offer, 12 paid you. Here are the signatures.*
+
+A dApp funds the **second** offer, once that number exists. The code path is identical; a
+`funder` field and a budget are the only difference between a Duffle offer and a paid one, so
+nothing has to be rebuilt when the first one says yes.
+
+- Server: `offers` (funder, dApp, address to pay, token, minimum, window, reward, budget) and
+  `claims` (who opened it, when, and the payment that satisfied it).
+- Verification watches the **claimer's** wallet, not the dApp's: a busy dApp address is
+  unwatchable, while the set of people who opened an offer is small and known.
+- Spend comes out of the same weekly pool as tap rewards, so the campaign cannot cost more than
+  is already budgeted — an empty pool pays nothing and says so.
+- App: an Offers tab, the seeded offers, claim + state + proof.
+- **Check:** a devnet payment to the offer address pays out once; a payment outside the window,
+  below the minimum, or from a non-Seeker pays nothing.
+- **Decision:** after the first real numbers — which dApps to approach, and with what price.
 
 ### R5 · SKR tiers
 - Read the payer's staked SKR (mainnet) → tier → multiplier on both rewards and offers.

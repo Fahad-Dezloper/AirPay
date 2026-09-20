@@ -73,6 +73,35 @@ class Store:
                     value      TEXT NOT NULL,
                     updated_at REAL NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS offers (
+                    id         TEXT PRIMARY KEY,
+                    funder     TEXT NOT NULL DEFAULT 'duffle',
+                    app        TEXT NOT NULL,
+                    what       TEXT NOT NULL,
+                    address    TEXT NOT NULL,
+                    token      TEXT NOT NULL DEFAULT 'SOL',
+                    minimum    INTEGER NOT NULL DEFAULT 0,
+                    reward     INTEGER NOT NULL DEFAULT 0,
+                    budget     INTEGER NOT NULL DEFAULT 0,
+                    starts     REAL NOT NULL,
+                    ends       REAL NOT NULL,
+                    window_hours REAL NOT NULL DEFAULT 48,
+                    link       TEXT NOT NULL DEFAULT ''
+                );
+                -- One row per person per offer. The `signature` is the whole point: it is the
+                -- proof a dApp is eventually shown, and the reason attribution is recorded
+                -- even when the reward is zero.
+                CREATE TABLE IF NOT EXISTS claims (
+                    offer_id   TEXT NOT NULL,
+                    address    TEXT NOT NULL,
+                    claimed_at REAL NOT NULL,
+                    state      TEXT NOT NULL DEFAULT 'open',
+                    skr        INTEGER NOT NULL DEFAULT 0,
+                    signature  TEXT,
+                    refused    TEXT,
+                    checked_at REAL NOT NULL DEFAULT 0,
+                    PRIMARY KEY (offer_id, address)
+                );
                 CREATE TABLE IF NOT EXISTS devices (
                     recipient  TEXT NOT NULL,
                     token      TEXT NOT NULL,
@@ -404,6 +433,94 @@ class Store:
         return {"locked": locked, "ready": ready,
                 "settled": sum(r["skr"] for r in rows if r["state"] == "settled"),
                 "total": locked + ready + sum(r["skr"] for r in rows if r["state"] == "settled")}
+
+    # -- offers -----------------------------------------------------------------------------
+
+    def put_offer(self, o: dict) -> None:
+        cols = ("id", "funder", "app", "what", "address", "token", "minimum", "reward",
+                "budget", "starts", "ends", "window_hours", "link")
+        with self._lock, self._db:
+            self._db.execute(
+                f"INSERT OR REPLACE INTO offers({','.join(cols)}) VALUES ({','.join('?' * len(cols))})",
+                tuple(o.get(c) for c in cols),
+            )
+
+    def offers(self, live_at: float | None = None) -> list[dict]:
+        sql = "SELECT * FROM offers"
+        args: tuple = ()
+        if live_at is not None:
+            sql += " WHERE starts <= ? AND ends >= ?"
+            args = (live_at, live_at)
+        with self._lock:
+            return [dict(r) for r in self._db.execute(sql + " ORDER BY ends", args).fetchall()]
+
+    def offer(self, offer_id: str) -> dict | None:
+        with self._lock:
+            row = self._db.execute("SELECT * FROM offers WHERE id=?", (offer_id,)).fetchone()
+        return dict(row) if row else None
+
+    def claim_offer(self, offer_id: str, address: str, at: float) -> bool:
+        """Opens a claim. False when this person already has one — re-claiming would restart
+        the attribution window and let a payment be counted twice."""
+        with self._lock, self._db:
+            try:
+                self._db.execute(
+                    "INSERT INTO claims(offer_id,address,claimed_at) VALUES (?,?,?)",
+                    (offer_id, address, at))
+                return True
+            except sqlite3.IntegrityError:
+                return False
+
+    def claim(self, offer_id: str, address: str) -> dict | None:
+        with self._lock:
+            row = self._db.execute("SELECT * FROM claims WHERE offer_id=? AND address=?",
+                                   (offer_id, address)).fetchone()
+        return dict(row) if row else None
+
+    def claims_for(self, address: str) -> list[dict]:
+        with self._lock:
+            return [dict(r) for r in self._db.execute(
+                "SELECT * FROM claims WHERE address=?", (address,)).fetchall()]
+
+    def open_claims(self, before: float, limit: int = 100) -> list[dict]:
+        """Claims still waiting on a payment, least recently looked at first."""
+        with self._lock:
+            return [dict(r) for r in self._db.execute(
+                "SELECT * FROM claims WHERE state='open' AND checked_at <= ? ORDER BY checked_at LIMIT ?",
+                (before, limit)).fetchall()]
+
+    def offer_spent(self, offer_id: str) -> int:
+        with self._lock:
+            return self._db.execute(
+                "SELECT COALESCE(SUM(skr),0) FROM claims WHERE offer_id=? AND state='paid'",
+                (offer_id,)).fetchone()[0]
+
+    def settle_claim(self, offer_id: str, address: str, state: str, skr: int,
+                     signature: str | None, refused: str | None, at: float) -> bool:
+        """Only an open claim can be settled, so two checks racing pay once."""
+        with self._lock, self._db:
+            cur = self._db.execute(
+                "UPDATE claims SET state=?, skr=?, signature=?, refused=?, checked_at=?"
+                " WHERE offer_id=? AND address=? AND state='open'",
+                (state, int(skr), signature, refused, at, offer_id, address))
+        return cur.rowcount == 1
+
+    def touch_claim(self, offer_id: str, address: str, at: float, refused: str | None) -> None:
+        """Looked at, nothing yet. The reason is kept so the app can say why it hasn't paid."""
+        with self._lock, self._db:
+            self._db.execute("UPDATE claims SET checked_at=?, refused=? WHERE offer_id=? AND address=?",
+                             (at, refused, offer_id, address))
+
+    def offer_proof(self, offer_id: str) -> dict:
+        """What a dApp is shown: how many verified Seeker owners opened it, how many paid, and
+        the signatures. This is the asset the unfunded campaign exists to produce."""
+        with self._lock:
+            rows = self._db.execute("SELECT state, skr, signature FROM claims WHERE offer_id=?",
+                                    (offer_id,)).fetchall()
+        paid = [r for r in rows if r["state"] == "paid"]
+        return {"offer_id": offer_id, "opened": len(rows), "paid": len(paid),
+                "skr_paid": sum(r["skr"] for r in paid),
+                "signatures": [r["signature"] for r in paid if r["signature"]]}
 
     def add_device(self, recipient: str, token: str) -> None:
         with self._lock, self._db:

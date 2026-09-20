@@ -106,5 +106,30 @@ def verify_transfer(result: dict | None, reference: str, recipient: str, want: i
         return Verdict("rejected", "could not read that transaction")
 
 
+def received(result: dict | None, to: str, mint: str | None = None) -> int:
+    """How much `to` gained in this transaction — lamports, or units of `mint`.
+
+    The same balance-delta reasoning as [verify_transfer], without the reference: an offer is
+    satisfied by paying an address, and there is no request to hang a reference on. Returns 0
+    for a failed or unreadable transaction, which correctly satisfies nothing.
+    """
+    if result is None:
+        return 0
+    try:
+        meta = result["meta"]
+        if meta.get("err") is not None:
+            return 0
+        if mint is not None:
+            return token_held(meta.get("postTokenBalances"), to, mint) - \
+                token_held(meta.get("preTokenBalances"), to, mint)
+        keys = account_keys(result)
+        if to not in keys:
+            return 0
+        i = keys.index(to)
+        return int(meta["postBalances"][i]) - int(meta["preBalances"][i])
+    except (KeyError, IndexError, TypeError, ValueError):
+        return 0
+
+
 def successful_signatures(result: list | None) -> list[str]:
     return [e["signature"] for e in (result or []) if isinstance(e, dict) and e.get("err") is None and "signature" in e]

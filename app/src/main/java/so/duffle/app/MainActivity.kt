@@ -30,6 +30,8 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -1109,10 +1111,27 @@ private fun RequestsTab(
 @Composable
 private fun RewardsTab(connected: String?) {
     var summary by remember { mutableStateOf<Rewards.Summary?>(null) }
+    var offers by remember { mutableStateOf<List<Rewards.Offer>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
-    LaunchedEffect(connected) {
+    var claiming by remember { mutableStateOf<String?>(null) }
+    /** Why a claim was refused. Shown under the list rather than in a dialog: it is
+     *  information, not an interruption. */
+    var claimProblem by remember { mutableStateOf<String?>(null) }
+    var refresh by remember { mutableIntStateOf(0) }
+    val scope = rememberCoroutineScope()
+    LaunchedEffect(connected, refresh) {
         loading = true
-        summary = connected?.let { Rewards.summary(it) }
+        // Both at once: they are independent reads, and one after the other made the screen
+        // wait twice — long enough that the offers looked absent rather than pending.
+        val me = connected
+        if (me == null) {
+            summary = null; offers = emptyList()
+        } else coroutineScope {
+            val s = async { Rewards.summary(me) }
+            val o = async { Rewards.offers(me) }
+            summary = s.await()
+            offers = o.await() ?: emptyList()
+        }
         loading = false
     }
 
@@ -1135,6 +1154,65 @@ private fun RewardsTab(connected: String?) {
                     color = Dim, fontSize = 13.sp)
             }
             return@Column
+        }
+
+        // Offers first: they are the thing to do, the balance is the thing that happened.
+        if (loading && offers.isEmpty()) {
+            SectionLabel("OFFERS")
+            Text("Checking…", color = Dim, fontSize = 13.sp, modifier = Modifier.padding(bottom = 14.dp))
+        }
+        if (offers.isNotEmpty()) {
+            SectionLabel("OFFERS")
+            offers.forEach { offer ->
+                Column(RowStyle) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(offer.what, color = Fg, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                            Text(
+                                if (offer.funder == "duffle") "${offer.app} · from Duffle"
+                                else "${offer.app} · from ${offer.funder}",
+                                color = Dim, fontSize = 12.sp,
+                            )
+                        }
+                        if (offer.reward > 0) {
+                            Text("${offer.reward} SKR", color = Accent, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    when {
+                        offer.state == "paid" ->
+                            Text("✓ Earned ${offer.earned} SKR", color = Accent, fontSize = 13.sp)
+                        offer.waiting -> {
+                            // Claimed and waiting. The reason it hasn't paid is worth showing:
+                            // "pay again" is actionable, "nothing happened" is not.
+                            Text(Rewards.offerWhy(offer.refused)
+                                ?: "Claimed · pay ${offer.app} within ${offer.windowHours}h",
+                                color = Dim, fontSize = 13.sp)
+                        }
+                        offer.state == "expired" ->
+                            Text("The window closed — claim it again", color = Dim, fontSize = 13.sp)
+                        else -> Button(
+                            onClick = {
+                                val me = connected ?: return@Button
+                                claiming = offer.id
+                                scope.launch {
+                                    val why = Rewards.claim(offer.id, me)
+                                    claiming = null
+                                    if (why == null) refresh++ else claimProblem = Rewards.offerWhy(why)
+                                }
+                            },
+                            enabled = claiming == null,
+                            colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = Ink),
+                            shape = RoundedCornerShape(8.dp),
+                        ) { Text(if (claiming == offer.id) "…" else "Claim", fontWeight = FontWeight.Bold) }
+                    }
+                }
+            }
+            claimProblem?.let {
+                Spacer(Modifier.height(6.dp))
+                Text(it, color = Warn, fontSize = 12.sp)
+            }
+            Spacer(Modifier.height(14.dp))
         }
 
         // The total, with the split underneath. "Locked" is not a footnote: a reward can still
