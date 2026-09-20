@@ -70,7 +70,7 @@ before the next one starts.
 - Tests first, including the farming cases: self-tap with a fresh wallet, two Seekers in a
   loop, dust payments, the same counterparty twice in a month, cap overflow.
 - **Check:** `python3 -m unittest` — every rule has a must-pay and a must-not-pay test.
-- **Decision:** are the numbers right (2%, 20 SKR, 4/week, $1 floor) before anything is built on them?
+- **Decision:** are the numbers above right before anything is built on them?
 
 ### R1 · Earn on a real tap
 - The server already watches each payment reference; when one settles, run the rules and
