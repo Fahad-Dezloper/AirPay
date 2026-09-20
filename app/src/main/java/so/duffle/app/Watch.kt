@@ -29,6 +29,8 @@ class Watch(context: Context) {
         val paidAt: Long? = null,
         /** The payer declined. Kept and greyed, since they may still pay or tap again. */
         val rejectedBy: String? = null,
+        /** The payer said "later". Not an answer: still expected money, just not yet. */
+        val deferredBy: String? = null,
         /** "SOL" or the SPL mint asked for — with its decimals and name, as in [PayRequest]. */
         val token: String = "SOL",
         val decimals: Int = 9,
@@ -36,6 +38,7 @@ class Watch(context: Context) {
     ) {
         val paid get() = signature != null
         val rejected get() = rejectedBy != null
+        val pending get() = deferredBy != null && !paid && !rejected
         val mint: String? get() = if (token == "SOL") null else token
         /** The amount in the token's smallest unit. */
         fun units(): Long? = PayRequest.baseUnits(amount, decimals)
@@ -66,6 +69,13 @@ class Watch(context: Context) {
         save(all().map { if (it.reference == reference && !it.paid) it.copy(rejectedBy = by.ifBlank { "They" }) else it })
     }
 
+    /** They tapped "Later". Recorded, never overriding a decline or a payment. */
+    fun markDeferred(reference: String, by: String) {
+        save(all().map {
+            if (it.reference == reference && !it.paid && !it.rejected) it.copy(deferredBy = by.ifBlank { "They" }) else it
+        })
+    }
+
     fun remove(reference: String) = save(all().filter { it.reference != reference })
 
     fun all(): List<Entry> = try {
@@ -83,6 +93,7 @@ class Watch(context: Context) {
                 signature = o.optString("s").takeIf { it.isNotBlank() },
                 paidAt = o.optLong("p").takeIf { it > 0 },
                 rejectedBy = o.optString("rb").takeIf { it.isNotBlank() },
+                deferredBy = o.optString("db").takeIf { it.isNotBlank() },
                 token = o.optString("k", "SOL").ifBlank { "SOL" },
                 decimals = o.optInt("d", 9),
                 symbol = o.optString("y", "SOL").ifBlank { "SOL" },
@@ -105,6 +116,7 @@ class Watch(context: Context) {
                 e.signature?.let { put("s", it) }
                 e.paidAt?.let { put("p", it) }
                 e.rejectedBy?.let { put("rb", it) }
+                e.deferredBy?.let { put("db", it) }
                 put("k", e.token)
                 put("d", e.decimals)
                 put("y", e.symbol)

@@ -113,6 +113,17 @@ object Push {
         )
     }
 
+    /** They said "later". Worth telling, quietly: it is news, but it is not a problem. */
+    fun showDeferred(context: Context, who: String, amount: String, symbol: String) {
+        notify(
+            context, CHANNEL_TAPS, "Taps", tapId("later$who"),
+            title = "$who will pay later",
+            text = if (amount.isBlank()) "Still waiting for it." else "$amount $symbol · still waiting for it.",
+            open = Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            publicText = "A request is pending",
+        )
+    }
+
     fun cancel(context: Context, key: String) {
         context.getSystemService(NotificationManager::class.java)?.cancel(tapId(key))
     }
@@ -201,6 +212,15 @@ class TapMessagingService : FirebaseMessagingService() {
                 val who = d["label"].orEmpty().ifBlank { "They" }
                 Watch(this).markRejected(ref, who)
                 Push.showRejected(this, who)
+            }
+            // The payer tapped "Later". Not an answer, so the row stays payable — but the
+            // asker should know somebody looked, rather than being left with silence.
+            "deferred" -> {
+                val ref = d["reference"]?.takeIf { PayRequest.isBase58Address(it) } ?: return
+                val who = d["label"].orEmpty().ifBlank { "They" }
+                Watch(this).markDeferred(ref, who)
+                Push.showDeferred(this, who, d["amount"].orEmpty(),
+                    d["symbol"]?.takeIf { it.isNotBlank() && it.length <= 12 } ?: "SOL")
             }
             // An introduction relayed because the phones parted before HELLO could cross.
             "tap" -> {

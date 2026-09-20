@@ -160,6 +160,11 @@ def make_handler(service, helius_auth: str | None, limiter: RateLimit | None = N
                         return self._json(200, {"told": service.reject(body.get("reference"), body.get("label", ""))})
                     except KeyError:
                         return self._json(404, {"error": "unknown reference"})
+                if path == "/v1/deferrals":
+                    try:
+                        return self._json(200, {"heard": service.defer(body.get("reference"), body.get("label", ""))})
+                    except KeyError:
+                        return self._json(404, {"error": "unknown reference"})
                 if path == "/v1/taps":
                     heard = service.relay_tap(body.get("to"), body.get("address"), body.get("label", ""),
                                               genesis=body.get("genesis") or None, brand=body.get("brand") or None)

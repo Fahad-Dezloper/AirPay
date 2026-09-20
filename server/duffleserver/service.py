@@ -139,6 +139,25 @@ class Service:
         return self._deliver(row["recipient"], {"type": "rejected", "reference": reference,
                                                 "label": str(label or "")[:64]})
 
+    def defer(self, reference: str, label: str = "") -> int:
+        """The payer said "later" — tell the phone that asked.
+
+        Deliberately not a rejection. The request stays open and payable; all that changes is
+        that the asker sees "pending" instead of nothing, and hears about it if the app is
+        closed. Someone who taps "Later" has said something, and the other person is standing
+        there waiting to find out what.
+        """
+        if not verify.is_address(reference):
+            raise ValueError("invalid reference")
+        row = self.store.defer(reference, str(label or "")[:64])
+        if row is None:
+            raise KeyError("unknown reference")
+        if row["status"] != "open":
+            return 0
+        return self._deliver(row["recipient"], {"type": "deferred", "reference": reference,
+                                                "label": str(label or "")[:64],
+                                                "amount": row["amount"], "symbol": row["symbol"] or "SOL"})
+
     def relay_tap(self, to: str, address: str, label: str = "", genesis: str | None = None,
                   brand: str | None = None) -> int:
         """An introduction the radio could not deliver because the phones parted before HELLO."""

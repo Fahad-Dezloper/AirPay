@@ -257,6 +257,33 @@ class DeliveryTest(unittest.TestCase):
         svc.register(REF, TO, "0.01", "OnePlus", payer=PAYER)
         self.assertEqual("request", q.get(timeout=1)["type"])
 
+    def test_later_tells_the_asker_without_answering_them(self):
+        """"Later" is not a no. The asker stops wondering, and the request stays payable."""
+        fcm = FakeFcm()
+        svc = Service(Store(), FakeRpc(), fcm=fcm)
+        svc.add_device(TO, "t" * 40)
+        q = svc.hub.subscribe(TO)
+        svc.register(REF, TO, "0.01", "Seeker")
+        self.assertEqual(1, svc.defer(REF, "CPH2401"))
+        event = q.get(timeout=1)
+        self.assertEqual(("deferred", REF, "CPH2401", "0.01"),
+                         (event["type"], event["reference"], event["label"], event["amount"]))
+        self.assertEqual("deferred", fcm.sent[0][1]["type"])
+        # Still open, still watched, still payable — that is the whole difference from a decline.
+        self.assertEqual("open", svc.store.get(REF)["status"])
+        self.assertEqual("paid", svc.check_reference(REF))
+
+    def test_later_on_an_already_paid_request_tells_nobody(self):
+        svc = Service(Store(), FakeRpc())
+        svc.register(REF, TO, "0.01", "")
+        svc.check_reference(REF)
+        self.assertEqual(0, svc.defer(REF, "CPH2401"))
+
+    def test_later_on_a_reference_nobody_registered_is_an_error(self):
+        svc = Service(Store(), FakeRpc())
+        with self.assertRaises(KeyError):
+            svc.defer(REF, "CPH2401")
+
     def test_requests_to_yourself_or_garbage_payers_are_refused(self):
         svc = Service(Store(), FakeRpc())
         for payer in (TO, "nope"):

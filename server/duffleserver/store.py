@@ -116,6 +116,9 @@ class Store:
             cols = {r[1] for r in self._db.execute("PRAGMA table_info(requests)")}
             for col, kind in (("payer", "TEXT"), ("genesis", "TEXT"), ("withdrawn", "INTEGER"),
                               ("rejected", "INTEGER"), ("rejected_by", "TEXT"),
+                              # "Later": not a no. The asker is told so it shows as pending
+                              # rather than as silence, and it stays open to be paid.
+                              ("deferred", "INTEGER"), ("deferred_by", "TEXT"),
                               # What was asked for: "SOL" or an SPL mint. `lamports` then holds
                               # the amount in that token's smallest unit.
                               ("token", "TEXT NOT NULL DEFAULT 'SOL'"), ("decimals", "INTEGER NOT NULL DEFAULT 9"),
@@ -173,6 +176,16 @@ class Store:
             if row is None:
                 return None
             self._db.execute("UPDATE requests SET rejected=1, rejected_by=? WHERE reference=?", (by, reference))
+        return dict(row)
+
+    def defer(self, reference: str, by: str) -> dict | None:
+        """The payer said "later". Unlike a rejection this is not an answer, so nothing about
+        the request changes except that the asker can stop wondering."""
+        with self._lock, self._db:
+            row = self._db.execute("SELECT * FROM requests WHERE reference=?", (reference,)).fetchone()
+            if row is None:
+                return None
+            self._db.execute("UPDATE requests SET deferred=1, deferred_by=? WHERE reference=?", (by, reference))
         return dict(row)
 
     def withdraw(self, reference: str) -> dict | None:

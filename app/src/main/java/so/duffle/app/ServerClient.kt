@@ -38,6 +38,8 @@ object ServerClient {
     data class Tapped(val card: TapCard) : Event
     data class Withdrawn(val reference: String) : Event
     data class Rejected(val reference: String, val label: String) : Event
+    /** The payer said "later". Not an answer — the request is still payable. */
+    data class Deferred(val reference: String, val label: String, val amount: String) : Event
 
     /**
      * Tells the server to watch a request. Idempotent — both phones call it, the payee when
@@ -90,6 +92,18 @@ object ServerClient {
      */
     suspend fun withdraw(reference: String): Boolean =
         post("/v1/withdrawals", JSONObject().apply { put("reference", reference) })
+
+    /**
+     * The payer said "later". The asker's phone shows it as pending instead of as silence.
+     *
+     * Deliberately separate from [reject]: this does not answer the request, it only says
+     * somebody saw it. The money can still arrive.
+     */
+    suspend fun defer(reference: String, label: String): Boolean =
+        post("/v1/deferrals", JSONObject().apply {
+            put("reference", reference)
+            put("label", label)
+        })
 
     /** The payer declined. The asker's phone stops showing it as expected money. */
     suspend fun reject(reference: String, label: String): Boolean =
@@ -179,6 +193,11 @@ object ServerClient {
             val o = JSONObject(json)
             o.getString("reference").takeIf { PayRequest.isBase58Address(it) }
                 ?.let { Rejected(it, o.optString("label")) }
+        } catch (e: Exception) { null }
+        "deferred" -> try {
+            val o = JSONObject(json)
+            o.getString("reference").takeIf { PayRequest.isBase58Address(it) }
+                ?.let { Deferred(it, o.optString("label"), o.optString("amount")) }
         } catch (e: Exception) { null }
         "tap" -> try {
             val o = JSONObject(json)

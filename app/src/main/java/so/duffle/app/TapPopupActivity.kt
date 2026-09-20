@@ -106,6 +106,7 @@ class TapPopupActivity : ComponentActivity() {
                     onPay = ::pay,
                     onRequest = ::request,
                     onDecline = ::decline,
+                    onLater = ::later,
                     onRetry = { phase = Phase.Ready },
                     onExplorer = { sig -> runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(Chain.explorerUrl(sig)))) } },
                     previewAmount = previewAmount,
@@ -304,6 +305,18 @@ class TapPopupActivity : ComponentActivity() {
      * standing there waiting, so they are told; without this their phone would show the request
      * as still expected until they gave up on it themselves.
      */
+    /**
+     * "Later" — not an answer, but not nothing either. The request stays in Requests and stays
+     * payable; the asker is told so their phone shows it as pending rather than as silence.
+     * Before this, "Later" and "never opened it" looked identical from the other side.
+     */
+    private fun later() {
+        val p = peer as? TapPayload.Request ?: return finish()
+        lifecycleScope.launch { ServerClient.defer(p.request.reference, Identity.label(this@TapPopupActivity)) }
+        Log.i(TAG, "later ${p.request.reference.take(8)}…")
+        finish()
+    }
+
     private fun decline() {
         val p = peer as? TapPayload.Request ?: return finish()
         val req = p.request

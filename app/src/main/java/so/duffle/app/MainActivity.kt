@@ -234,6 +234,10 @@ class MainActivity : ComponentActivity() {
                                     inbox.markWithdrawn(ev.reference); refreshLists()
                                     push("— ${ev.reference.take(8)}… was withdrawn by the requester")
                                 }
+                                is ServerClient.Deferred -> {
+                                    watch.markDeferred(ev.reference, ev.label); refreshLists()
+                                    push("— ${ev.label.ifBlank { "They" }} will pay ${ev.reference.take(8)}… later")
+                                }
                                 is ServerClient.Rejected -> {
                                     watch.markRejected(ev.reference, ev.label); refreshLists()
                                     push("— ${ev.label.ifBlank { "They" }} declined ${ev.reference.take(8)}…")
@@ -1056,23 +1060,32 @@ private fun RequestsTab(
                 // Declined requests stay, greyed: they may still tap again or pay anyway, and a
                 // row that vanishes tells the asker nothing about what happened.
                 val no = e.rejected
+                // "Later" is its own state, between waiting and declined: somebody saw the
+                // request and said something, and the money can still arrive. Without it the
+                // asker cannot tell "they will pay tonight" from "they never looked".
+                val later = e.pending
                 Row(RowStyle, verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text("${e.amount} ${e.symbol}", color = if (no) Dim else Fg, fontSize = 16.sp, fontWeight = FontWeight.Bold)
-                            if (no) {
+                            if (no || later) {
+                                val tag = if (no) "DECLINED BY ${e.rejectedBy!!.uppercase()}" else "PENDING"
+                                val tone = if (no) Warn else Accent
                                 Spacer(Modifier.width(8.dp))
-                                Text("DECLINED BY ${e.rejectedBy!!.uppercase()}", color = Warn, fontSize = 8.sp,
+                                Text(tag, color = tone, fontSize = 8.sp,
                                     letterSpacing = 1.sp, fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.background(Warn.copy(alpha = .12f), RoundedCornerShape(4.dp))
+                                    modifier = Modifier.background(tone.copy(alpha = .12f), RoundedCornerShape(4.dp))
                                         .padding(horizontal = 6.dp, vertical = 2.dp))
                             }
                         }
                         Text(
-                            if (no) "${e.rejectedBy} said no · nothing was paid"
-                            else "requested ${ago(e.createdAt)} · ${e.reference.take(8)}…",
+                            when {
+                                no -> "${e.rejectedBy} said no · nothing was paid"
+                                later -> "${e.deferredBy} will pay later · still watching for it"
+                                else -> "requested ${ago(e.createdAt)} · ${e.reference.take(8)}…"
+                            },
                             color = Dim, fontSize = 11.sp,
-                            fontFamily = if (no) FontFamily.Default else FontFamily.Monospace,
+                            fontFamily = if (no || later) FontFamily.Default else FontFamily.Monospace,
                         )
                     }
                     TextButton(onClick = { onDismissOwed(e) }) { Text("Remove", color = Dim, fontSize = 12.sp) }

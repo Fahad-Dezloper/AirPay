@@ -112,6 +112,8 @@ import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
+import kotlin.math.cos
+import kotlin.math.sin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import androidx.compose.runtime.snapshotFlow
@@ -156,6 +158,8 @@ internal fun PopupScreen(
     onPay: (String, Tokens.Holding?) -> Unit,
     onRequest: (String, Tokens.Holding?) -> Unit,
     onDecline: () -> Unit,
+    /** "Later": the sheet closes, the request stays payable, and the asker is told. */
+    onLater: () -> Unit,
     onRetry: () -> Unit,
     onExplorer: (String) -> Unit,
     previewAmount: String? = null,
@@ -320,7 +324,7 @@ internal fun PopupScreen(
                             showSecond = aboutThem && phase !is Phase.Working,
                             first = {
                                 Form(peer, phase, connected, amount, { amount = it }, token, { token = it }, holdings, onConnect, onPay, onRequest,
-                                    { leave(onDecline) }, close, confirming, { confirming = it }, covered = aboutThem)
+                                    { leave(onDecline) }, { leave(onLater) }, confirming, { confirming = it }, covered = aboutThem)
                             },
                             second = { AboutThem(peer, history, genesis, wallet, cameFrom, onBack = { aboutThem = false }) },
                         )
@@ -1055,12 +1059,8 @@ private fun ConnectBody(working: String?, onConnect: () -> Unit) {
 
 @Composable
 private fun WaitingBody(label: String, amount: String, symbol: String, onClose: () -> Unit) {
-    val pulse by rememberInfiniteTransition(label = "pulse").animateFloat(
-        initialValue = 1f, targetValue = 1.08f,
-        animationSpec = infiniteRepeatable(tween(900), RepeatMode.Reverse), label = "pulse",
-    )
     Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-        IconDisc(R.drawable.hi_clock, D.Blue, D.Blue.copy(alpha = .1f), Modifier.graphicsLayer { scaleX = pulse; scaleY = pulse })
+        TickingClock()
         Spacer(Modifier.height(14.dp))
         Text("Waiting for ${label.ifBlank { "them" }}", color = D.Black, fontSize = 20.sp, fontWeight = FontWeight.Bold)
         Text("$amount $symbol", color = D.Black, fontSize = 34.sp, fontWeight = FontWeight.ExtraBold, style = Figures)
@@ -1068,6 +1068,55 @@ private fun WaitingBody(label: String, amount: String, symbol: String, onClose: 
         Text("You can close this — it stays in Requests.", color = D.Quiet, fontSize = 13.5.sp, textAlign = TextAlign.Center)
         Spacer(Modifier.height(20.dp))
         SecondaryButton("Close", onClose, Modifier.fillMaxWidth())
+    }
+}
+
+/**
+ * A clock that actually keeps time, instead of an icon breathing in and out.
+ *
+ * The second hand jumps once a second and settles, the way an escapement does — the overshoot
+ * is a low damping ratio on the spring, not a decoration. Waiting is the one screen where a
+ * clock means something, so it should read as one: someone glancing at it can tell it is
+ * running rather than merely animated.
+ */
+@Composable
+private fun TickingClock(size: Dp = 60.dp, tint: Color = D.Blue) {
+    var ticks by remember { mutableIntStateOf(0) }
+    LaunchedEffect(Unit) {
+        // Aligned to the wall clock so the first tick is not a fraction of a second late.
+        delay(1_000 - System.currentTimeMillis() % 1_000)
+        while (true) {
+            ticks++
+            delay(1_000)
+        }
+    }
+    val second by animateFloatAsState(
+        targetValue = ticks * 6f,
+        animationSpec = spring(dampingRatio = 0.42f, stiffness = 2200f),
+        label = "second",
+    )
+    Box(Modifier.size(size).background(tint.copy(alpha = .1f), CircleShape), contentAlignment = Alignment.Center) {
+        Canvas(Modifier.size(size * 0.62f)) {
+            val r = this.size.minDimension / 2f
+            val c = Offset(this.size.width / 2f, this.size.height / 2f)
+            val stroke = r * 0.11f
+            drawCircle(tint, radius = r - stroke / 2f, center = c, style = Stroke(stroke))
+            // Quarter marks, so the hand has something to tick against.
+            repeat(4) { i ->
+                val a = Math.toRadians(i * 90.0)
+                val from = Offset(c.x + (r * 0.74f * sin(a)).toFloat(), c.y - (r * 0.74f * cos(a)).toFloat())
+                val to = Offset(c.x + (r * 0.56f * sin(a)).toFloat(), c.y - (r * 0.56f * cos(a)).toFloat())
+                drawLine(tint.copy(alpha = .45f), from, to, strokeWidth = stroke * 0.7f, cap = StrokeCap.Round)
+            }
+            // The hour hand creeps; at this size it reads as "a clock" rather than "a dial".
+            val hour = Math.toRadians((second / 60f) * 0.5)
+            drawLine(tint, c, Offset(c.x + (r * 0.34f * sin(hour)).toFloat(), c.y - (r * 0.34f * cos(hour)).toFloat()),
+                strokeWidth = stroke, cap = StrokeCap.Round)
+            val a = Math.toRadians(second.toDouble())
+            drawLine(tint, c, Offset(c.x + (r * 0.58f * sin(a)).toFloat(), c.y - (r * 0.58f * cos(a)).toFloat()),
+                strokeWidth = stroke * 0.8f, cap = StrokeCap.Round)
+            drawCircle(tint, radius = stroke * 0.7f, center = c)
+        }
     }
 }
 

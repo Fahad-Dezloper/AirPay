@@ -87,6 +87,16 @@ the Seeker raised "Seeker requests 1 USDC" **on the Seeker**. Two mistakes in on
 
 Still owed from this session: expiry, and push to a closed app.
 
+## New, never run on the phones (added 2026-09-21)
+
+13. **"Later" is now an answer.** The payer taps Later → the asker's row shows **PENDING ·
+    "<who> will pay later"** instead of silence, and gets a notification if the app is closed.
+    The request stays open and payable, so paying afterwards must still work normally.
+    Needs **both** phones on the new build: the payer sends it, the asker renders it.
+14. **The waiting clock ticks.** Replaced the scale-pulse with a drawn clock whose second hand
+    jumps once a second and settles. Verified moving on the Seeker; worth a glance in a real
+    wait to check it does not distract from the amount.
+
 ## Never run at all
 
 1. ~~A real two-phone tap on the current build.~~ **Passed 2026-09-20** (see above).
