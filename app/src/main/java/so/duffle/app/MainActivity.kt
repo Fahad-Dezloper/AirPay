@@ -1525,15 +1525,25 @@ private fun PageStrip(
     }
 }
 
+/**
+ * A heading for the three tiles, not a row like the others.
+ *
+ * It had an icon and a subtitle, which made it a fourth thing to read directly above three
+ * things to read. The tiles under it already say what is there.
+ */
 @Composable
 private fun EarnStrip(summary: Rewards.Summary?, onOpen: () -> Unit) {
-    PageStrip(
-        icon = R.drawable.hi_gift, tint = D.Blue,
-        title = "Offers and rewards",
-        detail = summary?.let { "${it.total} SKR · ${it.weekPayments} of ${it.weekAllows} this week" }
-            ?: "For Seeker owners who pay in person",
-        onOpen = onOpen,
-    )
+    val interaction = remember { MutableInteractionSource() }
+    Row(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
+            .clickable(interaction, indication = null, onClick = onOpen)
+            .padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text("Offers and rewards", color = D.Black, fontSize = 17.sp, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.width(6.dp))
+        HIcon(R.drawable.hi_arrow_up_right, D.Quiet, 16.dp)
+    }
 }
 
 /**
