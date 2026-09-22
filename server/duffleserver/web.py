@@ -13,6 +13,7 @@ from urllib.parse import parse_qs, urlparse
 
 from .chain import Rpc
 from .service import config_as_dict
+from .shop import Shop
 from .store import Conflict
 
 log = logging.getLogger("duffle.web")
@@ -44,8 +45,11 @@ class RateLimit:
 
 
 def make_handler(service, helius_auth: str | None, limiter: RateLimit | None = None,
-                 admin_token: str | None = None):
+                 admin_token: str | None = None, shop=None):
     limiter = limiter or RateLimit()
+    # An unconfigured shop is an empty shelf, not a missing endpoint: the app asks either way
+    # and draws nothing rather than showing an error it cannot act on.
+    shop = shop or Shop(None)
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "tap/1"
@@ -91,6 +95,9 @@ def make_handler(service, helius_auth: str | None, limiter: RateLimit | None = N
                 if not is_address(m.group(1)):
                     return self._json(400, {"error": "invalid address"})
                 return self._json(200, service.reward_summary(m.group(1)))
+            if url.path == "/v1/shop":
+                # Public: a catalogue is not a secret, and the key that reads it stays here.
+                return self._json(200, {"enabled": shop.enabled, "sections": shop.sections()})
             if url.path == "/v1/offers":
                 # Public: the list is the same for everyone, and `address` only adds that
                 # person's own state to each row.
@@ -160,6 +167,19 @@ def make_handler(service, helius_auth: str | None, limiter: RateLimit | None = N
                         return self._json(200, {"told": service.reject(body.get("reference"), body.get("label", ""))})
                     except KeyError:
                         return self._json(404, {"error": "unknown reference"})
+                if path == "/v1/shop/invoice":
+                    try:
+                        return self._json(200, shop.invoice(
+                            str(body.get("product_id") or ""), body.get("value")))
+                    except Exception as e:
+                        # Includes "out of stock" and "no such product", which are answers
+                        # rather than faults — the app shows them as the reason it cannot buy.
+                        return self._json(502, {"error": str(e) or "the shop did not answer"})
+                if path == "/v1/shop/order":
+                    try:
+                        return self._json(200, shop.order(str(body.get("invoice_id") or "")))
+                    except Exception as e:
+                        return self._json(502, {"error": str(e) or "the shop did not answer"})
                 if path == "/v1/deferrals":
                     try:
                         return self._json(200, {"heard": service.defer(body.get("reference"), body.get("label", ""))})
@@ -259,7 +279,8 @@ def make_handler(service, helius_auth: str | None, limiter: RateLimit | None = N
 
 
 def serve(service, host: str, port: int, helius_auth: str | None = None,
-          admin_token: str | None = None) -> ThreadingHTTPServer:
-    httpd = ThreadingHTTPServer((host, port), make_handler(service, helius_auth, admin_token=admin_token))
+          admin_token: str | None = None, shop=None) -> ThreadingHTTPServer:
+    httpd = ThreadingHTTPServer((host, port),
+                                make_handler(service, helius_auth, admin_token=admin_token, shop=shop))
     httpd.daemon_threads = True
     return httpd

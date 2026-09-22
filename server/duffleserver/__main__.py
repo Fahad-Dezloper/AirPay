@@ -12,6 +12,7 @@ from .helius import AddressSync
 from .web import serve
 from .notify import Fcm
 from .service import Service
+from .shop import Shop
 from .store import Store
 
 
@@ -68,11 +69,16 @@ def main() -> None:
     host, port = env("HOST", "0.0.0.0"), int(env("PORT", "8787"))
     # Set DUFFLE_ADMIN_TOKEN to be able to change the reward amounts while it runs; without
     # one, the numbers are read-only.
-    httpd = serve(service, host, port, env("HELIUS_AUTH"), admin_token=env("DUFFLE_ADMIN_TOKEN"))
+    # The Bitrefill token lives here rather than in the APK, where decompiling it would hand
+    # over the account's order history.
+    shop = Shop(env("BITREFILL_API_KEY"), country=env("SHOP_COUNTRY", "IN"))
+    httpd = serve(service, host, port, env("HELIUS_AUTH"),
+                  admin_token=env("DUFFLE_ADMIN_TOKEN"), shop=shop)
     logging.getLogger("duffle").info(
-        "listening on %s:%d · rpc %s · genesis %s · push %s · helius webhook %s", host, port,
+        "listening on %s:%d · rpc %s · genesis %s · push %s · helius webhook %s · shop %s", host, port,
         rpc_url.split("?")[0], mainnet_url.split("?")[0],
         "on" if service.fcm.enabled else "off", "on" if helius.enabled else "off (chain polling only)",
+        "on" if shop.enabled else "off",
     )
     try:
         httpd.serve_forever()
