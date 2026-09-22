@@ -566,8 +566,13 @@ object Chain {
     fun reachable(): Boolean =
         post("""{"jsonrpc":"2.0","id":1,"method":"getHealth"}""") != null
 
-    fun explorerUrl(signature: String) =
-        "https://explorer.solana.com/tx/$signature?cluster=devnet"
+    /**
+     * Where to look a transaction up. `mainnet` for a shop purchase — those are the one thing
+     * this app settles in real USDC, and a devnet explorer link would simply say "not found".
+     */
+    fun explorerUrl(signature: String, mainnet: Boolean = false) =
+        if (mainnet) "https://explorer.solana.com/tx/$signature"
+        else "https://explorer.solana.com/tx/$signature?cluster=devnet"
 
     /** A raw JSON-RPC call through the same endpoints as everything else here. */
     fun rpc(json: String): String? = post(json)

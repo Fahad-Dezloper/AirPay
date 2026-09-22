@@ -23,6 +23,14 @@ class Orders(context: Context) {
         val invoiceId: String,
         /** What it was — "Jio India", "Netflix India". Shown, so it is stored, not derived. */
         val name: String,
+        /**
+         * The shelf it came off: "Phone", "TV & streaming", "Bills & wallets".
+         *
+         * Stored rather than looked up, because the catalogue is the server's and it changes.
+         * A history that says "Phone" for a recharge bought last month has to keep saying it
+         * after the product is gone. Blank for anything bought before this was recorded.
+         */
+        val category: String = "",
         /** The denomination in the product's own currency, e.g. "50". */
         val value: String,
         /** What it cost, already formatted: "0.56 USDC". */
@@ -54,6 +62,7 @@ class Orders(context: Context) {
             val id = o.optString("i").ifBlank { return@mapNotNull null }
             Order(
                 invoiceId = id, name = o.optString("n"), value = o.optString("v"),
+                category = o.optString("g"),
                 paid = o.optString("c"), signature = o.optString("s"),
                 status = o.optString("t", "paid").ifBlank { "paid" }, at = o.optLong("a"),
             )
@@ -69,6 +78,7 @@ class Orders(context: Context) {
                 put("i", o.invoiceId)
                 put("n", o.name)
                 put("v", o.value)
+                put("g", o.category)
                 put("c", o.paid)
                 put("s", o.signature)
                 put("t", o.status)

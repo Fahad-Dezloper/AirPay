@@ -75,6 +75,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import java.time.YearMonth
+import java.time.format.DateTimeFormatter
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
@@ -166,6 +168,8 @@ class MainActivity : ComponentActivity() {
      * of its rows were the new ones.
      */
     private var alertsWere by mutableStateOf(0L)
+    /** Which month the history page is showing. Defaults to this one. */
+    private var histMonth by mutableStateOf(YearMonth.now())
     private val toPay = mutableStateListOf<Inbox.Item>()
     private val owed = mutableStateListOf<Watch.Entry>()
 
@@ -255,7 +259,7 @@ class MainActivity : ComponentActivity() {
      * drawn: a price in USDC for goods priced in rupees is a quote against a moving rate, and
      * an old one is the difference between paying and being refused.
      */
-    private fun buy(product: Shop.Product, value: String) {
+    private fun buy(product: Shop.Product, value: String, category: String) {
         val payer = connected
         if (payer == null) {
             status = Status.Problem("Connect a wallet first", "The shop pays from your wallet.")
@@ -318,6 +322,7 @@ class MainActivity : ComponentActivity() {
                                         orders.add(Orders.Order(
                                             invoiceId = inv.id, name = product.name, value = value,
                                             paid = inv.shown, signature = sent.signature,
+                                            category = category,
                                             status = "paid", at = System.currentTimeMillis(),
                                         ))
                                         refreshLists()
@@ -358,6 +363,27 @@ class MainActivity : ComponentActivity() {
                 return
             }
         }
+    }
+
+    /**
+     * Where a history row goes when it is tapped.
+     *
+     * A payment between people belongs in that person's thread — the row is a summary of
+     * something the thread holds in full. A shop purchase has no thread and no second screen,
+     * so its signature goes to the explorer, which is the only place with more to say about it.
+     */
+    private fun openTxn(t: History.Txn, known: List<Contact>) {
+        val person = t.peer?.let { p -> known.firstOrNull { it.address == p } }
+        if (person != null) {
+            thread = person
+            tab = Tab.TAP
+            return
+        }
+        val sig = t.signature ?: return
+        runCatching {
+            startActivity(Intent(Intent.ACTION_VIEW,
+                android.net.Uri.parse(Chain.explorerUrl(sig, mainnet = t.kind == History.Kind.SHOP))))
+        }.onFailure { push("couldn't open the explorer") }
     }
 
     /** Hands the system an invite to pass on. Real, and no more than it says. */
@@ -634,6 +660,10 @@ class MainActivity : ComponentActivity() {
                         offerAt = { id -> Alerts.firstSeen(this@MainActivity, id) },
                     )
                     val unread = Alerts.unread(alerts, alertsSeen)
+                    val history = History.build(
+                        toPay = toPay, owed = owed, orders = bought,
+                        name = { addr -> known0.firstOrNull { it.address == addr }?.label ?: "Someone" },
+                    )
 
                     // Rows no thread can show: a request we asked before peers were recorded,
                     // or either side of one with somebody who is not in contacts.
@@ -765,6 +795,7 @@ class MainActivity : ComponentActivity() {
                                 when (tab) {
                                     Tab.REQUESTS -> "Activity"
                                     Tab.ALERTS -> "Notifications"
+                                    Tab.HISTORY -> "Transactions"
                                     Tab.REWARDS -> "Earn"
                                     else -> shopSection?.title ?: "Pay a bill"
                                 },
@@ -778,9 +809,19 @@ class MainActivity : ComponentActivity() {
                                     section = sec,
                                     picked = shopProduct,
                                     onPick = { shopProduct = it },
-                                    onBuy = { p, v -> buy(p, v) },
+                                    onBuy = { p, v -> buy(p, v, sec.title) },
                                 )
                             }
+                            return@Column
+                        }
+
+                        if (tab == Tab.HISTORY) {
+                            HistoryTab(
+                                list = history,
+                                month = histMonth,
+                                onMonth = { histMonth = it },
+                                onOpen = { t -> openTxn(t, known0) },
+                            )
                             return@Column
                         }
 
@@ -928,6 +969,22 @@ class MainActivity : ComponentActivity() {
                                 shopProduct = null
                                 tab = Tab.SHOP
                             }
+                        }
+
+                        if (history.isNotEmpty()) {
+                            Spacer(Modifier.height(22.dp))
+                            HistoryStrip(
+                                list = history,
+                                onViewAll = {
+                                    // Opened on the newest month that HAS something, not on
+                                    // today: landing on an empty January because nothing has
+                                    // happened yet this month shows an empty screen to
+                                    // somebody who just asked to see everything.
+                                    histMonth = History.monthOf(history.first().at)
+                                    tab = Tab.HISTORY
+                                },
+                                onOpen = { t -> openTxn(t, contacts.all()) },
+                            )
                         }
 
                         // The log is ours, not theirs: it only exists while "check" is open.
@@ -1266,7 +1323,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-enum class Tab { TAP, REQUESTS, REWARDS, SHOP, ALERTS }
+enum class Tab { TAP, REQUESTS, REWARDS, SHOP, ALERTS, HISTORY }
 
 fun ago(at: Long, now: Long = System.currentTimeMillis()): String {
     val s = ((now - at) / 1000).coerceAtLeast(0)
@@ -2349,17 +2406,15 @@ private fun ShopTiles(sections: List<Shop.Section>, onOpen: (Shop.Section) -> Un
     }
 }
 
+/**
+ * The hand-drawn category marks, on their own so a 38dp history row and a 34dp tile can use
+ * the same shape. Everything inside is sized from the canvas width, so it scales.
+ */
 @Composable
-private fun EarnTile(label: String, mark: Mark, modifier: Modifier, onClick: () -> Unit) {  // also the shop's tiles
-    val interaction = remember { MutableInteractionSource() }
-    Column(
-        modifier.then(PressScale(interaction)).clip(RoundedCornerShape(18.dp)).background(D.Fill)
-            .clickable(interaction, indication = null, onClick = onClick)
-            .padding(vertical = 16.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center,
-    ) {
-        Canvas(Modifier.size(34.dp)) {
+private fun MarkCanvas(mark: Mark, side: Dp) {
+    // `side`, not `size`: inside a Canvas, `size` is the draw scope's own and shadowing it
+    // turns every `size.width` below into a Dp.
+    Canvas(Modifier.size(side)) {
             val w = size.width
             val blue = D.Blue
             when (mark) {
@@ -2420,7 +2475,20 @@ private fun EarnTile(label: String, mark: Mark, modifier: Modifier, onClick: () 
                     drawCircle(blue, r, Offset(w * .66f, w * .5f), style = Stroke(w * .11f))
                 }
             }
-        }
+    }
+}
+
+@Composable
+private fun EarnTile(label: String, mark: Mark, modifier: Modifier, onClick: () -> Unit) {  // also the shop's tiles
+    val interaction = remember { MutableInteractionSource() }
+    Column(
+        modifier.then(PressScale(interaction)).clip(RoundedCornerShape(18.dp)).background(D.Fill)
+            .clickable(interaction, indication = null, onClick = onClick)
+            .padding(vertical = 16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        MarkCanvas(mark, 34.dp)
         Spacer(Modifier.height(10.dp))
         Text(label, color = D.Black, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
     }
@@ -2552,6 +2620,192 @@ private fun RequestsTab(
                     }
                 }
             }
+        }
+    }
+}
+
+/**
+ * The shelf a purchase came off. Null for a payment between people — those get an arrow
+ * instead, because the useful thing about them is which way the money went, and a mark that
+ * looked like a category would say they were all the same kind of thing.
+ */
+private fun markFor(t: History.Txn): Mark? = when {
+    t.kind != History.Kind.SHOP -> null
+    else -> when (t.category) {
+        "Phone" -> Mark.Signal
+        "TV & streaming" -> Mark.Screen
+        "Bills & wallets" -> Mark.Receipt
+        else -> Mark.Basket
+    }
+}
+
+/**
+ * One line of history. The amount carries the sign, because that is the thing being scanned
+ * for — a column of figures where in and out look alike has to be read word by word.
+ */
+@Composable
+private fun TxnRow(t: History.Txn, onOpen: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).clickable(onClick = onOpen)
+            .padding(vertical = 9.dp, horizontal = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            Modifier.size(40.dp).clip(CircleShape).background(D.Fill),
+            contentAlignment = Alignment.Center,
+        ) {
+            val mark = markFor(t)
+            when {
+                mark != null -> MarkCanvas(mark, 21.dp)
+                t.incoming -> HIcon(R.drawable.hi_arrow_down, D.Success, 19.dp)
+                else -> HIcon(R.drawable.hi_arrow_up_right, D.Black, 19.dp)
+            }
+        }
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(t.title, color = D.Black, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+            Spacer(Modifier.height(1.dp))
+            Text(t.note ?: t.category, color = if (t.note != null) D.Blue else D.Quiet, fontSize = 12.sp, maxLines = 1)
+        }
+        Spacer(Modifier.width(10.dp))
+        Column(horizontalAlignment = Alignment.End) {
+            Text(
+                (if (t.incoming) "+" else "−") + t.amount,
+                color = if (t.incoming) D.Success else D.Black,
+                fontSize = 14.sp, fontWeight = FontWeight.Bold, style = Figures, maxLines = 1,
+            )
+            Spacer(Modifier.height(1.dp))
+            Text(ago(t.at), color = D.Quiet, fontSize = 10.sp, style = Figures)
+        }
+    }
+}
+
+/** The home screen's tail: the last three things that moved money, and a way to the rest. */
+@Composable
+private fun HistoryStrip(list: List<History.Txn>, onViewAll: () -> Unit, onOpen: (History.Txn) -> Unit) {
+    Column(Modifier.fillMaxWidth()) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text("Transaction history", color = D.Black, fontSize = 17.sp, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.weight(1f))
+            Text("View all", color = D.Blue, fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable(onClick = onViewAll)
+                    .padding(horizontal = 6.dp, vertical = 4.dp))
+        }
+        Spacer(Modifier.height(6.dp))
+        list.take(3).forEach { TxnRow(it) { onOpen(it) } }
+    }
+}
+
+private val MONTH: DateTimeFormatter = DateTimeFormatter.ofPattern("LLLL yyyy")
+
+/**
+ * The whole history, one month at a time.
+ *
+ * A month rather than an endless scroll because that is the unit people ask a payments app
+ * about — "what did I spend in August" — and it gives the totals at the top something honest
+ * to be totals OF. The chevrons walk; the title opens the list, for when the answer is eleven
+ * months back.
+ */
+@Composable
+private fun HistoryTab(
+    list: List<History.Txn>,
+    month: YearMonth,
+    onMonth: (YearMonth) -> Unit,
+    onOpen: (History.Txn) -> Unit,
+) {
+    val months = History.months(list)
+    val here = months.indexOf(month).takeIf { it >= 0 } ?: 0
+    // The list is newest first, so "back a month" is forward through it.
+    val older = months.getOrNull(here + 1)
+    val newer = months.getOrNull(here - 1)
+    val rows = list.filter { it.month == month }
+    var picking by remember { mutableStateOf(false) }
+
+    Column(Modifier.fillMaxSize()) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Chevron(R.drawable.hi_arrow_left, older != null) { older?.let(onMonth) }
+            Text(
+                month.format(MONTH),
+                color = D.Black, fontSize = 17.sp, fontWeight = FontWeight.Bold, fontFamily = Display,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.weight(1f).clip(RoundedCornerShape(10.dp))
+                    .clickable { picking = true }.padding(vertical = 8.dp),
+            )
+            // Mirrored, because there is no right chevron in the set and it is the same arrow.
+            Chevron(R.drawable.hi_arrow_left, newer != null, flip = true) { newer?.let(onMonth) }
+        }
+
+        if (rows.isEmpty()) {
+            Spacer(Modifier.height(34.dp))
+            Text("Nothing in ${month.format(MONTH)}", color = D.Black, fontSize = 15.sp,
+                fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(5.dp))
+            Text("Payments, requests you were paid, and anything you bought will show up here.",
+                color = D.Quiet, fontSize = 13.sp)
+        } else {
+            // Counted, not summed: the rows carry several tokens and a single figure adding
+            // SOL to USDC to rupees would be a number that means nothing.
+            Text(
+                "${rows.size} transaction${if (rows.size == 1) "" else "s"}",
+                color = D.Quiet, fontSize = 11.sp, letterSpacing = 1.sp, fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.padding(top = 6.dp, bottom = 8.dp),
+            )
+            LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
+                items(rows) { t -> TxnRow(t) { onOpen(t) } }
+            }
+        }
+    }
+
+    if (picking) {
+        MonthSheet(months, month, onPick = { picking = false; onMonth(it) }, onClose = { picking = false })
+    }
+}
+
+@Composable
+private fun Chevron(@DrawableRes icon: Int, enabled: Boolean, flip: Boolean = false, onClick: () -> Unit) {
+    Box(
+        Modifier.size(38.dp).clip(CircleShape).background(if (enabled) D.Fill else Color.Transparent)
+            .clickable(enabled = enabled, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        HIcon(icon, if (enabled) D.Black else D.Line, 18.dp,
+            if (flip) Modifier.graphicsLayer { rotationZ = 180f } else Modifier)
+    }
+}
+
+/** Every month since the first transaction, for when walking back one at a time is silly. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun MonthSheet(
+    months: List<YearMonth>,
+    current: YearMonth,
+    onPick: (YearMonth) -> Unit,
+    onClose: () -> Unit,
+) {
+    ModalBottomSheet(onDismissRequest = onClose, containerColor = D.White, dragHandle = null) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 18.dp)) {
+            Box(Modifier.align(Alignment.CenterHorizontally).size(36.dp, 4.dp).background(D.Line, CircleShape))
+            Spacer(Modifier.height(16.dp))
+            Text("Jump to a month", color = D.Black, fontSize = 19.sp, fontWeight = FontWeight.Bold,
+                fontFamily = Display)
+            Spacer(Modifier.height(12.dp))
+            LazyColumn(Modifier.heightIn(max = 380.dp)) {
+                items(months) { m ->
+                    val on = m == current
+                    Row(
+                        Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
+                            .background(if (on) D.Blue.copy(alpha = .1f) else Color.Transparent)
+                            .clickable { onPick(m) }.padding(horizontal = 14.dp, vertical = 13.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(m.format(MONTH), color = if (on) D.Blue else D.Black, fontSize = 14.sp,
+                            fontWeight = if (on) FontWeight.Bold else FontWeight.Medium)
+                        Spacer(Modifier.weight(1f))
+                        if (on) HIcon(R.drawable.hi_tick, D.Blue, 16.dp)
+                    }
+                }
+            }
+            Spacer(Modifier.height(10.dp))
         }
     }
 }
