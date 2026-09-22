@@ -1526,24 +1526,18 @@ private fun PageStrip(
 }
 
 /**
- * A heading for the three tiles, not a row like the others.
+ * A heading for the three tiles. Just the words.
  *
- * It had an icon and a subtitle, which made it a fourth thing to read directly above three
- * things to read. The tiles under it already say what is there.
+ * It began as a row with an icon, a subtitle and an arrow — a fourth thing to read directly
+ * above three things to read, all of which said the same. The tiles are the controls; this
+ * only names them.
  */
 @Composable
 private fun EarnStrip(summary: Rewards.Summary?, onOpen: () -> Unit) {
-    val interaction = remember { MutableInteractionSource() }
-    Row(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
-            .clickable(interaction, indication = null, onClick = onOpen)
-            .padding(vertical = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text("Offers and rewards", color = D.Black, fontSize = 17.sp, fontWeight = FontWeight.Bold)
-        Spacer(Modifier.width(6.dp))
-        HIcon(R.drawable.hi_arrow_up_right, D.Quiet, 16.dp)
-    }
+    Text(
+        "Offers and rewards", color = D.Black, fontSize = 17.sp, fontWeight = FontWeight.Bold,
+        modifier = Modifier.padding(vertical = 4.dp),
+    )
 }
 
 /**
