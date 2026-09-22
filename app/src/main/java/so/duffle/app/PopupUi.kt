@@ -170,8 +170,13 @@ internal fun PopupScreen(
     // mainnet (where Genesis lives), and the "Verified Seeker" badge waits for the answer.
     val genesis by produceState<Genesis.Check?>(initialValue = null, peer.address) {
         value = withContext(Dispatchers.IO) { Genesis.check(peer.address) }
-        // Only a held token is reported. "Couldn't check" must never look like "not a Seeker".
-        if (value is Genesis.Check.Held) onVerified(true)
+        // Held and None are both answers; Unreachable is not one, and is not reported — a
+        // chain we could not ask must never look like a chain that said no.
+        when (value) {
+            is Genesis.Check.Held -> onVerified(true)
+            Genesis.Check.None -> onVerified(false)
+            else -> Unit
+        }
     }
     // Fetched now, not when the device page opens: arriving mid-animation it changed "Checking…"
     // to a date while the sheet was still resizing, forcing a relayout during the move.

@@ -1247,19 +1247,17 @@ private fun People(list: List<Contact>, onPick: (Contact) -> Unit) {
                     }
                 }
                 Spacer(Modifier.width(12.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(name ?: c.label.ifBlank { "Unknown phone" }, color = D.Black,
-                        fontSize = 15.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
-                    Text(shortAddress(c.address), color = D.Quiet, fontSize = 12.sp, style = Figures, maxLines = 1)
-                }
+                // The model number is the name until they have a better one. The address used
+                // to sit under it and earned nothing: four characters of a key identify nobody,
+                // and the face and the model already say who this is.
+                Text(name ?: c.label.ifBlank { "Unknown phone" }, color = D.Black,
+                    fontSize = 15.sp, fontWeight = FontWeight.SemiBold, maxLines = 1,
+                    modifier = Modifier.weight(1f))
                 HIcon(R.drawable.hi_arrow_up_right, D.Quiet, 17.dp)
             }
         }
     }
 }
-
-/** An address at a glance: enough of both ends to recognise, nothing in between to read. */
-private fun shortAddress(address: String) = "${address.take(4)}…${address.takeLast(4)}"
 
 @Composable
 private fun Face(c: Contact, size: Dp, ring: Color? = null) {

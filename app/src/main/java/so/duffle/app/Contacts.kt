@@ -76,16 +76,20 @@ class Contacts(ctx: Context) {
     /**
      * The chain's answer about a contact's Genesis token, once it lands.
      *
-     * Only ever grants the badge. A lookup that fails, or a wallet queried while offline, must
-     * not strip a badge that was verified on a day the network worked — absence of evidence is
-     * not evidence of absence, and Genesis is soulbound, so a true answer stays true.
+     * Called only for a **definitive** answer. A lookup that failed, or a wallet queried while
+     * offline, must never reach here: absence of evidence is not evidence of absence, and a
+     * badge earned on a day the network worked should survive a day it did not.
+     *
+     * A definitive "no" does revoke, though, and has to. Contacts used to record the Genesis
+     * claim carried in the tap payload, so phones that merely said they were Seekers were
+     * badged — and a grant-only rule left those badges standing forever, with nothing able to
+     * correct them.
      */
     fun verify(address: String, held: Boolean) {
-        if (!held) return
         val list = load().toMutableList()
         val i = list.indexOfFirst { it.address == address }
-        if (i < 0 || list[i].seeker) return
-        list[i] = list[i].copy(seeker = true)
+        if (i < 0 || list[i].seeker == held) return
+        list[i] = list[i].copy(seeker = held)
         save(list)
     }
 
