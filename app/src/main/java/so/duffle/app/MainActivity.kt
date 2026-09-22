@@ -17,6 +17,10 @@ import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.withStyle
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
@@ -267,7 +271,19 @@ class MainActivity : ComponentActivity() {
                 }
 
                 Surface(Modifier.fillMaxSize(), color = D.White) {
-                    Column(Modifier.fillMaxSize().padding(20.dp)) {
+                    // statusBarsPadding, not a guessed top margin: the pill sits at the very
+                    // top of the app and was drawing straight through the clock and battery.
+                    Column(Modifier.fillMaxSize().statusBarsPadding().padding(20.dp)) {
+                        if (contactCount > 0) {
+                            SendToPill(contacts.all()) { c ->
+                                // The same sheet a tap opens, addressed to someone already met.
+                                // Their Genesis mint is not stored, only whether they had one;
+                                // the sheet checks the chain itself, as it does after a tap.
+                                startActivity(TapPopupActivity.intent(
+                                    this@MainActivity, TapPayload.Card(TapCard(c.address, c.label, null, null)), "contacts"))
+                            }
+                            Spacer(Modifier.height(16.dp))
+                        }
                         Header(diag, checking) { checking = !checking }
                         Spacer(Modifier.height(14.dp))
                         val openCount = toPay.count { !it.paid } + owed.count { !it.paid }
@@ -854,6 +870,53 @@ private fun ContactStrip(list: List<Contact>) {
             if (list.size > 5) {
                 Box(Modifier.size(46.dp).background(D.Fill, CircleShape), contentAlignment = Alignment.Center) {
                     Text("+${list.size - 5}", color = D.Quiet, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+    }
+}
+
+/**
+ * The people you can pay without tapping, as one dark pill across the top.
+ *
+ * A tap is the fastest way to pay someone standing in front of you and the slowest way to pay
+ * someone who isn't. These are the faces already met — one press opens the same sheet a tap
+ * would, addressed to them.
+ *
+ * The faces overlap in the order they are listed, each ringed in the pill's own colour so they
+ * read as a stack rather than a smear. The ring is the pill, not white: on a dark pill a white
+ * ring would draw more than the faces do.
+ */
+@Composable
+private fun SendToPill(list: List<Contact>, onPick: (Contact) -> Unit) {
+    val shown = list.take(3)
+    Row(
+        Modifier.fillMaxWidth().height(48.dp).clip(RoundedCornerShape(24.dp)).background(D.Black)
+            .padding(start = 22.dp, end = 7.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            buildAnnotatedString {
+                withStyle(SpanStyle(color = D.White.copy(alpha = .62f), fontWeight = FontWeight.Medium)) { append("Send ") }
+                withStyle(SpanStyle(color = D.White, fontWeight = FontWeight.Bold)) { append("to") }
+            },
+            fontSize = 17.sp, fontFamily = Ui,
+        )
+        Spacer(Modifier.weight(1f))
+        Row(horizontalArrangement = Arrangement.spacedBy((-11).dp)) {
+            shown.forEach { c ->
+                val tint = if (c.seeker) D.Blue else D.Quiet
+                Box(
+                    Modifier.size(34.dp).clip(CircleShape).background(D.Black)
+                        .clickable(remember { MutableInteractionSource() }, indication = null) { onPick(c) }
+                        .padding(2.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Box(Modifier.fillMaxSize().background(tint.copy(alpha = .22f), CircleShape),
+                        contentAlignment = Alignment.Center) {
+                        Text(c.label.take(1).uppercase(), color = D.White, fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold, fontFamily = Display)
+                    }
                 }
             }
         }
