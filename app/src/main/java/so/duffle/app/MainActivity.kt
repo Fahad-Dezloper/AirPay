@@ -1008,13 +1008,14 @@ private fun BalanceCard(
                         .padding(horizontal = 17.dp, vertical = 9.dp),
                 )
                 Spacer(Modifier.weight(1f))
-                if (others.isNotEmpty()) {
-                    Box(
-                        Modifier.size(34.dp).clip(CircleShape).background(D.White.copy(alpha = .14f))
-                            .clickable(onClick = onCards),
-                        contentAlignment = Alignment.Center,
-                    ) { HIcon(R.drawable.hi_wallet, D.White, 17.dp) }
-                }
+                // Always, not only when a second wallet exists: this is the way into the
+                // wallets screen, and the only "Add wallet" button lives there. Showing it
+                // once there were already several made linking the second one unreachable.
+                Box(
+                    Modifier.size(34.dp).clip(CircleShape).background(D.White.copy(alpha = .14f))
+                        .clickable(onClick = onCards),
+                    contentAlignment = Alignment.Center,
+                ) { HIcon(R.drawable.hi_wallet, D.White, 17.dp) }
             }
         }
     }
