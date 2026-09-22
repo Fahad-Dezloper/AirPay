@@ -123,6 +123,8 @@ class MainActivity : ComponentActivity() {
     private var walletList by mutableStateOf<List<Linked>>(emptyList())
     /** The selected wallet's balance. Null while it is being read, or unreadable. */
     private var balance by mutableStateOf<Chain.Balance?>(null)
+    /** What this wallet has earned, for the strip on the home page. */
+    private var rewardSummary by mutableStateOf<Rewards.Summary?>(null)
     /** What the other phone shows when you tap them. A model number is not a name. */
     private var myName by mutableStateOf("")
     private var renaming by mutableStateOf(false)
@@ -214,12 +216,17 @@ class MainActivity : ComponentActivity() {
     private fun refreshWallets() {
         walletList = wallet.linked.all()
         balance = null
+        rewardSummary = null
         val addr = connected ?: return
         lifecycleScope.launch {
             val b = withContext(Dispatchers.IO) { Chain.balance(addr) }
             // Only report a balance for the wallet still selected — switching twice quickly
             // would otherwise show one wallet's money under another's name.
             if (connected == addr) balance = b
+        }
+        lifecycleScope.launch {
+            val r = Rewards.summary(addr)
+            if (connected == addr) rewardSummary = r
         }
     }
 
@@ -382,7 +389,12 @@ class MainActivity : ComponentActivity() {
                     // top of the app and was drawing straight through the clock and battery.
                     Column(Modifier.fillMaxSize().statusBarsPadding()) {
                     val openCount = toPay.count { !it.paid } + owed.count { !it.paid }
-                    Column(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 20.dp, vertical = 20.dp)) {
+                    Column(
+                        Modifier.weight(1f).fillMaxWidth()
+                            .then(if (tab == Tab.TAP && !cards && !checking) Modifier.verticalScroll(rememberScrollState()) else Modifier)
+                            .padding(horizontal = 20.dp, vertical = 20.dp)
+                            .navigationBarsPadding(),
+                    ) {
                         if (contactCount > 0) {
                             SendToPill(contacts.all()) { c ->
                                 // The same sheet a tap opens, addressed to someone already met.
@@ -439,6 +451,11 @@ class MainActivity : ComponentActivity() {
                                 onClosePicker = { picker = null },
                             )
                             return@Column
+                        }
+
+                        if (tab != Tab.TAP) {
+                            BackHeader(if (tab == Tab.REQUESTS) "Activity" else "Earn") { tab = Tab.TAP }
+                            Spacer(Modifier.height(16.dp))
                         }
 
                         if (tab == Tab.REWARDS) {
@@ -506,7 +523,7 @@ class MainActivity : ComponentActivity() {
 
                         val waiting = owed.count { !it.paid }
                         if (!checking) {
-                            Spacer(Modifier.weight(1f))
+                            Spacer(Modifier.height(26.dp))
                             Invitation(
                                 hint = when {
                                     connected == null -> "Your wallet signs; Duffle never holds your keys."
@@ -516,7 +533,7 @@ class MainActivity : ComponentActivity() {
                                 },
                                 ready = connected != null,
                             )
-                            Spacer(Modifier.weight(1f))
+                            Spacer(Modifier.height(26.dp))
                         }
 
                         if (mode == Mode.REQUEST) {
@@ -548,17 +565,24 @@ class MainActivity : ComponentActivity() {
                             ContactStrip(contacts.all())
                         }
 
+                        if (Rewards.enabled) {
+                            Spacer(Modifier.height(22.dp))
+                            EarnStrip(rewardSummary) { tab = Tab.REWARDS }
+                        }
+                        if (openCount > 0 || toPay.isNotEmpty() || owed.isNotEmpty()) {
+                            Spacer(Modifier.height(14.dp))
+                            ActivityStrip(openCount, toPay.count { it.paid } + owed.count { it.paid }) {
+                                tab = Tab.REQUESTS
+                            }
+                        }
+
                         // The log is ours, not theirs: it only exists while "check" is open.
                         if (checking) {
                             Spacer(Modifier.height(16.dp))
                             SectionLabel("EXCHANGE")
                             LogView(log)
-                        } else {
-                            Spacer(Modifier.weight(1f))
                         }
                     }
-                        // Pinned below whatever the tab is showing, so it never scrolls away.
-                        BottomBar(tab, openCount) { tab = it }
                     }
                 }
 
@@ -1429,89 +1453,69 @@ private fun ConfirmSheet(
 }
 
 @Composable
-private fun BottomBar(current: Tab, openCount: Int, onSelect: (Tab) -> Unit) {
-    val ctx = LocalContext.current
-    Row(
-        Modifier.fillMaxWidth().background(D.White)
-            .drawBehind {
-                // A hairline, not a shadow: the bar sits on the page rather than floating over
-                // it, and a shadow here would compete with the cards above.
-                drawRect(D.Line, size = androidx.compose.ui.geometry.Size(size.width, 1.dp.toPx()))
-            }
-            .navigationBarsPadding().padding(top = 9.dp, bottom = 4.dp),
-        horizontalArrangement = Arrangement.SpaceEvenly,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        TABS.forEach { (tab, spec) ->
-            if (tab == Tab.REWARDS && !Rewards.enabled) return@forEach
-            val (label, icon) = spec
-            BottomItem(
-                label = label, icon = icon, on = tab == current,
-                badge = if (tab == Tab.REQUESTS && openCount > 0) openCount else null,
-            ) {
-                if (tab != current) Haptics.select(ctx)
-                onSelect(tab)
-            }
-        }
+private fun BackHeader(title: String, onBack: () -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(
+            Modifier.size(38.dp).clip(CircleShape).background(D.Fill).clickable(onClick = onBack),
+            contentAlignment = Alignment.Center,
+        ) { HIcon(R.drawable.hi_arrow_left, D.Black, 19.dp) }
+        Spacer(Modifier.width(12.dp))
+        Text(title, color = D.Black, fontSize = 24.sp, fontWeight = FontWeight.ExtraBold, fontFamily = Display)
     }
 }
 
-/** Name and icon per tab, in the order they are shown. */
-private val TABS = listOf(
-    Tab.TAP to ("Pay" to R.drawable.hi_nfc),
-    Tab.REQUESTS to ("Activity" to R.drawable.hi_exchange),
-    Tab.REWARDS to ("Earn" to R.drawable.hi_gift),
-)
-
 /**
- * One tab. The icon dips under the finger and springs back past its size before settling.
+ * A row that stands for a whole screen.
  *
- * The overshoot is the whole effect — a press that only shrinks reads as a button, a press that
- * rebounds reads as alive. It is spent on the icon alone, because the label moving too turns a
- * flick into a wobble. The haptic fires on the press, not on the recomposition, so the phone
- * answers the finger rather than the state change.
+ * Google Pay's shape rather than a bank's: one page, with the depth a tap away. Three tabs of
+ * equal weight would have claimed Duffle has three destinations, and it has one — the tap.
+ * These say what is behind them, so opening them is a decision rather than a look.
  */
 @Composable
-private fun BottomItem(
-    label: String,
+private fun PageStrip(
     @DrawableRes icon: Int,
-    on: Boolean,
-    badge: Int?,
-    onClick: () -> Unit,
+    tint: Color,
+    title: String,
+    detail: String,
+    onOpen: () -> Unit,
 ) {
     val interaction = remember { MutableInteractionSource() }
-    val pressed by interaction.collectIsPressedAsState()
-    val scale = remember { Animatable(1f) }
-    LaunchedEffect(pressed, on) {
-        if (pressed) {
-            scale.animateTo(0.82f, spring(dampingRatio = 1f, stiffness = 1800f))
-        } else {
-            // Low damping so it passes 1f on the way back — the pop Phantom's bar has.
-            scale.animateTo(1f, spring(dampingRatio = 0.38f, stiffness = 700f))
-        }
-    }
-    val tint by animateColorAsState(if (on) D.Blue else D.Quiet, tween(180), label = "tint")
-    Column(
-        Modifier.clip(RoundedCornerShape(16.dp))
-            .clickable(interaction, indication = null, onClick = onClick)
-            .padding(horizontal = 18.dp, vertical = 6.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
+    Row(
+        Modifier.fillMaxWidth().then(PressScale(interaction)).clip(RoundedCornerShape(16.dp))
+            .background(D.Fill).clickable(interaction, indication = null, onClick = onOpen)
+            .padding(horizontal = 14.dp, vertical = 13.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(contentAlignment = Alignment.Center) {
-            HIcon(icon, tint, 25.dp, Modifier.graphicsLayer { scaleX = scale.value; scaleY = scale.value })
-            if (badge != null) {
-                Box(
-                    Modifier.align(Alignment.TopEnd).offset(x = 9.dp, y = (-4).dp)
-                        .background(D.Blue, CircleShape).padding(horizontal = 5.dp, vertical = 1.dp),
-                ) {
-                    Text("$badge", color = D.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                }
-            }
+        Box(Modifier.size(34.dp).clip(CircleShape).background(tint.copy(alpha = .14f)),
+            contentAlignment = Alignment.Center) { HIcon(icon, tint, 17.dp) }
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(title, color = D.Black, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+            Text(detail, color = D.Quiet, fontSize = 12.5.sp)
         }
-        Spacer(Modifier.height(3.dp))
-        Text(label, color = tint, fontSize = 11.5.sp,
-            fontWeight = if (on) FontWeight.Bold else FontWeight.Medium)
+        HIcon(R.drawable.hi_arrow_up_right, D.Quiet, 17.dp)
     }
+}
+
+@Composable
+private fun EarnStrip(summary: Rewards.Summary?, onOpen: () -> Unit) {
+    PageStrip(
+        icon = R.drawable.hi_gift, tint = D.Blue,
+        title = summary?.let { "${it.total} SKR earned" } ?: "Earn SKR by paying in person",
+        detail = summary?.let { "${it.weekPayments} of ${it.weekAllows} this week" }
+            ?: "Offers and rewards for Seeker owners",
+        onOpen = onOpen,
+    )
+}
+
+@Composable
+private fun ActivityStrip(open: Int, done: Int, onOpen: () -> Unit) {
+    PageStrip(
+        icon = R.drawable.hi_exchange, tint = D.Black,
+        title = if (open > 0) "$open waiting" else "Activity",
+        detail = if (done > 0) "$done settled" else "Requests and payments",
+        onOpen = onOpen,
+    )
 }
 /**
  * Everything waiting on someone, in one place: requests this phone can still pay, requests
