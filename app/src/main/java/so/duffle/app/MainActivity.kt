@@ -21,6 +21,7 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.withStyle
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.core.view.WindowCompat
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
@@ -136,6 +137,14 @@ class MainActivity : ComponentActivity() {
         myName = Identity.label(this)
         refreshLists()
         Push.init(this)
+
+        // The screen is white now, so the system bars have to draw themselves dark. On a phone
+        // in dark mode the clock and battery are white, and they vanished into our background
+        // — "isAppearanceLight*" means "the background is light", not "the icons are light".
+        WindowCompat.getInsetsController(window, window.decorView).apply {
+            isAppearanceLightStatusBars = true
+            isAppearanceLightNavigationBars = true
+        }
 
         reader = TapReader(
             activity = this,
