@@ -23,6 +23,13 @@ class Watch(context: Context) {
         val reference: String,
         /** Our address when the request was made — the one the payment must reach. */
         val recipient: String,
+        /**
+         * Who we asked, when we know. A tap tells us: the reader says hello with its address
+         * before it takes the request, and a request typed into the sheet after a tap already
+         * has the person in front of it. Null for anything older than this field — which is why
+         * the thread view treats a missing peer as "not filed under anyone" rather than guessing.
+         */
+        val peer: String? = null,
         val amount: String,
         val createdAt: Long,
         val signature: String? = null,
@@ -88,6 +95,7 @@ class Watch(context: Context) {
             Entry(
                 reference = ref,
                 recipient = to,
+                peer = o.optString("pe").takeIf { PayRequest.isBase58Address(it) },
                 amount = o.optString("a"),
                 createdAt = o.optLong("t"),
                 signature = o.optString("s").takeIf { it.isNotBlank() },
@@ -111,6 +119,7 @@ class Watch(context: Context) {
             arr.put(JSONObject().apply {
                 put("r", e.reference)
                 put("to", e.recipient)
+                e.peer?.let { put("pe", it) }
                 put("a", e.amount)
                 put("t", e.createdAt)
                 e.signature?.let { put("s", it) }

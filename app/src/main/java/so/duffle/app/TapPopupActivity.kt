@@ -366,7 +366,9 @@ class TapPopupActivity : ComponentActivity() {
                 phase = Phase.Error("Couldn't send the request", "Check your connection and try again.")
                 return@launch
             }
-            Watch(this@TapPopupActivity).add(Watch.Entry(reference, me, value, System.currentTimeMillis(),
+            Watch(this@TapPopupActivity).add(Watch.Entry(
+                reference = reference, recipient = me, peer = p.address, amount = value,
+                createdAt = System.currentTimeMillis(),
                 token = t.token, decimals = t.decimals, symbol = t.symbol))
             phase = Phase.Waiting(value, reference, t.symbol)
         }

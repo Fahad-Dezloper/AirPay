@@ -3,6 +3,7 @@ package so.duffle.app
 import android.Manifest
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.ui.draw.clip
@@ -118,6 +119,8 @@ class MainActivity : ComponentActivity() {
     private var lastAmount = "0.01"
     private var connected by mutableStateOf<String?>(null)
     private var tab by mutableStateOf(Tab.TAP)
+    /** The person whose thread is open, or null for the main page. */
+    private var thread by mutableStateOf<Contact?>(null)
     /** "check" is open: the diagnostics and the exchange log, which are for us, not the user. */
     private var checking by mutableStateOf(false)
     /** A wallet app is open in front of us. Hoisted out of the composition because linking
@@ -514,14 +517,32 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
+                // Back walks the page back out, in the order it was opened. Without this the
+                // system back left the app from inside a thread — the one place it most looks
+                // like a screen you can back out of.
+                BackHandler(enabled = thread != null || cards || tab != Tab.TAP) {
+                    when {
+                        thread != null -> thread = null
+                        cards -> cards = false
+                        shopProduct != null -> shopProduct = null
+                        shopSection != null -> shopSection = null
+                        else -> tab = Tab.TAP
+                    }
+                }
+
                 Surface(Modifier.fillMaxSize(), color = D.White) {
                     // statusBarsPadding, not a guessed top margin: the pill sits at the very
                     // top of the app and was drawing straight through the clock and battery.
                     Column(Modifier.fillMaxSize().statusBarsPadding()) {
-                    val openCount = toPay.count { !it.paid } + owed.count { !it.paid }
+                    // Rows no thread can show: a request we asked before peers were recorded,
+                    // or either side of one with somebody who is not in contacts.
+                    val known = contacts.all().map { it.address }.toSet()
+                    val orphans = toPay.count { it.request.recipient !in known } +
+                        owed.count { it.peer == null || it.peer !in known }
                     Column(
                         Modifier.weight(1f).fillMaxWidth()
-                            .then(if (tab == Tab.TAP && !cards && !checking) Modifier.verticalScroll(rememberScrollState()) else Modifier)
+                            .then(if (tab == Tab.TAP && !cards && !checking && thread == null)
+                                Modifier.verticalScroll(rememberScrollState()) else Modifier)
                             .padding(horizontal = 20.dp, vertical = 20.dp)
                             .navigationBarsPadding(),
                     ) {
@@ -569,6 +590,45 @@ class MainActivity : ComponentActivity() {
                                     linkWallet(app)
                                 },
                                 onClosePicker = { picker = null },
+                            )
+                            return@Column
+                        }
+
+                        thread?.let { who ->
+                            // Read fresh from contacts: the stored copy in `thread` would keep
+                            // the tap count and badge it had when the row was tapped.
+                            val live = contacts.all().firstOrNull { it.address == who.address } ?: who
+                            Thread(
+                                who = live,
+                                toPay = toPay,
+                                owed = owed,
+                                paying = paying,
+                                onPay = { item -> incoming = item.request },
+                                onDecline = { item ->
+                                    val req = item.request
+                                    inbox.remove(req.reference); refreshLists()
+                                    push("— declined ${req.amount} ${req.symbol} from ${req.label}")
+                                    if (item.payable) {
+                                        lifecycleScope.launch {
+                                            ServerClient.reject(req.reference, Identity.label(this@MainActivity))
+                                        }
+                                    }
+                                },
+                                onWithdraw = { e ->
+                                    watch.remove(e.reference); refreshLists()
+                                    push("— withdrew ${e.amount} ${e.symbol} request ${e.reference.take(8)}…")
+                                    lifecycleScope.launch { ServerClient.withdraw(e.reference) }
+                                },
+                                onBack = { thread = null },
+                                onOpen = {
+                                    // The same sheet a tap opens, addressed to someone already
+                                    // met. Their Genesis mint is not stored, only whether they
+                                    // had one; the sheet checks the chain itself, as after a tap.
+                                    startActivity(TapPopupActivity.intent(
+                                        this@MainActivity,
+                                        TapPayload.Card(TapCard(live.address, live.label, null, null)),
+                                        "contacts"))
+                                },
                             )
                             return@Column
                         }
@@ -687,13 +747,18 @@ class MainActivity : ComponentActivity() {
 
                         if (contactCount > 0) {
                             Spacer(Modifier.height(24.dp))
-                            People(contacts.all()) { c ->
-                                // The same sheet a tap opens, addressed to someone already met.
-                                // Their Genesis mint is not stored, only whether they had one;
-                                // the sheet checks the chain itself, as it does after a tap.
-                                startActivity(TapPopupActivity.intent(
-                                    this@MainActivity, TapPayload.Card(TapCard(c.address, c.label, null, null)), "contacts"))
-                            }
+                            People(
+                                list = contacts.all(),
+                                waiting = { addr ->
+                                    toPay.count { it.payable && it.request.recipient == addr } +
+                                        owed.count { !it.paid && !it.rejected && it.peer == addr }
+                                },
+                                // Only offered when something genuinely cannot be reached
+                                // through a person: a request served before peers were
+                                // recorded, or one from someone no longer in contacts.
+                                onAll = if (orphans > 0) ({ tab = Tab.REQUESTS }) else null,
+                                onPick = { c -> thread = c },
+                            )
                         }
 
                         if (Rewards.enabled) {
@@ -718,13 +783,6 @@ class MainActivity : ComponentActivity() {
                                 shopSection = sec
                                 shopProduct = null
                                 tab = Tab.SHOP
-                            }
-                        }
-
-                        if (openCount > 0 || toPay.isNotEmpty() || owed.isNotEmpty()) {
-                            Spacer(Modifier.height(14.dp))
-                            ActivityStrip(openCount, toPay.count { it.paid } + owed.count { it.paid }) {
-                                tab = Tab.REQUESTS
                             }
                         }
 
@@ -847,6 +905,10 @@ class MainActivity : ComponentActivity() {
             Watch.Entry(
                 reference = req.reference,
                 recipient = req.recipient,
+                // Whoever just read it. They introduced themselves with HELLO moments before
+                // taking the request, which is the only point in a tap where we learn who the
+                // other phone belongs to.
+                peer = TapHostApduService.lastHello?.address,
                 amount = req.amount,
                 createdAt = System.currentTimeMillis(),
                 token = req.token,
@@ -1363,9 +1425,20 @@ private fun WalletsScreen(
  * The address sits under it, short enough to recognise and too short to read out.
  */
 @Composable
-private fun People(list: List<Contact>, onPick: (Contact) -> Unit) {
+private fun People(list: List<Contact>, waiting: (String) -> Int, onAll: (() -> Unit)?, onPick: (Contact) -> Unit) {
     Column(Modifier.fillMaxWidth()) {
-        SectionLabel("PEOPLE")
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text("PEOPLE", color = D.Quiet, fontSize = 11.sp, letterSpacing = 1.5.sp, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.weight(1f))
+            // Anything whose payer or payee this phone never learned cannot be filed under a
+            // person, so the flat list stays reachable — but only when it holds something.
+            onAll?.let {
+                Text("All activity", color = D.Blue, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable(onClick = it)
+                        .padding(horizontal = 6.dp, vertical = 2.dp))
+            }
+        }
+        Spacer(Modifier.height(8.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
             list.take(5).forEach { c ->
                 // Asked once per person, on mainnet where SNS lives. Null stays null: an
@@ -1412,12 +1485,229 @@ private fun People(list: List<Contact>, onPick: (Contact) -> Unit) {
                                 contentAlignment = Alignment.Center,
                             ) { HIcon(R.drawable.hi_verified, D.Blue, 17.dp) }
                         }
+                        // What is outstanding with this person, on this person. The home page
+                        // used to carry one "12 waiting" row for everybody, which said how much
+                        // was open and never with whom.
+                        val open = waiting(c.address)
+                        if (open > 0) {
+                            Box(
+                                Modifier.align(Alignment.BottomStart).size(19.dp).clip(CircleShape)
+                                    .background(D.Blue),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Text(if (open > 9) "9+" else "$open", color = D.White, fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold, style = Figures)
+                            }
+                        }
                     }
                     Spacer(Modifier.height(7.dp))
                     Text(name ?: c.label.ifBlank { "Unknown" }, color = D.Black, fontSize = 12.sp,
                         fontWeight = FontWeight.Medium, maxLines = 1, textAlign = TextAlign.Center)
                 }
             }
+        }
+    }
+}
+
+/**
+ * Everything that has ever passed between this phone and one person, as a conversation.
+ *
+ * Requests used to live in one "Activity" list, ordered by what needed attention, with the
+ * other party reduced to a label on the row. That list answered "what is outstanding" and
+ * could not answer "what is going on with them" — which is the question anyone actually has
+ * when they open a payments app, and the reason every messaging app files by person.
+ *
+ * Two directions, drawn as two sides:
+ *
+ *   * **Left** — what they asked of us, read off a tap and kept in [Inbox]. Payable ones carry
+ *     their own Pay and Decline, here rather than on a separate screen.
+ *   * **Right** — what we asked of them, kept in [Watch] and settled by the chain.
+ *
+ * Oldest at the top, like a chat, so the newest thing is where the thumb already is.
+ *
+ * **A request with no peer recorded cannot appear here.** Only requests served since the field
+ * existed know who took them; older ones stay in the Activity list rather than being filed
+ * under a guess.
+ */
+@Composable
+private fun Thread(
+    who: Contact,
+    toPay: List<Inbox.Item>,
+    owed: List<Watch.Entry>,
+    paying: String?,
+    onPay: (Inbox.Item) -> Unit,
+    onDecline: (Inbox.Item) -> Unit,
+    onWithdraw: (Watch.Entry) -> Unit,
+    onBack: () -> Unit,
+    onOpen: () -> Unit,
+) {
+    val name by produceState<String?>(initialValue = null, who.address) { value = Names.sol(who.address) }
+    val theirs = toPay.filter { it.request.recipient == who.address }
+    val ours = owed.filter { it.peer == who.address }
+    // One list, one clock. `Any` rather than a sealed wrapper because the two shapes already
+    // carry everything a row needs and copying them into a third type would be a place for the
+    // two to drift apart.
+    val lines: List<Any> = (theirs + ours).sortedBy {
+        when (it) {
+            is Inbox.Item -> it.readAt
+            is Watch.Entry -> it.createdAt
+            else -> 0L
+        }
+    }
+
+    Column(Modifier.fillMaxSize()) {
+        Row(Modifier.fillMaxWidth().padding(bottom = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                Modifier.size(38.dp).clip(CircleShape).background(D.Fill).clickable(onClick = onBack),
+                contentAlignment = Alignment.Center,
+            ) { HIcon(R.drawable.hi_arrow_left, D.Black, 19.dp) }
+            Spacer(Modifier.width(10.dp))
+            Face(who, 44.dp)
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(name ?: who.label.ifBlank { "Unknown" }, color = D.Black, fontSize = 19.sp,
+                        fontWeight = FontWeight.Bold, fontFamily = Display, maxLines = 1)
+                    if (who.seeker) {
+                        Spacer(Modifier.width(5.dp))
+                        HIcon(R.drawable.hi_verified, D.Blue, 16.dp)
+                    }
+                }
+                Text(who.short, color = D.Quiet, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+            }
+        }
+
+        val scroll = rememberScrollState()
+        // Opened at the newest, like any conversation. Keyed on maxValue rather than the item
+        // count: the count changes when the list is composed, the height only once it has been
+        // laid out, and scrolling before that lands on a bottom that does not exist yet.
+        LaunchedEffect(scroll.maxValue) { scroll.scrollTo(scroll.maxValue) }
+        Column(
+            Modifier.weight(1f).fillMaxWidth().verticalScroll(scroll),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            if (lines.isEmpty()) {
+                Spacer(Modifier.height(30.dp))
+                Text("Nothing between you yet", color = D.Black, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(5.dp))
+                Text("Ask ${who.label} for money, or tap phones to pay them.", color = D.Quiet, fontSize = 13.sp)
+            }
+            lines.forEach { line ->
+                when (line) {
+                    is Inbox.Item -> Bubble(
+                        mine = false,
+                        amount = "${line.request.amount} ${line.request.symbol}",
+                        at = line.paidAt ?: line.readAt,
+                        state = when {
+                            line.paid -> "You paid this"
+                            line.withdrawn -> "They took it back"
+                            else -> "Asked you"
+                        },
+                        done = line.paid,
+                        dead = line.withdrawn,
+                    ) {
+                        if (line.payable) {
+                            Spacer(Modifier.height(10.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Button(
+                                    onClick = { onPay(line) },
+                                    enabled = paying == null,
+                                    contentPadding = PaddingValues(horizontal = 20.dp, vertical = 6.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = D.Blue, contentColor = D.White),
+                                ) {
+                                    Text(if (paying == line.request.reference) "…" else "Pay",
+                                        fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                                }
+                                TextButton(
+                                    onClick = { onDecline(line) },
+                                    enabled = paying == null,
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                                ) { Text("Decline", color = D.Quiet, fontSize = 14.sp) }
+                            }
+                        }
+                    }
+                    is Watch.Entry -> Bubble(
+                        mine = true,
+                        amount = "${line.amount} ${line.symbol}",
+                        at = line.paidAt ?: line.createdAt,
+                        state = when {
+                            line.paid -> "They paid you"
+                            line.rejected -> "${line.rejectedBy} declined"
+                            line.pending -> "${line.deferredBy} will pay later"
+                            else -> "Waiting for them"
+                        },
+                        done = line.paid,
+                        dead = line.rejected,
+                    ) {
+                        if (!line.paid) {
+                            Spacer(Modifier.height(8.dp))
+                            Text(
+                                if (line.rejected) "Remove" else "Take it back",
+                                color = D.White.copy(alpha = .85f), fontSize = 13.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.clip(RoundedCornerShape(8.dp))
+                                    .clickable { onWithdraw(line) }.padding(horizontal = 4.dp, vertical = 2.dp),
+                            )
+                        }
+                    }
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+        }
+
+        // One button, because the sheet it opens is one screen: a Pay form with "Request
+        // instead" on it. Two buttons here would promise two destinations and deliver one.
+        Box(Modifier.fillMaxWidth().height(1.dp).background(D.Line))
+        PrimaryButton("Pay or request", onClick = onOpen, modifier = Modifier.fillMaxWidth().padding(top = 14.dp))
+    }
+}
+
+/**
+ * One item in a thread. Ours on the right in blue, theirs on the left in grey — the arrangement
+ * everybody already reads without being taught it.
+ *
+ * The corner nearest the speaker is squared off, which is what makes a stack of these read as
+ * two voices rather than a list of cards.
+ */
+@Composable
+private fun Bubble(
+    mine: Boolean,
+    amount: String,
+    at: Long,
+    state: String,
+    done: Boolean,
+    dead: Boolean,
+    extra: @Composable ColumnScope.() -> Unit,
+) {
+    val ground = when {
+        dead -> D.Fill
+        mine -> D.Blue
+        else -> D.Fill
+    }
+    val ink = if (mine && !dead) D.White else if (dead) D.Quiet else D.Black
+    val faint = if (mine && !dead) D.White.copy(alpha = .8f) else D.Quiet
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = if (mine) Arrangement.End else Arrangement.Start) {
+        Column(
+            Modifier.widthIn(max = 260.dp)
+                .clip(RoundedCornerShape(
+                    topStart = 18.dp, topEnd = 18.dp,
+                    bottomStart = if (mine) 18.dp else 5.dp,
+                    bottomEnd = if (mine) 5.dp else 18.dp,
+                ))
+                .background(ground)
+                .padding(horizontal = 15.dp, vertical = 12.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(amount, color = ink, fontSize = 21.sp, fontWeight = FontWeight.Bold,
+                    fontFamily = Display, style = Figures)
+                if (done) {
+                    Spacer(Modifier.width(7.dp))
+                    HIcon(R.drawable.hi_verified, if (mine) D.White else D.Success, 16.dp)
+                }
+            }
+            Spacer(Modifier.height(3.dp))
+            Text("$state · ${ago(at)}", color = faint, fontSize = 11.sp)
+            extra()
         }
     }
 }
@@ -1835,15 +2125,6 @@ private fun EarnTile(label: String, mark: Mark, modifier: Modifier, onClick: () 
     }
 }
 
-@Composable
-private fun ActivityStrip(open: Int, done: Int, onOpen: () -> Unit) {
-    PageStrip(
-        icon = R.drawable.hi_exchange, tint = D.Black,
-        title = if (open > 0) "$open waiting" else "Activity",
-        detail = if (done > 0) "$done settled" else "Requests and payments",
-        onOpen = onOpen,
-    )
-}
 /**
  * Everything waiting on someone, in one place: requests this phone can still pay, requests
  * others still owe it, and what has already settled.

@@ -111,12 +111,16 @@ class TapHostApduService : HostApduService() {
         Log.i(TAG, "HELLO from ${peer.label} ${peer.address.take(8)}…")
         events.tryEmit("← ${peer.label} tapped this phone")
         met.tryEmit(peer)
+        lastHello = peer
+        // Recorded on both paths. This used to return before it, so the phone that ASKED for
+        // money never filed the payer as a contact — only the payer filed the payee — and the
+        // person you were owed by was missing from People entirely.
+        Contacts(this).record(peer.address, peer.label, false, brand = peer.brand)
         if (payload is TapPayload.Request) {
             // We asked them for money; they already have the request. Nothing more to show.
             return Apdu.SW_OK
         }
         Haptics.contact(this)
-        Contacts(this).record(peer.address, peer.label, false, brand = peer.brand)
         announce(peer)
         return Apdu.SW_OK
     }
@@ -164,6 +168,16 @@ class TapHostApduService : HostApduService() {
 
         /** Emitted when a reader introduced itself with HELLO. */
         val met = MutableSharedFlow<TapCard>(extraBufferCapacity = 8)
+
+        /**
+         * The last reader to say hello, held rather than emitted.
+         *
+         * [served] fires on a later APDU in the same tap, and whoever handles it needs to know
+         * who took the request — a flow collected somewhere else cannot be relied on to have
+         * arrived first. Stale between taps by design: it is only ever read in the moment a
+         * request is served, which is always after that tap's HELLO.
+         */
+        @Volatile var lastHello: TapCard? = null
 
         /** The link to the reader dropped — the phones have separated. */
         val parted = MutableSharedFlow<Unit>(extraBufferCapacity = 4)
