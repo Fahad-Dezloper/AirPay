@@ -116,7 +116,7 @@ class TapHostApduService : HostApduService() {
             return Apdu.SW_OK
         }
         Haptics.contact(this)
-        Contacts(this).record(peer.address, peer.label, false)
+        Contacts(this).record(peer.address, peer.label, false, brand = peer.brand)
         announce(peer)
         return Apdu.SW_OK
     }

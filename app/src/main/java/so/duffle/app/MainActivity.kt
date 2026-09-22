@@ -22,6 +22,11 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.withStyle
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.core.view.WindowCompat
+import androidx.compose.foundation.Image
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.unit.Dp
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
@@ -94,6 +99,15 @@ class MainActivity : ComponentActivity() {
     private var tab by mutableStateOf(Tab.TAP)
     /** "check" is open: the diagnostics and the exchange log, which are for us, not the user. */
     private var checking by mutableStateOf(false)
+    /** A wallet app is open in front of us. Hoisted out of the composition because linking
+     *  outlives it — the user is in another app while this is true. */
+    private var busy by mutableStateOf(false)
+    /** The wallet cards are open, covering the tab. */
+    private var cards by mutableStateOf(false)
+    /** Every linked wallet, re-read whenever one is added, switched or dropped. */
+    private var walletList by mutableStateOf<List<Linked>>(emptyList())
+    /** The selected wallet's balance. Null while it is being read, or unreadable. */
+    private var balance by mutableStateOf<Chain.Balance?>(null)
     /** What the other phone shows when you tap them. A model number is not a name. */
     private var myName by mutableStateOf("")
     private var renaming by mutableStateOf(false)
@@ -125,6 +139,50 @@ class MainActivity : ComponentActivity() {
         push(if (granted) "✓ notifications on" else "— notifications declined")
     }
 
+    /**
+     * Links a wallet, or resumes the one already selected.
+     *
+     * @param fresh true from "Add wallet". Reusing the current session would send the user back
+     *   to the wallet they already have, which is the opposite of what they asked for.
+     *
+     * lifecycleScope, not the composition's: this suspends inside another app for as long as
+     * the person takes, and a disposed composition would cancel it between opening and
+     * returning. `finally`, because cancellation skips the line after a suspend point.
+     */
+    private fun connectWallet(fresh: Boolean) {
+        lifecycleScope.launch {
+            busy = true
+            try {
+                push(if (fresh) "choose a wallet…" else "opening wallet…")
+                when (val r = wallet.connect(fresh)) {
+                    is Wallet.Outcome.Ok -> {
+                        myGenesis = null
+                        connected = r.address
+                        refreshWallets()
+                        push("✓ wallet ${r.address.take(8)}…${r.address.takeLast(4)}")
+                    }
+                    is Wallet.Outcome.Failed -> push("✗ ${r.why}")
+                    Wallet.Outcome.Declined -> push("— wallet declined")
+                }
+            } finally {
+                busy = false
+            }
+        }
+    }
+
+    /** Re-reads the linked wallets and the selected one's balance. */
+    private fun refreshWallets() {
+        walletList = wallet.linked.all()
+        balance = null
+        val addr = connected ?: return
+        lifecycleScope.launch {
+            val b = withContext(Dispatchers.IO) { Chain.balance(addr) }
+            // Only report a balance for the wallet still selected — switching twice quickly
+            // would otherwise show one wallet's money under another's name.
+            if (connected == addr) balance = b
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         installCrashGuard()
@@ -136,6 +194,7 @@ class MainActivity : ComponentActivity() {
         watch = Watch(this)
         myName = Identity.label(this)
         refreshLists()
+        refreshWallets()
         Push.init(this)
 
         // The screen is white now, so the system bars have to draw themselves dark. On a phone
@@ -159,7 +218,6 @@ class MainActivity : ComponentActivity() {
             MaterialTheme(colorScheme = lightColorScheme(background = D.White, surface = D.White)) {
                 val scope = rememberCoroutineScope()
                 var amount by rememberSaveable { mutableStateOf(lastAmount) }
-                var busy by remember { mutableStateOf(false) }
                 // Re-read on every resume: NFC can be switched off while the app sits open,
                 // and a stale "Ready" is worse than no indicator at all.
                 var diag by remember { mutableStateOf(Diagnostics.read(this@MainActivity)) }
@@ -317,6 +375,27 @@ class MainActivity : ComponentActivity() {
                             Spacer(Modifier.height(10.dp))
                         }
 
+                        if (cards) {
+                            WalletsScreen(
+                                list = walletList,
+                                selected = connected,
+                                busy = busy,
+                                onPick = { w ->
+                                    wallet.use(w)
+                                    connected = w.address
+                                    myGenesis = null
+                                    // The armed request carries the old address until rebuilt.
+                                    TapHostApduService.pending.value = null
+                                    refreshWallets()
+                                    applyMode(amount)
+                                    push("— tapping with ${w.name} ${w.short}")
+                                },
+                                onAdd = { connectWallet(fresh = true) },
+                                onClose = { cards = false },
+                            )
+                            return@Column
+                        }
+
                         if (tab == Tab.REWARDS) {
                             RewardsTab(connected, myGenesis != null)
                             return@Column
@@ -352,44 +431,22 @@ class MainActivity : ComponentActivity() {
                             return@Column
                         }
 
-                        WalletRow(
-                            connected, busy,
-                            onDisconnect = {
-                                scope.launch {
-                                    wallet.disconnect()
-                                    connected = null
-                                    myGenesis = null
-                                    mode = Mode.IDLE
-                                    push("— wallet disconnected")
-                                }
+                        BalanceCard(
+                            wallet = walletList.firstOrNull { it.address == connected },
+                            others = walletList.filter { it.address != connected },
+                            balance = balance,
+                            mode = mode == Mode.REQUEST,
+                            onSend = { mode = Mode.PAY },
+                            onRequest = {
+                                mode = if (mode == Mode.REQUEST) Mode.IDLE else Mode.REQUEST
+                                paidSignature = null
                             },
-                        ) {
-                            // Connecting opens the wallet app and suspends there, so it must
-                            // outlive the composition and clear `busy` even when cancelled.
-                            lifecycleScope.launch {
-                                busy = true
-                                try {
-                                    push("opening wallet…")
-                                    when (val r = wallet.connect()) {
-                                        is Wallet.Outcome.Ok -> {
-                                            myGenesis = null
-                                            connected = r.address
-                                            push("✓ wallet ${r.address.take(8)}…${r.address.takeLast(4)}")
-                                            // Chain.balance returns a typed result, not a Double.
-                                            // Formatting it with %f compiled fine and crashed at
-                                            // runtime, because String.format accepts Any.
-                                            when (val b = withContext(Dispatchers.IO) { Chain.balance(r.address) }) {
-                                                is Chain.Balance.Ok -> push("   balance ${"%.4f".format(b.sol)} SOL")
-                                                is Chain.Balance.Offline -> push("   balance unavailable — no connection")
-                                            }
-                                        }
-                                        is Wallet.Outcome.Failed -> push("✗ ${r.why}")
-                                        Wallet.Outcome.Declined -> push("— wallet declined")
-                                    }
-                                } finally {
-                                    busy = false
-                                }
-                            }
+                            onCards = { cards = true },
+                        )
+                        if (connected == null) {
+                            Spacer(Modifier.height(12.dp))
+                            PrimaryButton(if (busy) "Opening your wallet…" else "Connect a wallet",
+                                onClick = { connectWallet(fresh = false) }, loading = busy)
                         }
 
                         Spacer(Modifier.height(10.dp))
@@ -439,20 +496,6 @@ class MainActivity : ComponentActivity() {
                                 modifier = Modifier.fillMaxWidth(),
                             )
                             Spacer(Modifier.height(12.dp))
-                        }
-
-                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                            ModeButton("Request", mode == Mode.REQUEST, connected != null, Modifier.weight(1f)) {
-                                if (mode == Mode.REQUEST) {
-                                    mode = Mode.IDLE
-                                } else {
-                                    mode = Mode.REQUEST
-                                    paidSignature = null
-                                }
-                            }
-                            ModeButton("Pay", mode != Mode.REQUEST, connected != null, Modifier.weight(1f)) {
-                                mode = Mode.PAY
-                            }
                         }
 
                         if (contactCount > 0) {
@@ -550,7 +593,7 @@ class MainActivity : ComponentActivity() {
         if (known == null) {
             inbox.add(req)
             refreshLists()
-            val isNew = contacts.record(req.recipient, req.label, false)
+            val isNew = contacts.record(req.recipient, req.label, false, brand = req.brand)
             contactCount = contacts.count()
             push(if (isNew) "+ new contact ${req.label}" else "— known contact ${req.label}")
             // The payer registers too, so the server watches this request even if the payee's
@@ -650,7 +693,7 @@ class MainActivity : ComponentActivity() {
                 status = Status.Sent(result.signature)
                 Haptics.success(this)
                 push("✓ CONFIRMED — ${Chain.explorerUrl(result.signature)}")
-                contacts.record(req.recipient, req.label, false, paid = req.amount.toDoubleOrNull() ?: 0.0)
+                contacts.record(req.recipient, req.label, false, paid = req.amount.toDoubleOrNull() ?: 0.0, brand = req.brand)
                 contactCount = contacts.count()
                 // Nudge the server to look now rather than on its next sweep.
                 lifecycleScope.launch {
@@ -857,17 +900,13 @@ private fun ContactStrip(list: List<Contact>) {
         Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
             list.take(5).forEach { c ->
                 Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(56.dp)) {
-                    Box(
-                        Modifier.size(46.dp).background(if (c.seeker) D.Blue.copy(alpha = .1f) else D.Fill, CircleShape),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text(c.label.take(1).uppercase(), color = if (c.seeker) D.Blue else D.Quiet,
-                            fontSize = 18.sp, fontWeight = FontWeight.Bold, fontFamily = Display)
+                    Box(contentAlignment = Alignment.Center) {
+                        Face(c, 46.dp)
                         if (c.seeker) {
                             // The badge sits on the face, where a Seeker owner is recognised.
-                            Box(Modifier.align(Alignment.BottomEnd).size(16.dp).background(D.White, CircleShape),
+                            Box(Modifier.align(Alignment.BottomEnd).size(17.dp).background(D.White, CircleShape),
                                 contentAlignment = Alignment.Center) {
-                                HIcon(R.drawable.hi_verified, D.Blue, 14.dp)
+                                HIcon(R.drawable.hi_verified, D.Blue, 15.dp)
                             }
                         }
                     }
@@ -886,6 +925,177 @@ private fun ContactStrip(list: List<Contact>) {
 }
 
 /**
+ * The selected wallet: what is in it, and the two things you can do with it.
+ *
+ * Dark, because it is the one object on a white screen that holds money — everything else is
+ * chrome around it. The other wallets show as coloured edges on the right; they are the control
+ * that opens the stack, so the way to switch is visible without a menu to learn.
+ */
+@Composable
+private fun BalanceCard(
+    wallet: Linked?,
+    others: List<Linked>,
+    balance: Chain.Balance?,
+    mode: Boolean,
+    onSend: () -> Unit,
+    onRequest: () -> Unit,
+    onCards: () -> Unit,
+) {
+    Box(Modifier.fillMaxWidth().height(168.dp)) {
+        // The stack behind, peeking. Drawn first so the card sits over it.
+        Row(
+            Modifier.align(Alignment.CenterEnd).height(140.dp),
+            horizontalArrangement = Arrangement.spacedBy((-26).dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            others.take(3).forEachIndexed { i, w ->
+                Box(
+                    Modifier.width(46.dp).height((140 - i * 10).dp)
+                        .clip(RoundedCornerShape(topStart = 18.dp, bottomStart = 18.dp))
+                        .background(w.colour)
+                )
+            }
+        }
+        Column(
+            Modifier.fillMaxWidth(if (others.isEmpty()) 1f else 0.82f).height(160.dp)
+                .align(Alignment.CenterStart)
+                .clip(RoundedCornerShape(24.dp)).background(D.Black)
+                .padding(horizontal = 20.dp, vertical = 18.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(wallet?.name ?: "No wallet", color = D.White.copy(alpha = .6f), fontSize = 14.sp)
+                if (wallet != null) {
+                    Spacer(Modifier.width(6.dp))
+                    Text("· ${wallet.short}", color = D.White.copy(alpha = .35f), fontSize = 13.sp, style = Figures)
+                }
+            }
+            Spacer(Modifier.height(4.dp))
+            // The whole number carries the weight; the decimals are smaller, because nobody
+            // reads a balance to four places — they read the size of it.
+            Row(verticalAlignment = Alignment.Bottom) {
+                val sol = (balance as? Chain.Balance.Ok)?.sol
+                val whole = sol?.toLong()?.toString() ?: "—"
+                val frac = sol?.let { "%.4f".format(it).substringAfter('.') }
+                Text(whole, color = D.White, fontSize = 44.sp, fontWeight = FontWeight.ExtraBold,
+                    fontFamily = Display, style = Figures)
+                if (frac != null) {
+                    Text(".$frac", color = D.White.copy(alpha = .5f), fontSize = 22.sp,
+                        fontWeight = FontWeight.Bold, style = Figures,
+                        modifier = Modifier.padding(bottom = 5.dp))
+                }
+                Spacer(Modifier.width(7.dp))
+                Text("SOL", color = D.White.copy(alpha = .6f), fontSize = 15.sp,
+                    fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(bottom = 8.dp))
+            }
+            Spacer(Modifier.weight(1f))
+            Row(horizontalArrangement = Arrangement.spacedBy(9.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    Modifier.clip(RoundedCornerShape(999.dp))
+                        .background(if (!mode) D.White else D.White.copy(alpha = .14f))
+                        .clickable(enabled = wallet != null, onClick = onSend)
+                        .padding(start = 12.dp, end = 17.dp, top = 9.dp, bottom = 9.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    HIcon(R.drawable.hi_arrow_up_right, if (!mode) D.Black else D.White, 17.dp)
+                    Spacer(Modifier.width(6.dp))
+                    Text("Send", color = if (!mode) D.Black else D.White, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                }
+                Text(
+                    "Request", color = if (mode) D.Black else D.White, fontSize = 15.sp, fontWeight = FontWeight.Bold,
+                    modifier = Modifier.clip(RoundedCornerShape(999.dp))
+                        .background(if (mode) D.White else D.White.copy(alpha = .14f))
+                        .clickable(enabled = wallet != null, onClick = onRequest)
+                        .padding(horizontal = 17.dp, vertical = 9.dp),
+                )
+                Spacer(Modifier.weight(1f))
+                if (others.isNotEmpty()) {
+                    Box(
+                        Modifier.size(34.dp).clip(CircleShape).background(D.White.copy(alpha = .14f))
+                            .clickable(onClick = onCards),
+                        contentAlignment = Alignment.Center,
+                    ) { HIcon(R.drawable.hi_wallet, D.White, 17.dp) }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Every linked wallet, one card under another.
+ *
+ * Simple on purpose: a colour, a name, an address and whether it is the one in use. A card that
+ * pretends to be a bank card invites questions this does not answer — there is no balance on it,
+ * no number to copy, and nothing to freeze.
+ */
+@Composable
+private fun WalletsScreen(
+    list: List<Linked>,
+    selected: String?,
+    busy: Boolean,
+    onPick: (Linked) -> Unit,
+    onAdd: () -> Unit,
+    onClose: () -> Unit,
+) {
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Wallets", color = D.Black, fontSize = 30.sp, fontWeight = FontWeight.ExtraBold, fontFamily = Display)
+            Spacer(Modifier.weight(1f))
+            Text(if (busy) "…" else "Add wallet", color = D.Black, fontSize = 14.sp, fontWeight = FontWeight.Bold,
+                modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(D.Fill)
+                    .clickable(enabled = !busy, onClick = onAdd)
+                    .padding(horizontal = 16.dp, vertical = 10.dp))
+        }
+        Spacer(Modifier.height(18.dp))
+        list.forEach { w ->
+            val on = w.address == selected
+            Column(
+                Modifier.fillMaxWidth().padding(bottom = 14.dp).height(150.dp)
+                    .clip(RoundedCornerShape(22.dp)).background(w.colour)
+                    .clickable { onPick(w) }
+                    .padding(18.dp),
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(w.name, color = D.Black.copy(alpha = .75f), fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.weight(1f))
+                    Text("•••• ${w.address.takeLast(4)}", color = D.Black.copy(alpha = .55f),
+                        fontSize = 15.sp, fontWeight = FontWeight.SemiBold, style = Figures)
+                }
+                Spacer(Modifier.weight(1f))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.size(34.dp).clip(CircleShape).background(D.White.copy(alpha = .35f)),
+                        contentAlignment = Alignment.Center) {
+                        HIcon(R.drawable.hi_wallet, D.Black.copy(alpha = .7f), 17.dp)
+                    }
+                    Spacer(Modifier.weight(1f))
+                    // What "selected" means, said rather than implied by a tick: this is the
+                    // wallet a tap pays from.
+                    if (on) {
+                        Row(
+                            Modifier.clip(RoundedCornerShape(999.dp)).background(D.White)
+                                .padding(horizontal = 12.dp, vertical = 7.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            HIcon(R.drawable.hi_tick, D.Black, 15.dp)
+                            Spacer(Modifier.width(5.dp))
+                            Text("Tapping with this", color = D.Black, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                        }
+                    } else {
+                        Text("Use this one", color = D.Black.copy(alpha = .6f), fontSize = 13.sp,
+                            fontWeight = FontWeight.SemiBold)
+                    }
+                }
+            }
+        }
+        if (list.isEmpty()) {
+            Text("No wallets linked yet.", color = D.Quiet, fontSize = 14.sp)
+        }
+        Spacer(Modifier.height(10.dp))
+        SecondaryButton("Done", onClose, Modifier.fillMaxWidth())
+        Spacer(Modifier.height(20.dp))
+    }
+}
+
+/**
  * The people you can pay without tapping, as one dark pill across the top.
  *
  * A tap is the fastest way to pay someone standing in front of you and the slowest way to pay
@@ -896,6 +1106,37 @@ private fun ContactStrip(list: List<Contact>) {
  * read as a stack rather than a smear. The ring is the pill, not white: on a dark pill a white
  * ring would draw more than the faces do.
  */
+/**
+ * Someone's phone, or their initial when we don't know it.
+ *
+ * The brand is what a person recognises across a table — "the OnePlus", "the Seeker" — which
+ * is the whole reason the payload carries it. A letter is the fallback, not the default.
+ */
+@Composable
+private fun Face(c: Contact, size: Dp, ring: Color? = null) {
+    val look = Brand.look(c.brand)
+    val tint = if (c.seeker) D.Blue else D.Quiet
+    Box(
+        Modifier.size(size).clip(CircleShape)
+            .then(if (ring != null) Modifier.background(ring).padding(2.dp) else Modifier),
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(
+            Modifier.fillMaxSize().clip(CircleShape)
+                .background(look?.colour ?: tint.copy(alpha = .16f)),
+            contentAlignment = Alignment.Center,
+        ) {
+            when {
+                look == null -> Text(c.label.take(1).uppercase(), color = tint,
+                    fontSize = size.value.times(0.38f).sp, fontWeight = FontWeight.Bold, fontFamily = Display)
+                look.picture -> Image(painterResource(look.drawable), contentDescription = null,
+                    modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+                else -> HIcon(look.drawable, D.White, size * 0.5f)
+            }
+        }
+    }
+}
+
 @Composable
 private fun SendToPill(list: List<Contact>, onPick: (Contact) -> Unit) {
     val shown = list.take(3)
@@ -914,18 +1155,8 @@ private fun SendToPill(list: List<Contact>, onPick: (Contact) -> Unit) {
         Spacer(Modifier.weight(1f))
         Row(horizontalArrangement = Arrangement.spacedBy((-11).dp)) {
             shown.forEach { c ->
-                val tint = if (c.seeker) D.Blue else D.Quiet
-                Box(
-                    Modifier.size(34.dp).clip(CircleShape).background(D.Black)
-                        .clickable(remember { MutableInteractionSource() }, indication = null) { onPick(c) }
-                        .padding(2.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Box(Modifier.fillMaxSize().background(tint.copy(alpha = .22f), CircleShape),
-                        contentAlignment = Alignment.Center) {
-                        Text(c.label.take(1).uppercase(), color = D.White, fontSize = 13.sp,
-                            fontWeight = FontWeight.Bold, fontFamily = Display)
-                    }
+                Box(Modifier.clickable(remember { MutableInteractionSource() }, indication = null) { onPick(c) }) {
+                    Face(c, 34.dp, ring = D.Black)
                 }
             }
         }

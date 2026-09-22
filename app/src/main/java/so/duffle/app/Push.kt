@@ -229,7 +229,7 @@ class TapMessagingService : FirebaseMessagingService() {
                 if (card.validate() != null) return
                 // false, not `genesis != null`: that is their claim. Contacts.verify writes the
                 // chain's answer when the popup looks it up.
-                Contacts(this).record(card.address, card.label, false)
+                Contacts(this).record(card.address, card.label, false, brand = card.brand)
                 Push.showTapped(this, card)
             }
         }

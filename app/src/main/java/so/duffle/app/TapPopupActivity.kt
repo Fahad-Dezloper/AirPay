@@ -199,7 +199,7 @@ class TapPopupActivity : ComponentActivity() {
         Log.i(TAG, "popup for ${payload.label} via ${intent.getStringExtra(EXTRA_FROM) ?: intent.action}")
         Push.cancel(this, payload.address)
         Haptics.contact(this)
-        Contacts(this).record(payload.address, payload.label, false)
+        Contacts(this).record(payload.address, payload.label, false, brand = payload.brand)
 
         if (payload is TapPayload.Request) {
             Push.cancel(this, payload.request.reference)

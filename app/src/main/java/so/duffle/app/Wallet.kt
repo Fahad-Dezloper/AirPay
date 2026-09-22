@@ -29,6 +29,9 @@ class Wallet(private val activity: ComponentActivity) {
     private val sender = ActivityResultSender(activity)
     private val prefs = activity.getSharedPreferences("wallet", Context.MODE_PRIVATE)
 
+    /** Every wallet this phone has linked. The selected one is the one a tap pays from. */
+    val linked = Wallets(activity)
+
     // ConnectionIdentity takes (identityUri, iconUri, identityName) positionally in 2.1.1.
     private val adapter = MobileWalletAdapter(
         ConnectionIdentity(
@@ -39,13 +42,40 @@ class Wallet(private val activity: ComponentActivity) {
     ).apply {
         // Devnet until the flow is proven end to end. Mainnet is a one-line change.
         blockchain = Solana.Devnet
-        // Restore a previous session so a relaunch does not force the user to reconnect.
-        prefs.getString(KEY_TOKEN, null)?.let { authToken = it }
+        // Restore the selected wallet's session so a relaunch does not force a reconnect.
+        (linked.selected()?.token ?: prefs.getString(KEY_TOKEN, null))?.let { authToken = it }
+    }
+
+    init {
+        // A wallet connected before Duffle could hold more than one. Without this it keeps
+        // working and shows as "No wallet", because the list it is meant to appear in is empty.
+        if (linked.all().isEmpty()) {
+            prefs.getString(KEY_ADDRESS, null)?.let { old ->
+                linked.add(old, prefs.getString(KEY_TOKEN, null), "Wallet", null)
+                linked.select(old)
+            }
+        }
     }
 
     /** Base58 address of the connected account, or null when not connected. */
-    var address: String? = prefs.getString(KEY_ADDRESS, null)
+    var address: String? = linked.selected()?.address ?: prefs.getString(KEY_ADDRESS, null)
         private set
+
+    /**
+     * Switches which linked wallet Duffle uses.
+     *
+     * Only the token changes hands. Android still decides which wallet app opens when signing —
+     * there is no way to say "open Phantom" — so this is "which session do we present", not
+     * "which app launches". A token offered to the wrong wallet fails and is retried, which is
+     * the same path a stale token already takes.
+     */
+    fun use(w: Linked) {
+        linked.select(w.address)
+        address = w.address
+        adapter.authToken = w.token
+        prefs.edit().putString(KEY_ADDRESS, w.address).apply()
+        w.token?.let { prefs.edit().putString(KEY_TOKEN, it).apply() }
+    }
 
     sealed interface Outcome {
         data class Ok(val address: String) : Outcome
@@ -53,7 +83,13 @@ class Wallet(private val activity: ComponentActivity) {
         data object Declined : Outcome
     }
 
-    suspend fun connect(): Outcome = try {
+    /**
+     * @param fresh true when adding a wallet rather than resuming one. Presenting an existing
+     *   token asks that same wallet to reauthorize, which is exactly wrong when the user has
+     *   asked for a different one — they would be sent back to the wallet they already have.
+     */
+    suspend fun connect(fresh: Boolean = false): Outcome = try {
+        if (fresh) adapter.authToken = null
         connectInner()
     } catch (e: Exception) {
         Outcome.Failed(e.message ?: "the wallet could not be reached")
@@ -65,6 +101,15 @@ class Wallet(private val activity: ComponentActivity) {
             if (acct == null) Outcome.Failed("wallet returned no account")
             else {
                 val a = Base58.encode(acct.publicKey)
+                // The wallet names itself here, which is the only honest source for the label
+                // on its card: anything else would be us guessing which app the user picked.
+                val w = linked.add(
+                    address = a,
+                    token = r.authResult.authToken,
+                    name = walletName(r.authResult.walletUriBase?.host, acct.accountLabel),
+                    uri = r.authResult.walletUriBase?.toString(),
+                )
+                use(w)
                 remember(a, r.authResult.authToken)
                 Outcome.Ok(a)
             }
@@ -165,9 +210,21 @@ class Wallet(private val activity: ComponentActivity) {
 
     /** A real disconnect: the user asked to sign out. */
     private fun forget() {
-        address = null
+        address?.let { linked.remove(it) }
+        address = linked.selected()?.address
         forgetToken()
-        prefs.edit().remove(KEY_ADDRESS).apply()
+        // Another linked wallet takes over rather than leaving the app with none.
+        linked.selected()?.let { use(it) } ?: prefs.edit().remove(KEY_ADDRESS).apply()
+    }
+
+    /**
+     * A name for the card. The host of `walletUriBase` is what the wallet published about
+     * itself; the account label is the user's own name for the account, which beats a domain.
+     */
+    private fun walletName(host: String?, accountLabel: String?): String {
+        accountLabel?.takeIf { it.isNotBlank() }?.let { return it.take(24) }
+        val h = host?.removePrefix("www.")?.substringBefore('.') ?: return "Wallet"
+        return h.replaceFirstChar { it.uppercase() }
     }
 
     sealed interface SendOutcome {

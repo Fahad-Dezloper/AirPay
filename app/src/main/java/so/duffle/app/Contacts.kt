@@ -24,6 +24,8 @@ data class Contact(
     var lastTapMillis: Long,
     var taps: Int,
     var totalPaid: Double = 0.0,
+    /** Their phone, from [Brand]: what to draw instead of an initial. */
+    val brand: String? = null,
 ) {
     val short: String get() = "${address.take(6)}…${address.takeLast(4)}"
 }
@@ -47,13 +49,13 @@ class Contacts(ctx: Context) {
      * mistake the confirm sheet made before it waited for the mainnet lookup. Callers who have
      * only the claim pass false and let [verify] fill it in when the answer arrives.
      */
-    fun record(address: String, label: String, seeker: Boolean, paid: Double = 0.0): Boolean {
+    fun record(address: String, label: String, seeker: Boolean, paid: Double = 0.0, brand: String? = null): Boolean {
         val list = load().toMutableList()
         val now = System.currentTimeMillis()
         val existing = list.indexOfFirst { it.address == address }
         val isNew = existing < 0
         if (isNew) {
-            list.add(Contact(address, label, seeker, now, now, 1, paid))
+            list.add(Contact(address, label, seeker, now, now, 1, paid, Brand.keyOrNull(brand)))
         } else {
             val c = list[existing]
             list[existing] = c.copy(
@@ -64,6 +66,7 @@ class Contacts(ctx: Context) {
                 lastTapMillis = now,
                 taps = c.taps + 1,
                 totalPaid = c.totalPaid + paid,
+                brand = Brand.keyOrNull(brand) ?: c.brand,
             )
         }
         save(list)
@@ -99,6 +102,7 @@ class Contacts(ctx: Context) {
                         address = o.getString("a"),
                         label = o.optString("l"),
                         seeker = o.optBoolean("s"),
+                        brand = o.optString("b").takeIf { it.isNotBlank() },
                         firstTapMillis = o.optLong("f"),
                         lastTapMillis = o.optLong("t"),
                         taps = o.optInt("n", 1),
@@ -117,6 +121,7 @@ class Contacts(ctx: Context) {
             arr.put(
                 JSONObject().apply {
                     put("a", c.address); put("l", c.label); put("s", c.seeker)
+                    c.brand?.let { put("b", it) }
                     put("f", c.firstTapMillis); put("t", c.lastTapMillis)
                     put("n", c.taps); put("p", c.totalPaid)
                 }
