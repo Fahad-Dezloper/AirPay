@@ -157,6 +157,18 @@ def make_handler(service, helius_auth: str | None, limiter: RateLimit | None = N
                         return self._json(200, service.rpc.forward(body))
                     except Exception:
                         return self._json(502, {"error": "upstream unavailable"})
+                if path == "/v1/rpc/mainnet":
+                    # The one cluster where this app's money is real: paying a Bitrefill
+                    # invoice. Same whitelist as devnet, because a proxy that forwards
+                    # anything is a proxy that forwards something regrettable.
+                    if body.get("method") not in Rpc.PROXYABLE:
+                        return self._json(400, {"error": f"method not allowed: {body.get('method')}"})
+                    if service.facts is None or getattr(service.facts, "mainnet", None) is None:
+                        return self._json(503, {"error": "no mainnet endpoint configured"})
+                    try:
+                        return self._json(200, service.facts.mainnet.forward(body))
+                    except Exception:
+                        return self._json(502, {"error": "upstream unavailable"})
                 if path == "/v1/withdrawals":
                     try:
                         return self._json(200, {"told": service.withdraw(body.get("reference"))})
@@ -170,7 +182,8 @@ def make_handler(service, helius_auth: str | None, limiter: RateLimit | None = N
                 if path == "/v1/shop/invoice":
                     try:
                         return self._json(200, shop.invoice(
-                            str(body.get("product_id") or ""), body.get("value")))
+                            str(body.get("product_id") or ""), body.get("value"),
+                            phone_number=body.get("phone_number") or None))
                     except Exception as e:
                         # Includes "out of stock" and "no such product", which are answers
                         # rather than faults — the app shows them as the reason it cannot buy.

@@ -134,16 +134,23 @@ class Shop:
 
     # -- paying ------------------------------------------------------------------------------
 
-    def invoice(self, product_id: str, value, payment_method: str = "usdc_solana") -> dict:
+    def invoice(self, product_id: str, value, phone_number: str | None = None,
+                payment_method: str = "usdc_solana") -> dict:
         """Asks for a price, and gets back somewhere to pay it.
 
         `auto_pay` is false on purpose: it would let an account balance settle the order without
         anyone signing anything, which is the opposite of what this app is for.
+
+        A phone refill credits a number directly and is refused without one, which arrives as a
+        bare 400 — the product's `recipient` field is what says in advance that it is needed.
         """
         if not self.enabled:
             raise RuntimeError("no Bitrefill key configured")
+        item = {"product_id": product_id, "value": value, "quantity": 1}
+        if phone_number:
+            item["phone_number"] = phone_number
         body = {
-            "products": [{"product_id": product_id, "value": value, "quantity": 1}],
+            "products": [item],
             "payment_method": payment_method,
             "auto_pay": False,
         }
@@ -194,5 +201,15 @@ class Shop:
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.api_key}",
         })
-        with urllib.request.urlopen(req, timeout=30) as r:
-            return json.loads(r.read())
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            # Bitrefill puts the reason in the body; the status line alone says only "400",
+            # which is the difference between "that needs a phone number" and no idea at all.
+            detail = ""
+            try:
+                detail = e.read().decode("utf-8", "replace")[:300]
+            except Exception:
+                pass
+            raise RuntimeError(f"{e.code} {detail}".strip()) from None

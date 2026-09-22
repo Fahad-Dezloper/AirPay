@@ -32,6 +32,15 @@ object ServerClient {
     /** Solana reads and sends, borrowed from the server's provider. See Chain.post. */
     val rpcUrl get() = "$base/v1/rpc"
 
+    /**
+     * The same, on mainnet — used only by the shop, where the money is real.
+     *
+     * Null without a server, and deliberately so: there is no public fallback here. A mainnet
+     * transfer that quietly went somewhere else would cost someone actual USDC, so no server
+     * means no purchase rather than a guess at an endpoint.
+     */
+    val mainnetRpcUrl get() = if (enabled) "$base/v1/rpc/mainnet" else null
+
     sealed interface Event
     data class Paid(val reference: String, val signature: String) : Event
     data class Requested(val request: PayRequest) : Event

@@ -20,6 +20,10 @@ def load_dotenv() -> None:
     """Read duffle/.env (or ./.env) into the environment without overriding real variables.
     Secrets stay in a gitignored file instead of on a command line, where `ps` would show them."""
     here = Path.cwd()
+    # Both files, not the first one found. server/.env holds the path to the Firebase key and
+    # duffle/.env holds everything else; stopping at the first meant a local run silently saw
+    # none of the real secrets, because the small one happens to be nearer. setdefault keeps a
+    # real environment variable winning over both, which is how Docker passes them in.
     for candidate in (here / ".env", here.parent / ".env"):
         if not candidate.is_file():
             continue
@@ -28,7 +32,6 @@ def load_dotenv() -> None:
             if line and not line.startswith("#") and "=" in line:
                 key, value = line.split("=", 1)
                 os.environ.setdefault(key.strip(), value.strip().strip("'\""))
-        return
 
 
 def main() -> None:
