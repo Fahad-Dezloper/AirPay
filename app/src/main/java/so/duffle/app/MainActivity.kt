@@ -46,6 +46,8 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.graphics.drawscope.Stroke
 import android.content.Intent
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
@@ -131,6 +133,11 @@ class MainActivity : ComponentActivity() {
     private var balance by mutableStateOf<Chain.Balance?>(null)
     /** What this wallet has earned, for the strip on the home page. */
     private var rewardSummary by mutableStateOf<Rewards.Summary?>(null)
+    /** The catalogue, once the server has been asked. Empty means nothing to show. */
+    private var shopSections by mutableStateOf<List<Shop.Section>>(emptyList())
+    /** The section being browsed, and the product opened inside it. */
+    private var shopSection by mutableStateOf<Shop.Section?>(null)
+    private var shopProduct by mutableStateOf<Shop.Product?>(null)
     /** What the other phone shows when you tap them. A model number is not a name. */
     private var myName by mutableStateOf("")
     private var renaming by mutableStateOf(false)
@@ -218,6 +225,107 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * Buys one thing, with real USDC, on mainnet.
+     *
+     * The invoice is asked for at the moment of buying rather than held from when the list was
+     * drawn: a price in USDC for goods priced in rupees is a quote against a moving rate, and
+     * an old one is the difference between paying and being refused.
+     */
+    private fun buy(product: Shop.Product, value: String) {
+        val payer = connected
+        if (payer == null) {
+            status = Status.Problem("Connect a wallet first", "The shop pays from your wallet.")
+            return
+        }
+        if (product.needsPhone) {
+            // The number is the product's own requirement, and Bitrefill says so plainly.
+            // Collecting it properly is the next piece; refusing honestly beats a 400.
+            status = Status.Problem("Needs a phone number",
+                "${product.name.removeSuffix(" India")} credits a number directly — that's not wired up yet.")
+            return
+        }
+        lifecycleScope.launch {
+            busy = true
+            try {
+                push("shop: asking for a price…")
+                val inv = Shop.invoice(product.id, value)
+                if (inv == null) {
+                    status = Status.Problem("Couldn't get a price", "The shop didn't answer. Try again.")
+                    return@launch
+                }
+                push("shop: ${inv.shown} to ${inv.address.take(8)}…")
+                status = Status.Working("Approve ${inv.shown} in your wallet")
+                val built = withContext(Dispatchers.IO) {
+                    Chain.buildTokenTransfer(
+                        payer = payer, recipient = inv.address, mint = Shop.USDC_MAINNET,
+                        units = inv.amount, decimals = Shop.USDC_DECIMALS,
+                        reference = PayRequest.newReference(), symbol = "USDC",
+                        mainnet = true,
+                    )
+                }
+                when (built) {
+                    is Chain.Built.Bad -> status = Status.Problem("Can't pay this", built.why)
+                    is Chain.Built.Offline -> status = Status.Problem("You're offline", "Nothing was sent.")
+                    is Chain.Built.NotEnough -> status = Status.Problem(
+                        "Not enough USDC",
+                        "This needs ${inv.shown} of real USDC on mainnet, in the wallet you have selected.")
+                    is Chain.Built.Ok -> {
+                        // The quote is checked again here rather than only when it was made:
+                        // the wallet may have been open for a while.
+                        if (inv.expired) {
+                            status = Status.Problem("Price expired",
+                                "That quote is over two minutes old. Nothing was sent — try again.")
+                            return@launch
+                        }
+                        when (val signed = wallet.signOnly(built.tx)) {
+                            is Wallet.SendOutcome.Signed -> {
+                                if (inv.expired) {
+                                    status = Status.Problem("Price expired",
+                                        "The quote died while your wallet was open. Nothing was sent.")
+                                    return@launch
+                                }
+                                when (val sent = withContext(Dispatchers.IO) { Chain.submit(signed.tx, mainnet = true) }) {
+                                    is Chain.Submitted.Ok -> {
+                                        push("✓ shop: paid ${inv.shown} — ${sent.signature.take(12)}…")
+                                        status = Status.Sent(sent.signature)
+                                        // Delivery trails the payment by seconds.
+                                        launch { watchOrder(inv) }
+                                    }
+                                    is Chain.Submitted.Rejected -> status = Status.Problem(
+                                        "Payment refused",
+                                        if (sent.why.contains("blockhash", true))
+                                            "It took too long and expired. Nothing was sent — try again."
+                                        else sent.why)
+                                    Chain.Submitted.Offline -> status = Status.Problem(
+                                        "You're offline", "It was signed but never sent.")
+                                }
+                            }
+                            is Wallet.SendOutcome.Failed -> status = Status.Problem("Not bought", signed.why)
+                            Wallet.SendOutcome.NeedsReconnect -> status = Status.Problem(
+                                "Reconnect your wallet", "The session ended. Connect again and retry.")
+                        }
+                    }
+                }
+            } finally {
+                busy = false
+            }
+        }
+    }
+
+    /** Asks what became of an order until it is delivered, or until asking stops being useful. */
+    private suspend fun watchOrder(inv: Shop.Invoice) {
+        repeat(12) {
+            delay(5_000)
+            val st = Shop.order(inv.id) ?: return@repeat
+            push("shop: order $st")
+            if (st == "delivered") {
+                push("✓ delivered")
+                return
+            }
+        }
+    }
+
     /** Hands the system an invite to pass on. Real, and no more than it says. */
     private fun shareInvite() {
         val me = Identity.label(this)
@@ -236,6 +344,9 @@ class MainActivity : ComponentActivity() {
         walletList = wallet.linked.all()
         balance = null
         rewardSummary = null
+        if (shopSections.isEmpty()) {
+            lifecycleScope.launch { Shop.sections()?.let { shopSections = it } }
+        }
         val addr = connected ?: return
         lifecycleScope.launch {
             val b = withContext(Dispatchers.IO) { Chain.balance(addr) }
@@ -463,8 +574,26 @@ class MainActivity : ComponentActivity() {
                         }
 
                         if (tab != Tab.TAP) {
-                            BackHeader(if (tab == Tab.REQUESTS) "Activity" else "Earn") { tab = Tab.TAP }
+                            BackHeader(
+                                when (tab) {
+                                    Tab.REQUESTS -> "Activity"
+                                    Tab.REWARDS -> "Earn"
+                                    else -> shopSection?.title ?: "Pay a bill"
+                                },
+                            ) { tab = Tab.TAP; shopSection = null; shopProduct = null }
                             Spacer(Modifier.height(16.dp))
+                        }
+
+                        if (tab == Tab.SHOP) {
+                            shopSection?.let { sec ->
+                                ShopSection(
+                                    section = sec,
+                                    picked = shopProduct,
+                                    onPick = { shopProduct = it },
+                                    onBuy = { p, v -> buy(p, v) },
+                                )
+                            }
+                            return@Column
                         }
 
                         if (tab == Tab.REWARDS) {
@@ -580,6 +709,18 @@ class MainActivity : ComponentActivity() {
                                 onReferrals = { shareInvite() },
                             )
                         }
+                        if (shopSections.isNotEmpty()) {
+                            Spacer(Modifier.height(22.dp))
+                            Text("Pay a bill", color = D.Black, fontSize = 17.sp,
+                                fontWeight = FontWeight.Bold, modifier = Modifier.padding(vertical = 4.dp))
+                            Spacer(Modifier.height(10.dp))
+                            ShopTiles(shopSections) { sec ->
+                                shopSection = sec
+                                shopProduct = null
+                                tab = Tab.SHOP
+                            }
+                        }
+
                         if (openCount > 0 || toPay.isNotEmpty() || owed.isNotEmpty()) {
                             Spacer(Modifier.height(14.dp))
                             ActivityStrip(openCount, toPay.count { it.paid } + owed.count { it.paid }) {
@@ -890,7 +1031,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-enum class Tab { TAP, REQUESTS, REWARDS }
+enum class Tab { TAP, REQUESTS, REWARDS, SHOP }
 
 fun ago(at: Long, now: Long = System.currentTimeMillis()): String {
     val s = ((now - at) / 1000).coerceAtLeast(0)
@@ -1507,10 +1648,118 @@ private fun EarnTiles(onRewards: () -> Unit, onOffers: () -> Unit, onReferrals: 
     }
 }
 
-private enum class Mark { Coins, Ticket, Rings }
+private enum class Mark { Coins, Ticket, Rings, Signal, Screen, Receipt, Basket }
+
+/**
+ * One section of the shop: what is in it, and what it costs.
+ *
+ * Everything here is bought with **real USDC on mainnet**, which is the only place in this app
+ * where the money is real — so the screen says so once at the top and again on the button. A
+ * devnet transfer to an invoice address would be a payment into nothing.
+ */
+@Composable
+private fun ShopSection(
+    section: Shop.Section,
+    picked: Shop.Product?,
+    onPick: (Shop.Product?) -> Unit,
+    onBuy: (Shop.Product, String) -> Unit,
+) {
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+        Row(
+            Modifier.fillMaxWidth().padding(bottom = 14.dp).clip(RoundedCornerShape(14.dp))
+                .background(D.Blue.copy(alpha = .08f)).padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            HIcon(R.drawable.hi_info, D.Blue, 17.dp)
+            Spacer(Modifier.width(8.dp))
+            Text("Paid with real USDC on mainnet — taps stay on devnet.",
+                color = D.Blue, fontSize = 12.5.sp, fontWeight = FontWeight.Medium)
+        }
+        section.products.forEach { p ->
+            val open = picked?.id == p.id
+            Column(
+                Modifier.fillMaxWidth().padding(bottom = 8.dp).clip(RoundedCornerShape(16.dp))
+                    .background(D.Fill).clickable { onPick(if (open) null else p) }
+                    .padding(horizontal = 14.dp, vertical = 13.dp),
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(p.name.removeSuffix(" India"), color = D.Black, fontSize = 15.sp,
+                            fontWeight = FontWeight.SemiBold, maxLines = 1)
+                        Text(
+                            when {
+                                p.needsPhone -> "Credited to a phone number"
+                                "online" in p.redemption -> "Code delivered to you"
+                                else -> "${p.values.size} amounts"
+                            },
+                            color = D.Quiet, fontSize = 12.sp,
+                        )
+                    }
+                    HIcon(if (open) R.drawable.hi_arrow_down else R.drawable.hi_arrow_up_right, D.Quiet, 17.dp)
+                }
+                // The denominations only appear for the row that was opened, because 156
+                // products with every price showing is a list nobody reads.
+                AnimatedVisibility(visible = open) {
+                    Column(Modifier.padding(top = 12.dp)) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.horizontalScroll(rememberScrollState())) {
+                            p.values.forEach { v ->
+                                Text(
+                                    "${symbolFor(p.currency)}$v", color = D.White, fontSize = 14.sp,
+                                    fontWeight = FontWeight.Bold, style = Figures,
+                                    modifier = Modifier.clip(RoundedCornerShape(999.dp))
+                                        .background(D.Blue).clickable { onBuy(p, v) }
+                                        .padding(horizontal = 15.dp, vertical = 9.dp),
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Spacer(Modifier.height(20.dp))
+    }
+}
+
+private fun symbolFor(currency: String) = when (currency) {
+    "INR" -> "₹"
+    "USD" -> "$"
+    "EUR" -> "€"
+    else -> "$currency "
+}
+
+/**
+ * What can actually be bought, as tiles.
+ *
+ * The catalogue has 156 products in eight sections; a person opening this wants "top up my
+ * phone", not a shop. So the sections are the doorway and the products live behind them —
+ * and a section with nothing in it is not drawn at all, because a tile that opens an empty
+ * shelf is worse than no tile.
+ */
+@Composable
+private fun ShopTiles(sections: List<Shop.Section>, onOpen: (Shop.Section) -> Unit) {
+    val marks = mapOf(
+        "Phone" to Mark.Signal, "TV & streaming" to Mark.Screen,
+        "Bills & wallets" to Mark.Receipt,
+    )
+    val shown = sections.filter { it.products.isNotEmpty() }.take(4)
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        shown.forEach { sec ->
+            EarnTile(
+                label = when (sec.title) {
+                    "TV & streaming" -> "TV"
+                    "Bills & wallets" -> "Bills"
+                    else -> sec.title
+                },
+                mark = marks[sec.title] ?: Mark.Basket,
+                modifier = Modifier.weight(1f),
+            ) { onOpen(sec) }
+        }
+    }
+}
 
 @Composable
-private fun EarnTile(label: String, mark: Mark, modifier: Modifier, onClick: () -> Unit) {
+private fun EarnTile(label: String, mark: Mark, modifier: Modifier, onClick: () -> Unit) {  // also the shop's tiles
     val interaction = remember { MutableInteractionSource() }
     Column(
         modifier.then(PressScale(interaction)).clip(RoundedCornerShape(18.dp)).background(D.Fill)
@@ -1530,6 +1779,41 @@ private fun EarnTile(label: String, mark: Mark, modifier: Modifier, onClick: () 
                         topLeft = Offset(w * .12f, w * (.52f - i * .19f)),
                         size = Size(w * .76f, w * .3f),
                     )
+                }
+                // Signal arcs, the same idea as the tap mark: something reaching a phone.
+                Mark.Signal -> repeat(3) { i ->
+                    val r = w * (0.2f + i * 0.17f)
+                    drawArc(
+                        color = blue.copy(alpha = 1f - i * 0.25f),
+                        startAngle = -55f, sweepAngle = 110f, useCenter = false,
+                        topLeft = Offset(w * .22f - r, w * .5f - r),
+                        size = Size(r * 2, r * 2),
+                        style = Stroke(w * .09f, cap = StrokeCap.Round),
+                    )
+                }
+                // A screen on a stand.
+                Mark.Screen -> {
+                    drawRoundRect(blue, Offset(w * .1f, w * .18f), Size(w * .8f, w * .52f),
+                        CornerRadius(w * .1f))
+                    drawRoundRect(blue.copy(alpha = .45f), Offset(w * .36f, w * .74f),
+                        Size(w * .28f, w * .08f), CornerRadius(w * .04f))
+                }
+                // A receipt: a slab with a torn edge along the bottom.
+                Mark.Receipt -> {
+                    drawRoundRect(blue, Offset(w * .18f, w * .12f), Size(w * .64f, w * .62f),
+                        CornerRadius(w * .08f))
+                    repeat(4) { i ->
+                        drawCircle(D.Fill, radius = w * .07f,
+                            center = Offset(w * (.24f + i * .17f), w * .76f))
+                    }
+                }
+                // A basket, for everything that is not one of the three above.
+                Mark.Basket -> {
+                    drawRoundRect(blue, Offset(w * .12f, w * .36f), Size(w * .76f, w * .44f),
+                        CornerRadius(w * .1f))
+                    drawArc(blue.copy(alpha = .5f), 180f, 180f, false,
+                        Offset(w * .28f, w * .12f), Size(w * .44f, w * .44f),
+                        style = Stroke(w * .1f, cap = StrokeCap.Round))
                 }
                 // A ticket: a rounded slab with a bite out of each side.
                 Mark.Ticket -> {
