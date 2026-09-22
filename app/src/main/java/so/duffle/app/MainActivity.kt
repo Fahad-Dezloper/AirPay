@@ -40,6 +40,12 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.foundation.Canvas
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.graphics.drawscope.Stroke
+import android.content.Intent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
@@ -209,6 +215,19 @@ class MainActivity : ComponentActivity() {
             } finally {
                 busy = false
             }
+        }
+    }
+
+    /** Hands the system an invite to pass on. Real, and no more than it says. */
+    private fun shareInvite() {
+        val me = Identity.label(this)
+        runCatching {
+            startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_TEXT,
+                    "$me is paying people by tapping phones with Duffle. " +
+                        "Tap to pay anyone, no address to type: https://duffle.so")
+            }, "Invite a friend"))
         }
     }
 
@@ -568,6 +587,15 @@ class MainActivity : ComponentActivity() {
                         if (Rewards.enabled) {
                             Spacer(Modifier.height(22.dp))
                             EarnStrip(rewardSummary) { tab = Tab.REWARDS }
+                            Spacer(Modifier.height(10.dp))
+                            EarnTiles(
+                                onRewards = { tab = Tab.REWARDS },
+                                onOffers = { tab = Tab.REWARDS },
+                                // Nothing on the server tracks a referral yet, so this shares an
+                                // invite and claims nothing else. A tile that promised a bonus
+                                // nobody is counting would be the one lie on this screen.
+                                onReferrals = { shareInvite() },
+                            )
                         }
                         if (openCount > 0 || toPay.isNotEmpty() || owed.isNotEmpty()) {
                             Spacer(Modifier.height(14.dp))
@@ -1501,11 +1529,75 @@ private fun PageStrip(
 private fun EarnStrip(summary: Rewards.Summary?, onOpen: () -> Unit) {
     PageStrip(
         icon = R.drawable.hi_gift, tint = D.Blue,
-        title = summary?.let { "${it.total} SKR earned" } ?: "Earn SKR by paying in person",
-        detail = summary?.let { "${it.weekPayments} of ${it.weekAllows} this week" }
-            ?: "Offers and rewards for Seeker owners",
+        title = "Offers and rewards",
+        detail = summary?.let { "${it.total} SKR · ${it.weekPayments} of ${it.weekAllows} this week" }
+            ?: "For Seeker owners who pay in person",
         onOpen = onOpen,
     )
+}
+
+/**
+ * Rewards, offers, referrals — three ways in, side by side.
+ *
+ * Drawn rather than iconed, and square rather than round, because the obvious version of this
+ * row is three flat circles and that is a shape people have already seen in every payments app.
+ * The marks are built from Duffle's own vocabulary: the discs of a balance, the notch of a
+ * ticket, two rings meeting the way the avatars do on a tap.
+ */
+@Composable
+private fun EarnTiles(onRewards: () -> Unit, onOffers: () -> Unit, onReferrals: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        EarnTile("Rewards", Mark.Coins, Modifier.weight(1f), onRewards)
+        EarnTile("Offers", Mark.Ticket, Modifier.weight(1f), onOffers)
+        EarnTile("Referrals", Mark.Rings, Modifier.weight(1f), onReferrals)
+    }
+}
+
+private enum class Mark { Coins, Ticket, Rings }
+
+@Composable
+private fun EarnTile(label: String, mark: Mark, modifier: Modifier, onClick: () -> Unit) {
+    val interaction = remember { MutableInteractionSource() }
+    Column(
+        modifier.then(PressScale(interaction)).clip(RoundedCornerShape(18.dp)).background(D.Fill)
+            .clickable(interaction, indication = null, onClick = onClick)
+            .padding(vertical = 16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Canvas(Modifier.size(34.dp)) {
+            val w = size.width
+            val blue = D.Blue
+            when (mark) {
+                // Three discs seen from the side: a balance, stacked.
+                Mark.Coins -> repeat(3) { i ->
+                    drawOval(
+                        color = if (i == 0) blue else blue.copy(alpha = .3f + .2f * (2 - i)),
+                        topLeft = Offset(w * .12f, w * (.52f - i * .19f)),
+                        size = Size(w * .76f, w * .3f),
+                    )
+                }
+                // A ticket: a rounded slab with a bite out of each side.
+                Mark.Ticket -> {
+                    drawRoundRect(blue, Offset(w * .08f, w * .22f), Size(w * .84f, w * .56f),
+                        CornerRadius(w * .14f))
+                    drawCircle(D.Fill, radius = w * .12f, center = Offset(w * .08f, w * .5f))
+                    drawCircle(D.Fill, radius = w * .12f, center = Offset(w * .92f, w * .5f))
+                }
+                // Two rings meeting, the way the avatars meet when phones touch.
+                Mark.Rings -> {
+                    val r = w * .26f
+                    drawCircle(blue.copy(alpha = .35f), r, Offset(w * .34f, w * .5f), style = Stroke(w * .11f))
+                    drawCircle(blue, r, Offset(w * .66f, w * .5f), style = Stroke(w * .11f))
+                }
+            }
+        }
+        Spacer(Modifier.height(10.dp))
+        Text(label, color = D.Black, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+    }
 }
 
 @Composable
