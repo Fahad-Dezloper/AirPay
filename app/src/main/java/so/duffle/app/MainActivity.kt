@@ -1225,35 +1225,57 @@ private fun WalletsScreen(
 private fun People(list: List<Contact>, onPick: (Contact) -> Unit) {
     Column(Modifier.fillMaxWidth()) {
         SectionLabel("PEOPLE")
-        list.forEach { c ->
-            // Asked once per person, on mainnet where SNS lives. Null stays null: an address
-            // with no domain is the ordinary case, not a failure worth a placeholder.
-            val name by produceState<String?>(initialValue = null, c.address) { value = Names.sol(c.address) }
-            val interaction = remember { MutableInteractionSource() }
-            Row(
-                Modifier.fillMaxWidth().padding(vertical = 5.dp).then(PressScale(interaction))
-                    .clip(RoundedCornerShape(16.dp)).background(D.Fill)
-                    .clickable(interaction, indication = null) { onPick(c) }
-                    .padding(horizontal = 12.dp, vertical = 11.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Face(c, 44.dp)
-                    if (c.seeker) {
-                        Box(Modifier.align(Alignment.BottomEnd).size(17.dp).background(D.Fill, CircleShape),
-                            contentAlignment = Alignment.Center) {
-                            HIcon(R.drawable.hi_verified, D.Blue, 15.dp)
+        Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+            list.take(5).forEach { c ->
+                // Asked once per person, on mainnet where SNS lives. Null stays null: an
+                // address with no domain is the ordinary case, not a failure worth a
+                // placeholder.
+                val name by produceState<String?>(initialValue = null, c.address) { value = Names.sol(c.address) }
+                val interaction = remember { MutableInteractionSource() }
+                Column(
+                    Modifier.width(66.dp).then(PressScale(interaction)).clip(RoundedCornerShape(14.dp))
+                        .clickable(interaction, indication = null) { onPick(c) }.padding(vertical = 4.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Box(Modifier.size(54.dp), contentAlignment = Alignment.Center) {
+                        // The initial, because there is no picture of a person to show and a
+                        // stock silhouette would only pretend there was.
+                        Box(
+                            Modifier.fillMaxSize().clip(CircleShape).background(D.Fill),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text((name ?: c.label).take(1).uppercase(), color = D.Quiet,
+                                fontSize = 21.sp, fontWeight = FontWeight.Bold, fontFamily = Display)
+                        }
+                        // Their phone, small, in the corner: it says whose it is without
+                        // competing with the initial for the middle of the circle.
+                        Brand.look(c.brand)?.let { look ->
+                            Box(
+                                Modifier.align(Alignment.TopEnd).size(21.dp).clip(CircleShape)
+                                    .background(D.White).padding(1.5.dp).clip(CircleShape)
+                                    .background(look.colour),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                if (look.picture) {
+                                    Image(painterResource(look.drawable), contentDescription = null,
+                                        modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+                                } else {
+                                    HIcon(look.drawable, D.White, 12.dp)
+                                }
+                            }
+                        }
+                        if (c.seeker) {
+                            Box(
+                                Modifier.align(Alignment.BottomEnd).size(19.dp).clip(CircleShape)
+                                    .background(D.White),
+                                contentAlignment = Alignment.Center,
+                            ) { HIcon(R.drawable.hi_verified, D.Blue, 17.dp) }
                         }
                     }
+                    Spacer(Modifier.height(7.dp))
+                    Text(name ?: c.label.ifBlank { "Unknown" }, color = D.Black, fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium, maxLines = 1, textAlign = TextAlign.Center)
                 }
-                Spacer(Modifier.width(12.dp))
-                // The model number is the name until they have a better one. The address used
-                // to sit under it and earned nothing: four characters of a key identify nobody,
-                // and the face and the model already say who this is.
-                Text(name ?: c.label.ifBlank { "Unknown phone" }, color = D.Black,
-                    fontSize = 15.sp, fontWeight = FontWeight.SemiBold, maxLines = 1,
-                    modifier = Modifier.weight(1f))
-                HIcon(R.drawable.hi_arrow_up_right, D.Quiet, 17.dp)
             }
         }
     }
