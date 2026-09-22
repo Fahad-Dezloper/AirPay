@@ -16,11 +16,12 @@ import org.json.JSONObject
  * **Only the auth token is stored, never a key.** Duffle cannot sign anything on its own; each
  * of these is a session with a wallet app that can.
  *
- * An honest limitation, recorded here because it shapes the UI: Mobile Wallet Adapter has no way
- * to say "open Phantom specifically". Android shows its own chooser when more than one wallet is
- * installed, and a token issued by one wallet means nothing to another. Selecting a wallet here
- * sets which token is presented; the person still picks the matching app when it opens. The app
- * must not claim otherwise.
+ * **How a wallet is reached** decides what this list can promise. The Seeker ships a persistent
+ * preferred activity for the `solana-wallet` scheme, so every untargeted intent lands in Seeker
+ * Wallet no matter which session is offered — and a token from one wallet means nothing to
+ * another. Wallets linked through the picker therefore carry their [Linked.pkg] and are reached
+ * by explicit intent, which skips that routing; see [WalletLink]. Anything linked before the
+ * picker existed has no package and keeps the original path.
  */
 data class Linked(
     val address: String,
@@ -31,6 +32,14 @@ data class Linked(
     /** `walletUriBase` from the authorization, which is how the wallet is recognised again. */
     val uri: String?,
     val addedAt: Long,
+    /**
+     * The wallet app's package, when it was linked through the picker.
+     *
+     * Its presence is what decides how this wallet is reached: with it, an explicit intent that
+     * skips the Seeker's ROM-level default; without it, the original adapter. A wallet linked
+     * before the picker existed has none, and keeps working the way it always did.
+     */
+    val pkg: String? = null,
 ) {
     val short: String get() = "${address.take(4)}…${address.takeLast(4)}"
 
@@ -80,6 +89,7 @@ class Wallets(ctx: Context) {
                 name = o.optString("n").ifBlank { "Wallet" },
                 uri = o.optString("u").ifBlank { null },
                 addedAt = o.optLong("at"),
+                pkg = o.optString("p").ifBlank { null },
             )
         }
     } catch (e: Exception) {
@@ -102,7 +112,7 @@ class Wallets(ctx: Context) {
      * caller's decision: connecting a second wallet to look at it is not the same as choosing
      * to pay from it.
      */
-    fun add(address: String, token: String?, name: String, uri: String?): Linked {
+    fun add(address: String, token: String?, name: String, uri: String?, pkg: String? = null): Linked {
         val existing = all().firstOrNull { it.address == address }
         val linked = Linked(
             address = address,
@@ -112,10 +122,16 @@ class Wallets(ctx: Context) {
             name = name.ifBlank { existing?.name ?: "Wallet" },
             uri = uri ?: existing?.uri,
             addedAt = existing?.addedAt ?: System.currentTimeMillis(),
+            pkg = pkg ?: existing?.pkg,
         )
         save(all().filterNot { it.address == address } + linked)
         if (prefs.getString(KEY_SELECTED, null) == null) select(address)
         return linked
+    }
+
+    /** The picker's name for a wallet beats a domain: "Phantom", not "phantom.app". */
+    fun rename(address: String, name: String) {
+        save(all().map { if (it.address == address) it.copy(name = name) else it })
     }
 
     /** The token went stale. The wallet stays listed — it is still theirs, it just needs a tap. */
@@ -139,6 +155,7 @@ class Wallets(ctx: Context) {
                 w.token?.let { put("t", it) }
                 put("n", w.name)
                 w.uri?.let { put("u", it) }
+                w.pkg?.let { put("p", it) }
                 put("at", w.addedAt)
             })
         }

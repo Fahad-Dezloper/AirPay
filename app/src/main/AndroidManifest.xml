@@ -10,6 +10,18 @@
     <uses-feature android:name="android.hardware.nfc" android:required="false" />
     <uses-feature android:name="android.hardware.nfc.hce" android:required="false" />
 
+    <!--
+        Android 11+ hides other apps unless we say what we are looking for. Without this the
+        wallet picker sees nothing: queryIntentActivities returns an empty list, not an error,
+        so it would simply look as though no wallets were installed.
+    -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="solana-wallet" />
+        </intent>
+    </queries>
+
     <application
         android:label="@string/app_name"
         android:icon="@mipmap/ic_launcher"

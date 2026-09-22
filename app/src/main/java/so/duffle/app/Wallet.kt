@@ -32,8 +32,17 @@ class Wallet(private val activity: ComponentActivity) {
     /** Every wallet this phone has linked. The selected one is the one a tap pays from. */
     val linked = Wallets(activity)
 
-    // ConnectionIdentity takes (identityUri, iconUri, identityName) positionally in 2.1.1.
-    private val adapter = MobileWalletAdapter(
+    /**
+     * A new adapter, carrying only the session it is given.
+     *
+     * Rebuilt rather than reconfigured because the adapter privately remembers
+     * `walletUriBase` from the last authorization and re-associates straight to **that** wallet.
+     * There is no setter for it, so clearing `authToken` is not enough: "Add wallet" kept
+     * opening the wallet already connected, which is the opposite of what was asked. A fresh
+     * instance has no wallet to go back to, so Android asks which one to use.
+     */
+    private fun newAdapter(token: String?) = MobileWalletAdapter(
+        // ConnectionIdentity takes (identityUri, iconUri, identityName) positionally in 2.1.1.
         ConnectionIdentity(
             Uri.parse(IDENTITY_URI),
             Uri.parse("favicon.ico"),
@@ -42,9 +51,11 @@ class Wallet(private val activity: ComponentActivity) {
     ).apply {
         // Devnet until the flow is proven end to end. Mainnet is a one-line change.
         blockchain = Solana.Devnet
-        // Restore the selected wallet's session so a relaunch does not force a reconnect.
-        (linked.selected()?.token ?: prefs.getString(KEY_TOKEN, null))?.let { authToken = it }
+        token?.let { authToken = it }
     }
+
+    // Restores the selected wallet's session so a relaunch does not force a reconnect.
+    private var adapter = newAdapter(linked.selected()?.token ?: prefs.getString(KEY_TOKEN, null))
 
     init {
         // A wallet connected before Duffle could hold more than one. Without this it keeps
@@ -72,7 +83,8 @@ class Wallet(private val activity: ComponentActivity) {
     fun use(w: Linked) {
         linked.select(w.address)
         address = w.address
-        adapter.authToken = w.token
+        // A fresh adapter, so the one we carry is not still pointed at the previous wallet's app.
+        adapter = newAdapter(w.token)
         prefs.edit().putString(KEY_ADDRESS, w.address).apply()
         w.token?.let { prefs.edit().putString(KEY_TOKEN, it).apply() }
     }
@@ -89,7 +101,7 @@ class Wallet(private val activity: ComponentActivity) {
      *   asked for a different one — they would be sent back to the wallet they already have.
      */
     suspend fun connect(fresh: Boolean = false): Outcome = try {
-        if (fresh) adapter.authToken = null
+        if (fresh) adapter = newAdapter(null)
         connectInner()
     } catch (e: Exception) {
         Outcome.Failed(e.message ?: "the wallet could not be reached")
@@ -119,6 +131,30 @@ class Wallet(private val activity: ComponentActivity) {
         is TransactionResult.Failure -> Outcome.Declined
     }
 
+    /**
+     * Links a named wallet app, bypassing the Seeker's ROM-level default for the scheme.
+     *
+     * The picker knows which app the person chose, which the adapter never can — so this is the
+     * only route to a wallet that is not Seeker Wallet on this hardware.
+     */
+    suspend fun link(app: WalletLink.App): Outcome = try {
+        when (val r = WalletLink.authorize(app.pkg) { activity.startActivity(it) }) {
+            is WalletLink.Linking.Failed -> Outcome.Failed(r.why)
+            is WalletLink.Linking.Ok -> {
+                val w = linked.add(
+                    address = r.address, token = r.token,
+                    // The app's own name on this phone, which is what the person just tapped.
+                    name = app.label, uri = r.uri, pkg = app.pkg,
+                )
+                linked.rename(r.address, app.label)
+                use(w)
+                Outcome.Ok(r.address)
+            }
+        }
+    } catch (e: Exception) {
+        Outcome.Failed(e.message ?: "that wallet did not answer")
+    }
+
     suspend fun disconnect() {
         runCatching { adapter.disconnect(sender) }
         forget()
@@ -138,6 +174,19 @@ class Wallet(private val activity: ComponentActivity) {
      * exactly what is wrong — is a poor way to end a tap.
      */
     suspend fun signOnly(unsignedTx: ByteArray): SendOutcome {
+        // A wallet linked through the picker is reached by name, because an untargeted intent
+        // would be routed to Seeker Wallet by the Seeker's own default — which would then be
+        // handed a session token issued by a different app, and refuse it.
+        linked.selected()?.takeIf { it.pkg != null && it.token != null }?.let { w ->
+            return when (val r = WalletLink.sign(w.pkg!!, w.token!!, unsignedTx) { activity.startActivity(it) }) {
+                is WalletLink.Signing.Signed -> SendOutcome.Signed(r.tx)
+                is WalletLink.Signing.Failed -> SendOutcome.Failed(r.why)
+                WalletLink.Signing.NeedsReconnect -> {
+                    linked.clearToken(w.address)
+                    SendOutcome.Failed("${w.name} needs linking again — open Wallets and add it.")
+                }
+            }
+        }
         val first = attemptSend(unsignedTx)
         if (first !is SendOutcome.NeedsReconnect) return first
 

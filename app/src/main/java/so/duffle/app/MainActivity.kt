@@ -27,6 +27,9 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.Dp
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.core.graphics.drawable.toBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.painter.BitmapPainter
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
@@ -104,6 +107,8 @@ class MainActivity : ComponentActivity() {
     private var busy by mutableStateOf(false)
     /** The wallet cards are open, covering the tab. */
     private var cards by mutableStateOf(false)
+    /** The installed wallet apps, while choosing which one to link. Null when not choosing. */
+    private var picker by mutableStateOf<List<WalletLink.App>?>(null)
     /** Every linked wallet, re-read whenever one is added, switched or dropped. */
     private var walletList by mutableStateOf<List<Linked>>(emptyList())
     /** The selected wallet's balance. Null while it is being read, or unreadable. */
@@ -163,6 +168,31 @@ class MainActivity : ComponentActivity() {
                     }
                     is Wallet.Outcome.Failed -> push("✗ ${r.why}")
                     Wallet.Outcome.Declined -> push("— wallet declined")
+                }
+            } finally {
+                busy = false
+            }
+        }
+    }
+
+    /** Links one named wallet app, through the explicit-intent path. */
+    private fun linkWallet(app: WalletLink.App) {
+        lifecycleScope.launch {
+            busy = true
+            try {
+                push("opening ${app.label}…")
+                when (val r = wallet.link(app)) {
+                    is Wallet.Outcome.Ok -> {
+                        myGenesis = null
+                        connected = r.address
+                        // The armed request carries the old address until it is rebuilt; the
+                        // effect keyed on `connected` does that, so nothing to call here.
+                        TapHostApduService.pending.value = null
+                        refreshWallets()
+                        push("✓ ${app.label} ${r.address.take(6)}…${r.address.takeLast(4)}")
+                    }
+                    is Wallet.Outcome.Failed -> push("✗ ${r.why}")
+                    Wallet.Outcome.Declined -> push("— ${app.label} declined")
                 }
             } finally {
                 busy = false
@@ -390,8 +420,14 @@ class MainActivity : ComponentActivity() {
                                     applyMode(amount)
                                     push("— tapping with ${w.name} ${w.short}")
                                 },
-                                onAdd = { connectWallet(fresh = true) },
+                                onAdd = { picker = WalletLink.installed(this@MainActivity) },
                                 onClose = { cards = false },
+                                picker = picker,
+                                onPickApp = { app ->
+                                    picker = null
+                                    linkWallet(app)
+                                },
+                                onClosePicker = { picker = null },
                             )
                             return@Column
                         }
@@ -1028,6 +1064,49 @@ private fun BalanceCard(
  * pretends to be a bank card invites questions this does not answer — there is no balance on it,
  * no number to copy, and nothing to freeze.
  */
+/**
+ * Which wallet app to link, listed from what is actually installed.
+ *
+ * Android will not offer this choice on a Seeker — the ROM routes the whole `solana-wallet`
+ * scheme to Seeker Wallet — so the app has to ask. Real labels and real icons, because a row
+ * saying "app.phantom" is a worse chooser than the one we are replacing.
+ */
+@Composable
+private fun WalletPicker(apps: List<WalletLink.App>, onPick: (WalletLink.App) -> Unit, onClose: () -> Unit) {
+    Column(Modifier.fillMaxWidth()) {
+        Text("Add a wallet", color = D.Black, fontSize = 22.sp, fontWeight = FontWeight.ExtraBold, fontFamily = Display)
+        Spacer(Modifier.height(4.dp))
+        Text("Duffle never sees your keys — the wallet signs.", color = D.Quiet, fontSize = 13.5.sp)
+        Spacer(Modifier.height(16.dp))
+        if (apps.isEmpty()) {
+            Text("No wallet apps found on this phone.", color = D.Quiet, fontSize = 14.sp)
+        }
+        apps.forEach { app ->
+            Row(
+                Modifier.fillMaxWidth().padding(vertical = 5.dp).clip(RoundedCornerShape(16.dp))
+                    .background(D.Fill).clickable { onPick(app) }
+                    .padding(horizontal = 14.dp, vertical = 13.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                val icon = remember(app.pkg) { app.icon?.let { runCatching { it.toBitmap().asImageBitmap() }.getOrNull() } }
+                if (icon != null) {
+                    Image(BitmapPainter(icon), contentDescription = null, modifier = Modifier.size(34.dp).clip(CircleShape))
+                } else {
+                    Box(Modifier.size(34.dp).clip(CircleShape).background(D.Blue.copy(alpha = .15f)),
+                        contentAlignment = Alignment.Center) {
+                        HIcon(R.drawable.hi_wallet, D.Blue, 17.dp)
+                    }
+                }
+                Spacer(Modifier.width(12.dp))
+                Text(app.label, color = D.Black, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                HIcon(R.drawable.hi_arrow_up_right, D.Quiet, 18.dp)
+            }
+        }
+        Spacer(Modifier.height(14.dp))
+        SecondaryButton("Cancel", onClose, Modifier.fillMaxWidth())
+    }
+}
+
 @Composable
 private fun WalletsScreen(
     list: List<Linked>,
@@ -1036,7 +1115,14 @@ private fun WalletsScreen(
     onPick: (Linked) -> Unit,
     onAdd: () -> Unit,
     onClose: () -> Unit,
+    picker: List<WalletLink.App>? = null,
+    onPickApp: (WalletLink.App) -> Unit = {},
+    onClosePicker: () -> Unit = {},
 ) {
+    if (picker != null) {
+        WalletPicker(picker, onPickApp, onClosePicker)
+        return
+    }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("Wallets", color = D.Black, fontSize = 30.sp, fontWeight = FontWeight.ExtraBold, fontFamily = Display)
