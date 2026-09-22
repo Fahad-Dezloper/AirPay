@@ -44,6 +44,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.Canvas
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -104,6 +105,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var wallet: Wallet
     private lateinit var contacts: Contacts
     private lateinit var messages: Messages
+    private lateinit var orders: Orders
     private lateinit var inbox: Inbox
     private lateinit var watch: Watch
 
@@ -152,6 +154,18 @@ class MainActivity : ComponentActivity() {
 
     /** UI mirrors of the two on-disk lists. Disk is the truth; these are re-read after writes. */
     private val notes = mutableStateListOf<Messages.Note>()
+    private val bought = mutableStateListOf<Orders.Order>()
+    /** Offers, held here rather than only in the Earn tab: the bell counts them too. */
+    private var liveOffers by mutableStateOf<List<Rewards.Offer>>(emptyList())
+    /** When the panel was last opened. Bumped in state so the badge clears without a reload. */
+    private var alertsSeen by mutableStateOf(0L)
+    /**
+     * What [alertsSeen] was the moment the panel was opened — which is what the rows are marked
+     * against. Opening the panel counts everything as read, so using the live value would erase
+     * the dots in the same frame that draws them, and the screen would never once show WHICH
+     * of its rows were the new ones.
+     */
+    private var alertsWere by mutableStateOf(0L)
     private val toPay = mutableStateListOf<Inbox.Item>()
     private val owed = mutableStateListOf<Watch.Entry>()
 
@@ -298,6 +312,15 @@ class MainActivity : ComponentActivity() {
                                     is Chain.Submitted.Ok -> {
                                         push("✓ shop: paid ${inv.shown} — ${sent.signature.take(12)}…")
                                         status = Status.Sent(sent.signature)
+                                        // Written down before it is watched. The watcher below
+                                        // dies with the screen; this is what survives it, and
+                                        // what the next launch asks about.
+                                        orders.add(Orders.Order(
+                                            invoiceId = inv.id, name = product.name, value = value,
+                                            paid = inv.shown, signature = sent.signature,
+                                            status = "paid", at = System.currentTimeMillis(),
+                                        ))
+                                        refreshLists()
                                         // Delivery trails the payment by seconds.
                                         launch { watchOrder(inv) }
                                     }
@@ -328,6 +351,8 @@ class MainActivity : ComponentActivity() {
             delay(5_000)
             val st = Shop.order(inv.id) ?: return@repeat
             push("shop: order $st")
+            orders.setStatus(inv.id, st)
+            refreshLists()
             if (st == "delivered") {
                 push("✓ delivered")
                 return
@@ -367,6 +392,34 @@ class MainActivity : ComponentActivity() {
             val r = Rewards.summary(addr)
             if (connected == addr) rewardSummary = r
         }
+        lifecycleScope.launch {
+            // Also read here, not only when the Earn tab opens: the bell has to be able to
+            // say "there is a new offer" from the home screen, which is the whole point of it.
+            val o = Rewards.offers(addr)
+            if (connected == addr && o != null) liveOffers = o
+        }
+    }
+
+    /**
+     * Asks what became of anything bought and not yet delivered.
+     *
+     * Run on every launch, not only right after paying: delivery trails the payment by seconds
+     * and the app is often gone by then. This is the half that used to be missing — the
+     * coroutine watching an order died with the screen and nothing remembered there was one.
+     */
+    private fun catchUpOrders() {
+        val open = orders.waiting()
+        if (open.isEmpty()) return
+        lifecycleScope.launch {
+            for (o in open) {
+                val st = Shop.order(o.invoiceId) ?: continue
+                if (st != o.status) {
+                    orders.setStatus(o.invoiceId, st)
+                    push("shop: ${o.name} — $st")
+                }
+            }
+            refreshLists()
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -376,6 +429,8 @@ class MainActivity : ComponentActivity() {
         connected = wallet.address   // a session persisted from last launch
         contacts = Contacts(this)
         messages = Messages(this)
+        orders = Orders(this)
+        alertsSeen = Alerts.seenAt(this)
         contactCount = contacts.count()
         inbox = Inbox(this)
         watch = Watch(this)
@@ -568,6 +623,18 @@ class MainActivity : ComponentActivity() {
                     // statusBarsPadding, not a guessed top margin: the pill sits at the very
                     // top of the app and was drawing straight through the clock and battery.
                     Column(Modifier.fillMaxSize().statusBarsPadding()) {
+                    // Built here, above everything, because two things read it: the bell's
+                    // count in the header and the panel itself. Derived from the same lists
+                    // the rest of the screen draws, so it cannot drift from them.
+                    val known0 = contacts.all()
+                    val alerts = Alerts.build(
+                        toPay = toPay, owed = owed, notes = notes, orders = bought,
+                        offers = liveOffers,
+                        name = { addr -> known0.firstOrNull { it.address == addr }?.label ?: "Someone" },
+                        offerAt = { id -> Alerts.firstSeen(this@MainActivity, id) },
+                    )
+                    val unread = Alerts.unread(alerts, alertsSeen)
+
                     // Rows no thread can show: a request we asked before peers were recorded,
                     // or either side of one with somebody who is not in contacts.
                     val known = contacts.all().map { it.address }.toSet()
@@ -586,7 +653,22 @@ class MainActivity : ComponentActivity() {
                             // A union is resolved in a single pass.
                             .windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.ime)),
                     ) {
-                        Header(diag, checking) { checking = !checking }
+                        Header(
+                            d = diag,
+                            checking = checking,
+                            unread = unread,
+                            onCheck = { checking = !checking },
+                            onAlerts = {
+                                tab = Tab.ALERTS
+                                // Marked on open, not on scroll: the list is short and opening
+                                // it IS reading it. The badge clears immediately; the rows keep
+                                // their dots against where the count stood a moment ago.
+                                alertsWere = alertsSeen
+                                Alerts.markSeen(this@MainActivity)
+                                alertsSeen = Alerts.seenAt(this@MainActivity)
+                                catchUpOrders()
+                            },
+                        )
                         Spacer(Modifier.height(14.dp))
 
                         when (val st = status) {
@@ -682,6 +764,7 @@ class MainActivity : ComponentActivity() {
                             BackHeader(
                                 when (tab) {
                                     Tab.REQUESTS -> "Activity"
+                                    Tab.ALERTS -> "Notifications"
                                     Tab.REWARDS -> "Earn"
                                     else -> shopSection?.title ?: "Pay a bill"
                                 },
@@ -697,6 +780,22 @@ class MainActivity : ComponentActivity() {
                                     onPick = { shopProduct = it },
                                     onBuy = { p, v -> buy(p, v) },
                                 )
+                            }
+                            return@Column
+                        }
+
+                        if (tab == Tab.ALERTS) {
+                            AlertsTab(alerts, alertsWere) { a ->
+                                when {
+                                    // Anything with a person behind it belongs in their thread,
+                                    // which is where the state it refers to actually lives.
+                                    a.peer != null ->
+                                        known0.firstOrNull { it.address == a.peer }?.let {
+                                            thread = it; tab = Tab.TAP
+                                        }
+                                    a.kind == Alerts.Kind.OFFER -> tab = Tab.REWARDS
+                                    else -> tab = Tab.TAP
+                                }
                             }
                             return@Column
                         }
@@ -1076,6 +1175,7 @@ class MainActivity : ComponentActivity() {
         toPay.clear(); toPay.addAll(inbox.all())
         owed.clear(); owed.addAll(watch.all())
         notes.clear(); notes.addAll(messages.all())
+        bought.clear(); bought.addAll(orders.all())
     }
 
     private fun applyMode(amount: String = lastAmount) {
@@ -1116,6 +1216,8 @@ class MainActivity : ComponentActivity() {
         // Back from the wallet, or back after hours away: anything could have been paid.
         checkAllNow = true
         refreshLists()
+        // And anything bought could have been delivered while the app was gone.
+        catchUpOrders()
         applyMode()
     }
 
@@ -1164,7 +1266,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-enum class Tab { TAP, REQUESTS, REWARDS, SHOP }
+enum class Tab { TAP, REQUESTS, REWARDS, SHOP, ALERTS }
 
 fun ago(at: Long, now: Long = System.currentTimeMillis()): String {
     val s = ((now - at) / 1000).coerceAtLeast(0)
@@ -1904,26 +2006,59 @@ private fun Face(c: Contact, size: Dp, ring: Color? = null) {
 }
 
 @Composable
-private fun Header(d: Diagnostics, checking: Boolean, onCheck: () -> Unit) {
+private fun Header(
+    d: Diagnostics,
+    checking: Boolean,
+    unread: Int,
+    onCheck: () -> Unit,
+    onAlerts: () -> Unit,
+) {
     Column {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("Duffle", color = D.Black, fontSize = 30.sp, fontWeight = FontWeight.ExtraBold,
                 fontFamily = Display, letterSpacing = (-0.5).sp)
             Spacer(Modifier.weight(1f))
-            // "check" is ours, not theirs: the diagnostics and the exchange log both live
-            // behind it, so the screen someone opens is an invitation rather than a console.
-            Text(if (checking) "hide" else "check", color = D.Quiet, fontSize = 14.sp,
-                fontWeight = FontWeight.Medium,
-                modifier = Modifier.clip(RoundedCornerShape(10.dp)).clickable(onClick = onCheck)
-                    .padding(horizontal = 10.dp, vertical = 6.dp))
+            val interaction = remember { MutableInteractionSource() }
+            Box(contentAlignment = Alignment.TopEnd) {
+                Box(
+                    Modifier.then(PressScale(interaction)).size(42.dp).clip(CircleShape)
+                        .clickable(interaction, indication = null, onClick = onAlerts),
+                    contentAlignment = Alignment.Center,
+                ) { HIcon(R.drawable.hi_bell, D.Black, 23.dp) }
+                // A count, not a dot: "three things happened" is worth opening, "something
+                // happened" is what a dot says and it says it identically for one and for ten.
+                if (unread > 0) {
+                    Box(
+                        Modifier.padding(top = 3.dp, end = 1.dp).defaultMinSize(18.dp, 18.dp)
+                            .clip(CircleShape).background(D.White).padding(2.dp)
+                            .clip(CircleShape).background(D.Blue)
+                            .padding(horizontal = 5.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(if (unread > 9) "9+" else "$unread", color = D.White, fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold, style = Figures)
+                    }
+                }
+            }
         }
         Spacer(Modifier.height(2.dp))
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        // The status line is the diagnostics button now. It already says what the check would
+        // tell you — "Ready · Seeker · devnet" — so tapping the summary to see the detail is
+        // where anybody would look for it once the corner belongs to notifications.
+        Row(
+            Modifier.clip(RoundedCornerShape(8.dp)).clickable(onClick = onCheck)
+                .padding(vertical = 2.dp, horizontal = 1.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
             val ok = d.blocker == null
             Box(Modifier.size(7.dp).background(if (ok) D.Success else D.Danger, CircleShape))
             Spacer(Modifier.width(7.dp))
             Text(d.blocker ?: "Ready · ${d.model} · devnet",
                 color = if (ok) D.Quiet else D.Danger, fontSize = 13.sp)
+            Spacer(Modifier.width(6.dp))
+            // Rotated rather than a second drawable: it is the same arrow, turned over.
+            val turn by animateFloatAsState(if (checking) 180f else 0f, label = "turn")
+            HIcon(R.drawable.hi_arrow_down, D.Quiet, 13.dp, Modifier.graphicsLayer { rotationZ = turn })
         }
         AnimatedVisibility(visible = checking) {
             Column(
@@ -2419,6 +2554,73 @@ private fun RequestsTab(
             }
         }
     }
+}
+
+/**
+ * The notification panel: what has happened, and what is still waiting on someone.
+ *
+ * One list rather than a badge per section. A request waiting on you, a decline, a message and
+ * a recharge that has not arrived are all "something you would want to know", and splitting
+ * them by which part of the app they came from asks the reader to know that first.
+ *
+ * Unread is drawn as a rail down the left of the row rather than a coloured background: the
+ * rows already use colour to say what KIND of thing happened, and a second colour meaning
+ * "new" on top of it made both unreadable.
+ */
+@Composable
+private fun AlertsTab(list: List<Alerts.Alert>, seenAt: Long, onOpen: (Alerts.Alert) -> Unit) {
+    if (list.isEmpty()) {
+        Column(Modifier.fillMaxWidth().padding(top = 40.dp)) {
+            Text("Nothing new", color = D.Black, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(6.dp))
+            Text("Requests, replies, messages and anything you've bought show up here.",
+                color = D.Quiet, fontSize = 13.sp)
+        }
+        return
+    }
+    LazyColumn(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        items(list) { a ->
+            val look = alertLook(a.kind)
+            val fresh = a.at > seenAt
+            Row(
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp))
+                    .clickable { onOpen(a) }.padding(vertical = 10.dp, horizontal = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(
+                    Modifier.size(38.dp).clip(CircleShape).background(look.second.copy(alpha = .12f)),
+                    contentAlignment = Alignment.Center,
+                ) { HIcon(look.first, look.second, 19.dp) }
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(a.title, color = D.Black, fontSize = 14.sp,
+                        fontWeight = if (fresh) FontWeight.Bold else FontWeight.SemiBold, maxLines = 2)
+                    Spacer(Modifier.height(1.dp))
+                    Text(a.detail, color = D.Quiet, fontSize = 12.sp, maxLines = 2)
+                }
+                Spacer(Modifier.width(10.dp))
+                Column(horizontalAlignment = Alignment.End) {
+                    Text(ago(a.at), color = D.Quiet, fontSize = 10.sp, style = Figures)
+                    if (fresh) {
+                        Spacer(Modifier.height(5.dp))
+                        Box(Modifier.size(7.dp).clip(CircleShape).background(D.Blue))
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** The icon and colour for each kind. Money in is green, a refusal is red, the rest are calm. */
+private fun alertLook(kind: Alerts.Kind): Pair<Int, Color> = when (kind) {
+    Alerts.Kind.ASKED -> R.drawable.hi_exchange to D.Blue
+    Alerts.Kind.DECLINED -> R.drawable.hi_cancel to D.Danger
+    Alerts.Kind.LATER -> R.drawable.hi_clock to D.Blue
+    Alerts.Kind.RECEIVED -> R.drawable.hi_tick to D.Success
+    Alerts.Kind.WITHDRAWN -> R.drawable.hi_cancel to D.Quiet
+    Alerts.Kind.MESSAGE -> R.drawable.hi_info to D.Blue
+    Alerts.Kind.OFFER -> R.drawable.hi_gift to D.Blue
+    Alerts.Kind.ORDER -> R.drawable.hi_wallet to D.Blue
 }
 
 /**
