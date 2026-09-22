@@ -30,6 +30,16 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.core.graphics.drawable.toBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.painter.BitmapPainter
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.draw.drawBehind
+import androidx.annotation.DrawableRes
+import androidx.compose.animation.core.Animatable
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
@@ -370,7 +380,9 @@ class MainActivity : ComponentActivity() {
                 Surface(Modifier.fillMaxSize(), color = D.White) {
                     // statusBarsPadding, not a guessed top margin: the pill sits at the very
                     // top of the app and was drawing straight through the clock and battery.
-                    Column(Modifier.fillMaxSize().statusBarsPadding().padding(20.dp)) {
+                    Column(Modifier.fillMaxSize().statusBarsPadding()) {
+                    val openCount = toPay.count { !it.paid } + owed.count { !it.paid }
+                    Column(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 20.dp, vertical = 20.dp)) {
                         if (contactCount > 0) {
                             SendToPill(contacts.all()) { c ->
                                 // The same sheet a tap opens, addressed to someone already met.
@@ -383,9 +395,6 @@ class MainActivity : ComponentActivity() {
                         }
                         Header(diag, checking) { checking = !checking }
                         Spacer(Modifier.height(14.dp))
-                        val openCount = toPay.count { !it.paid } + owed.count { !it.paid }
-                        TabBar(tab, openCount) { tab = it }
-                        Spacer(Modifier.height(12.dp))
 
                         when (val st = status) {
                             is Status.Working -> { Banner("…", st.what, D.Quiet); Spacer(Modifier.height(10.dp)) }
@@ -547,6 +556,9 @@ class MainActivity : ComponentActivity() {
                         } else {
                             Spacer(Modifier.weight(1f))
                         }
+                    }
+                        // Pinned below whatever the tab is showing, so it never scrolls away.
+                        BottomBar(tab, openCount) { tab = it }
                     }
                 }
 
@@ -1417,31 +1429,90 @@ private fun ConfirmSheet(
 }
 
 @Composable
-private fun TabBar(current: Tab, openCount: Int, onSelect: (Tab) -> Unit) {
-    // Rewards only appears in a build that has them; without it the tab would open a screen
-    // that can never say anything.
+private fun BottomBar(current: Tab, openCount: Int, onSelect: (Tab) -> Unit) {
+    val ctx = LocalContext.current
     Row(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(D.Fill).padding(4.dp),
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
-    ) {
-        (listOf(Tab.TAP to "Tap", Tab.REQUESTS to if (openCount > 0) "Requests · $openCount" else "Requests") +
-            if (Rewards.enabled) listOf(Tab.REWARDS to "Rewards") else emptyList())
-            .forEach { (t, label) ->
-                val on = t == current
-                Box(
-                    Modifier.weight(1f).height(40.dp).clip(RoundedCornerShape(11.dp))
-                        .then(if (on) Modifier.cardShadow(11.dp).background(D.White) else Modifier)
-                        .clickable(remember { MutableInteractionSource() }, indication = null) { onSelect(t) },
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(label, color = if (on) D.Black else D.Quiet, fontSize = 14.sp,
-                        fontWeight = if (on) FontWeight.Bold else FontWeight.Medium,
-                        maxLines = 1, style = Figures)
-                }
+        Modifier.fillMaxWidth().background(D.White)
+            .drawBehind {
+                // A hairline, not a shadow: the bar sits on the page rather than floating over
+                // it, and a shadow here would compete with the cards above.
+                drawRect(D.Line, size = androidx.compose.ui.geometry.Size(size.width, 1.dp.toPx()))
             }
+            .navigationBarsPadding().padding(top = 9.dp, bottom = 4.dp),
+        horizontalArrangement = Arrangement.SpaceEvenly,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        TABS.forEach { (tab, spec) ->
+            if (tab == Tab.REWARDS && !Rewards.enabled) return@forEach
+            val (label, icon) = spec
+            BottomItem(
+                label = label, icon = icon, on = tab == current,
+                badge = if (tab == Tab.REQUESTS && openCount > 0) openCount else null,
+            ) {
+                if (tab != current) Haptics.select(ctx)
+                onSelect(tab)
+            }
+        }
     }
 }
 
+/** Name and icon per tab, in the order they are shown. */
+private val TABS = listOf(
+    Tab.TAP to ("Pay" to R.drawable.hi_nfc),
+    Tab.REQUESTS to ("Activity" to R.drawable.hi_exchange),
+    Tab.REWARDS to ("Earn" to R.drawable.hi_gift),
+)
+
+/**
+ * One tab. The icon dips under the finger and springs back past its size before settling.
+ *
+ * The overshoot is the whole effect — a press that only shrinks reads as a button, a press that
+ * rebounds reads as alive. It is spent on the icon alone, because the label moving too turns a
+ * flick into a wobble. The haptic fires on the press, not on the recomposition, so the phone
+ * answers the finger rather than the state change.
+ */
+@Composable
+private fun BottomItem(
+    label: String,
+    @DrawableRes icon: Int,
+    on: Boolean,
+    badge: Int?,
+    onClick: () -> Unit,
+) {
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    val scale = remember { Animatable(1f) }
+    LaunchedEffect(pressed, on) {
+        if (pressed) {
+            scale.animateTo(0.82f, spring(dampingRatio = 1f, stiffness = 1800f))
+        } else {
+            // Low damping so it passes 1f on the way back — the pop Phantom's bar has.
+            scale.animateTo(1f, spring(dampingRatio = 0.38f, stiffness = 700f))
+        }
+    }
+    val tint by animateColorAsState(if (on) D.Blue else D.Quiet, tween(180), label = "tint")
+    Column(
+        Modifier.clip(RoundedCornerShape(16.dp))
+            .clickable(interaction, indication = null, onClick = onClick)
+            .padding(horizontal = 18.dp, vertical = 6.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            HIcon(icon, tint, 25.dp, Modifier.graphicsLayer { scaleX = scale.value; scaleY = scale.value })
+            if (badge != null) {
+                Box(
+                    Modifier.align(Alignment.TopEnd).offset(x = 9.dp, y = (-4).dp)
+                        .background(D.Blue, CircleShape).padding(horizontal = 5.dp, vertical = 1.dp),
+                ) {
+                    Text("$badge", color = D.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+        Spacer(Modifier.height(3.dp))
+        Text(label, color = tint, fontSize = 11.5.sp,
+            fontWeight = if (on) FontWeight.Bold else FontWeight.Medium)
+    }
+}
 /**
  * Everything waiting on someone, in one place: requests this phone can still pay, requests
  * others still owe it, and what has already settled.
