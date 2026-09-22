@@ -596,7 +596,8 @@ object Chain {
     @Volatile private var serverDownUntil = 0L
     private const val SERVER_RETRY_MS = 30_000L
 
-    private fun postTo(url: String, json: String): String? = try {
+    /** Internal, but shared: [Names] and [Genesis] both need a mainnet call of their own. */
+    internal fun postTo(url: String, json: String): String? = try {
         val c = (URL(url).openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
             doOutput = true

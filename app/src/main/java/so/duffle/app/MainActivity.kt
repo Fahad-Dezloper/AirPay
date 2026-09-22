@@ -414,16 +414,6 @@ class MainActivity : ComponentActivity() {
                             .padding(horizontal = 20.dp, vertical = 20.dp)
                             .navigationBarsPadding(),
                     ) {
-                        if (contactCount > 0) {
-                            SendToPill(contacts.all()) { c ->
-                                // The same sheet a tap opens, addressed to someone already met.
-                                // Their Genesis mint is not stored, only whether they had one;
-                                // the sheet checks the chain itself, as it does after a tap.
-                                startActivity(TapPopupActivity.intent(
-                                    this@MainActivity, TapPayload.Card(TapCard(c.address, c.label, null, null)), "contacts"))
-                            }
-                            Spacer(Modifier.height(16.dp))
-                        }
                         Header(diag, checking) { checking = !checking }
                         Spacer(Modifier.height(14.dp))
 
@@ -541,19 +531,6 @@ class MainActivity : ComponentActivity() {
                         Spacer(Modifier.height(6.dp))
 
                         val waiting = owed.count { !it.paid }
-                        if (!checking) {
-                            Spacer(Modifier.height(26.dp))
-                            Invitation(
-                                hint = when {
-                                    connected == null -> "Your wallet signs; Duffle never holds your keys."
-                                    mode == Mode.REQUEST && waiting > 0 -> "$waiting waiting in Requests"
-                                    mode == Mode.REQUEST -> "They will see what you are asking for."
-                                    else -> "Whoever you tap can pay you, or be paid."
-                                },
-                                ready = connected != null,
-                            )
-                            Spacer(Modifier.height(26.dp))
-                        }
 
                         if (mode == Mode.REQUEST) {
                             val amountProblem = when {
@@ -580,8 +557,14 @@ class MainActivity : ComponentActivity() {
                         }
 
                         if (contactCount > 0) {
-                            Spacer(Modifier.height(22.dp))
-                            ContactStrip(contacts.all())
+                            Spacer(Modifier.height(24.dp))
+                            People(contacts.all()) { c ->
+                                // The same sheet a tap opens, addressed to someone already met.
+                                // Their Genesis mint is not stored, only whether they had one;
+                                // the sheet checks the chain itself, as it does after a tap.
+                                startActivity(TapPopupActivity.intent(
+                                    this@MainActivity, TapPayload.Card(TapCard(c.address, c.label, null, null)), "contacts"))
+                            }
                         }
 
                         if (Rewards.enabled) {
@@ -989,42 +972,6 @@ private fun WalletRow(
 }
 
 /**
- * People met by tapping. The reason to open the app on a day you are not paying anyone —
- * and the seed of the social graph the reward loop needs, since a new counterparty is worth
- * more than a repeat one.
- */
-@Composable
-private fun ContactStrip(list: List<Contact>) {
-    Column(Modifier.fillMaxWidth()) {
-        SectionLabel("PEOPLE YOU'VE TAPPED")
-        Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-            list.take(5).forEach { c ->
-                Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(56.dp)) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Face(c, 46.dp)
-                        if (c.seeker) {
-                            // The badge sits on the face, where a Seeker owner is recognised.
-                            Box(Modifier.align(Alignment.BottomEnd).size(17.dp).background(D.White, CircleShape),
-                                contentAlignment = Alignment.Center) {
-                                HIcon(R.drawable.hi_verified, D.Blue, 15.dp)
-                            }
-                        }
-                    }
-                    Spacer(Modifier.height(6.dp))
-                    Text(c.label, color = D.Black, fontSize = 12.sp, fontWeight = FontWeight.Medium,
-                        maxLines = 1, textAlign = TextAlign.Center)
-                }
-            }
-            if (list.size > 5) {
-                Box(Modifier.size(46.dp).background(D.Fill, CircleShape), contentAlignment = Alignment.Center) {
-                    Text("+${list.size - 5}", color = D.Quiet, fontSize = 14.sp, fontWeight = FontWeight.Bold)
-                }
-            }
-        }
-    }
-}
-
-/**
  * The selected wallet: what is in it, and the two things you can do with it.
  *
  * Dark, because it is the one object on a white screen that holds money — everything else is
@@ -1263,6 +1210,57 @@ private fun WalletsScreen(
  * The brand is what a person recognises across a table — "the OnePlus", "the Seeker" — which
  * is the whole reason the payload carries it. A letter is the fallback, not the default.
  */
+/**
+ * The people already met, under the wallet.
+ *
+ * It replaces both the dark "Send to" pill and the "hold your phone to theirs" panel. The pill
+ * hid these behind three initials, and the panel explained a gesture to someone who has already
+ * done it — this shows who can be paid and lets them be paid, which is what both were for.
+ *
+ * Each row names them the best way available: their `.sol` domain if they have one, since that
+ * is the only one of the three they chose for themselves, then the phone's label, then nothing.
+ * The address sits under it, short enough to recognise and too short to read out.
+ */
+@Composable
+private fun People(list: List<Contact>, onPick: (Contact) -> Unit) {
+    Column(Modifier.fillMaxWidth()) {
+        SectionLabel("PEOPLE")
+        list.forEach { c ->
+            // Asked once per person, on mainnet where SNS lives. Null stays null: an address
+            // with no domain is the ordinary case, not a failure worth a placeholder.
+            val name by produceState<String?>(initialValue = null, c.address) { value = Names.sol(c.address) }
+            val interaction = remember { MutableInteractionSource() }
+            Row(
+                Modifier.fillMaxWidth().padding(vertical = 5.dp).then(PressScale(interaction))
+                    .clip(RoundedCornerShape(16.dp)).background(D.Fill)
+                    .clickable(interaction, indication = null) { onPick(c) }
+                    .padding(horizontal = 12.dp, vertical = 11.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Face(c, 44.dp)
+                    if (c.seeker) {
+                        Box(Modifier.align(Alignment.BottomEnd).size(17.dp).background(D.Fill, CircleShape),
+                            contentAlignment = Alignment.Center) {
+                            HIcon(R.drawable.hi_verified, D.Blue, 15.dp)
+                        }
+                    }
+                }
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(name ?: c.label.ifBlank { "Unknown phone" }, color = D.Black,
+                        fontSize = 15.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                    Text(shortAddress(c.address), color = D.Quiet, fontSize = 12.sp, style = Figures, maxLines = 1)
+                }
+                HIcon(R.drawable.hi_arrow_up_right, D.Quiet, 17.dp)
+            }
+        }
+    }
+}
+
+/** An address at a glance: enough of both ends to recognise, nothing in between to read. */
+private fun shortAddress(address: String) = "${address.take(4)}…${address.takeLast(4)}"
+
 @Composable
 private fun Face(c: Contact, size: Dp, ring: Color? = null) {
     val look = Brand.look(c.brand)
@@ -1288,77 +1286,6 @@ private fun Face(c: Contact, size: Dp, ring: Color? = null) {
     }
 }
 
-@Composable
-private fun SendToPill(list: List<Contact>, onPick: (Contact) -> Unit) {
-    val shown = list.take(3)
-    Row(
-        Modifier.fillMaxWidth().height(48.dp).clip(RoundedCornerShape(24.dp)).background(D.Black)
-            .padding(start = 22.dp, end = 7.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            buildAnnotatedString {
-                withStyle(SpanStyle(color = D.White.copy(alpha = .62f), fontWeight = FontWeight.Medium)) { append("Send ") }
-                withStyle(SpanStyle(color = D.White, fontWeight = FontWeight.Bold)) { append("to") }
-            },
-            fontSize = 17.sp, fontFamily = Ui,
-        )
-        Spacer(Modifier.weight(1f))
-        Row(horizontalArrangement = Arrangement.spacedBy((-11).dp)) {
-            shown.forEach { c ->
-                Box(Modifier.clickable(remember { MutableInteractionSource() }, indication = null) { onPick(c) }) {
-                    Face(c, 34.dp, ring = D.Black)
-                }
-            }
-        }
-    }
-}
-
-/**
- * The screen at rest: an invitation, not a console.
- *
- * Rings travel outward from the phone's own back, which is where the other phone goes — the
- * gesture drawn rather than described. They are slow and low-contrast on purpose: this runs
- * for as long as the app is open and sits behind everything else on the screen.
- */
-@Composable
-private fun Invitation(hint: String, ready: Boolean) {
-    val pulse = rememberInfiniteTransition(label = "pulse")
-    Column(
-        Modifier.fillMaxWidth().padding(vertical = 8.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        Box(Modifier.size(132.dp), contentAlignment = Alignment.Center) {
-            if (ready) {
-                repeat(3) { i ->
-                    val t by pulse.animateFloat(
-                        initialValue = 0f, targetValue = 1f,
-                        animationSpec = infiniteRepeatable(
-                            tween(2600, delayMillis = i * 850, easing = LinearEasing), RepeatMode.Restart,
-                        ),
-                        label = "ring$i",
-                    )
-                    Box(
-                        Modifier.size(52.dp + (80.dp - 52.dp) * t * 2f)
-                            .background(D.Blue.copy(alpha = .16f * (1f - t)), CircleShape),
-                    )
-                }
-            }
-            Box(Modifier.size(78.dp).background(if (ready) D.Blue else D.Fill, CircleShape),
-                contentAlignment = Alignment.Center) {
-                HIcon(R.drawable.hi_nfc, if (ready) D.White else D.Quiet, 36.dp)
-            }
-        }
-        Spacer(Modifier.height(14.dp))
-        Text(
-            if (ready) "Hold your phone to theirs" else "Connect a wallet to start",
-            color = D.Black, fontSize = 22.sp, fontWeight = FontWeight.ExtraBold,
-            fontFamily = Display, textAlign = TextAlign.Center,
-        )
-        Spacer(Modifier.height(5.dp))
-        Text(hint, color = D.Quiet, fontSize = 14.sp, textAlign = TextAlign.Center)
-    }
-}
 @Composable
 private fun Header(d: Diagnostics, checking: Boolean, onCheck: () -> Unit) {
     Column {
