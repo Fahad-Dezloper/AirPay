@@ -102,6 +102,15 @@ class Store:
                     checked_at REAL NOT NULL DEFAULT 0,
                     PRIMARY KEY (offer_id, address)
                 );
+                CREATE TABLE IF NOT EXISTS messages (
+                    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                    sender    TEXT NOT NULL,
+                    recipient TEXT NOT NULL,
+                    label     TEXT NOT NULL DEFAULT '',
+                    body      TEXT NOT NULL,
+                    sent_at   REAL NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS by_recipient ON messages(recipient, sent_at);
                 CREATE TABLE IF NOT EXISTS devices (
                     recipient  TEXT NOT NULL,
                     token      TEXT NOT NULL,
@@ -540,6 +549,42 @@ class Store:
         return {"offer_id": offer_id, "opened": len(rows), "paid": len(paid),
                 "skr_paid": sum(r["skr"] for r in paid),
                 "signatures": [r["signature"] for r in paid if r["signature"]]}
+
+    # -- messages ---------------------------------------------------------------------------
+
+    def add_message(self, sender: str, recipient: str, body: str, label: str = "") -> dict:
+        now = time.time()
+        with self._lock, self._db:
+            cur = self._db.execute(
+                "INSERT INTO messages(sender,recipient,label,body,sent_at) VALUES (?,?,?,?,?)",
+                (sender, recipient, label, body, now),
+            )
+        return {"id": cur.lastrowid, "from": sender, "to": recipient, "label": label,
+                "body": body, "at": now}
+
+    def messages_for(self, recipient: str, since: float = 0.0, limit: int = 200) -> list[dict]:
+        """What arrived for this address while it was not listening.
+
+        Kept on the server only long enough to be collected — a phone that has read a message
+        holds it, and asks for anything newer than the last one it has."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT id,sender,label,body,sent_at FROM messages"
+                " WHERE recipient=? AND sent_at>? ORDER BY sent_at LIMIT ?",
+                (recipient, since, limit),
+            ).fetchall()
+        return [{"id": r[0], "from": r[1], "label": r[2], "body": r[3], "at": r[4]} for r in rows]
+
+    def messages_from(self, sender: str, since: float) -> int:
+        with self._lock:
+            return self._db.execute(
+                "SELECT COUNT(*) FROM messages WHERE sender=? AND sent_at>?", (sender, since),
+            ).fetchone()[0]
+
+    def prune_messages(self, older_than: float) -> int:
+        with self._lock, self._db:
+            cur = self._db.execute("DELETE FROM messages WHERE sent_at < ?", (older_than,))
+        return cur.rowcount
 
     def add_device(self, recipient: str, token: str) -> None:
         with self._lock, self._db:

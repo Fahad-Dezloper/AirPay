@@ -9,6 +9,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.animateFloat
@@ -20,6 +21,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.withStyle
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.core.view.WindowCompat
@@ -57,6 +60,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
@@ -99,6 +103,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var reader: TapReader
     private lateinit var wallet: Wallet
     private lateinit var contacts: Contacts
+    private lateinit var messages: Messages
     private lateinit var inbox: Inbox
     private lateinit var watch: Watch
 
@@ -146,6 +151,7 @@ class MainActivity : ComponentActivity() {
     private var renaming by mutableStateOf(false)
 
     /** UI mirrors of the two on-disk lists. Disk is the truth; these are re-read after writes. */
+    private val notes = mutableStateListOf<Messages.Note>()
     private val toPay = mutableStateListOf<Inbox.Item>()
     private val owed = mutableStateListOf<Watch.Entry>()
 
@@ -369,6 +375,7 @@ class MainActivity : ComponentActivity() {
         wallet = Wallet(this)
         connected = wallet.address   // a session persisted from last launch
         contacts = Contacts(this)
+        messages = Messages(this)
         contactCount = contacts.count()
         inbox = Inbox(this)
         watch = Watch(this)
@@ -380,6 +387,13 @@ class MainActivity : ComponentActivity() {
         // The screen is white now, so the system bars have to draw themselves dark. On a phone
         // in dark mode the clock and battery are white, and they vanished into our background
         // — "isAppearanceLight*" means "the background is light", not "the icons are light".
+        // The app draws its own insets — `statusBarsPadding`, `navigationBarsPadding` and
+        // `imePadding` below. Without this the window ALSO resized itself for the keyboard
+        // (manifest `adjustResize`), and the two fought: every resize changed the ime inset,
+        // which changed the padding, which resized again. That loop wedged the main thread and
+        // the phone killed the app with "Input dispatching timed out" the moment anything was
+        // tapped. One of the two has to own it; Compose does.
+        WindowCompat.setDecorFitsSystemWindows(window, false)
         WindowCompat.getInsetsController(window, window.decorView).apply {
             isAppearanceLightStatusBars = true
             isAppearanceLightNavigationBars = true
@@ -458,7 +472,7 @@ class MainActivity : ComponentActivity() {
                     while (true) {
                         if (checkAllNow) { next.clear(); checkAllNow = false }
                         val now = System.currentTimeMillis()
-                        for (e in owed.filter { !it.paid }) {
+                        for (e in owed.filter { it.live }) {
                             if (now < (next[e.reference] ?: 0L)) continue
                             checkOwed(e)
                             val age = now - e.createdAt
@@ -475,6 +489,19 @@ class MainActivity : ComponentActivity() {
                 // The server's doorbell: while the app is on screen, a payment to us is
                 // announced the moment the server sees it. The announcement is only a reason
                 // to look — checkOwed verifies it on-chain before anything turns green.
+                // Anything written to us while the app was closed. The live stream below only
+                // carries what arrives while it is connected, and a push only reaches a phone
+                // that has one — so the catch-up is the only thing that covers both.
+                LaunchedEffect(connected, resumeTick) {
+                    val addr = connected ?: return@LaunchedEffect
+                    if (!ServerClient.enabled) return@LaunchedEffect
+                    var added = false
+                    ServerClient.messages(addr, messages.since()).forEach {
+                        if (messages.add(it)) added = true
+                    }
+                    if (added) refreshLists()
+                }
+
                 LaunchedEffect(connected) {
                     val addr = connected ?: return@LaunchedEffect
                     if (!ServerClient.enabled) return@LaunchedEffect
@@ -482,7 +509,7 @@ class MainActivity : ComponentActivity() {
                         ServerClient.events(addr).collect { ev ->
                             when (ev) {
                                 is ServerClient.Paid -> {
-                                    val e = owed.firstOrNull { it.reference == ev.reference && !it.paid }
+                                    val e = owed.firstOrNull { it.reference == ev.reference && it.live }
                                     if (e != null) {
                                         push("server: ${ev.reference.take(8)}… paid — verifying")
                                         checkOwed(e)
@@ -507,6 +534,13 @@ class MainActivity : ComponentActivity() {
                                     watch.markRejected(ev.reference, ev.label); refreshLists()
                                     push("— ${ev.label.ifBlank { "They" }} declined ${ev.reference.take(8)}…")
                                     Haptics.failure(this@MainActivity)
+                                }
+                                is ServerClient.Messaged -> {
+                                    if (messages.add(Messages.Note(ev.from, ev.body, ev.at, mine = false, id = ev.id))) {
+                                        refreshLists()
+                                        push("← ${ev.label.ifBlank { "They" }}: ${ev.body}")
+                                        Haptics.contact(this@MainActivity)
+                                    }
                                 }
                                 is ServerClient.Tapped -> {
                                     push("server: ${ev.card.label} tapped you")
@@ -544,7 +578,13 @@ class MainActivity : ComponentActivity() {
                             .then(if (tab == Tab.TAP && !cards && !checking && thread == null)
                                 Modifier.verticalScroll(rememberScrollState()) else Modifier)
                             .padding(horizontal = 20.dp, vertical = 20.dp)
-                            .navigationBarsPadding(),
+                            // ONE inset modifier, not two. `navigationBarsPadding().imePadding()`
+                            // chained is the documented way to wedge this: each consumes what it
+                            // applies, the keyboard animation re-reports what is left, and the
+                            // layout re-measures forever. It ANR'd the app on the first touch
+                            // after the keyboard opened, twice, and never once without it.
+                            // A union is resolved in a single pass.
+                            .windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.ime)),
                     ) {
                         Header(diag, checking) { checking = !checking }
                         Spacer(Modifier.height(14.dp))
@@ -602,20 +642,24 @@ class MainActivity : ComponentActivity() {
                                 who = live,
                                 toPay = toPay,
                                 owed = owed,
+                                notes = notes,
                                 paying = paying,
                                 onPay = { item -> incoming = item.request },
                                 onDecline = { item ->
                                     val req = item.request
-                                    inbox.remove(req.reference); refreshLists()
+                                    // Marked, not deleted. The row stays in the thread in red,
+                                    // so "they asked and I said no" is still answerable.
+                                    val live = item.payable
+                                    inbox.markDeclined(req.reference); refreshLists()
                                     push("— declined ${req.amount} ${req.symbol} from ${req.label}")
-                                    if (item.payable) {
+                                    if (live) {
                                         lifecycleScope.launch {
                                             ServerClient.reject(req.reference, Identity.label(this@MainActivity))
                                         }
                                     }
                                 },
                                 onWithdraw = { e ->
-                                    watch.remove(e.reference); refreshLists()
+                                    watch.markWithdrawn(e.reference); refreshLists()
                                     push("— withdrew ${e.amount} ${e.symbol} request ${e.reference.take(8)}…")
                                     lifecycleScope.launch { ServerClient.withdraw(e.reference) }
                                 },
@@ -629,6 +673,7 @@ class MainActivity : ComponentActivity() {
                                         TapPayload.Card(TapCard(live.address, live.label, null, null)),
                                         "contacts"))
                                 },
+                                onSay = { text -> say(live.address, text) },
                             )
                             return@Column
                         }
@@ -751,7 +796,7 @@ class MainActivity : ComponentActivity() {
                                 list = contacts.all(),
                                 waiting = { addr ->
                                     toPay.count { it.payable && it.request.recipient == addr } +
-                                        owed.count { !it.paid && !it.rejected && it.peer == addr }
+                                        owed.count { it.live && !it.rejected && it.peer == addr }
                                 },
                                 // Only offered when something genuinely cannot be reached
                                 // through a person: a request served before peers were
@@ -899,6 +944,31 @@ class MainActivity : ComponentActivity() {
         incoming = req
     }
 
+    /**
+     * Sends a line of text to someone we have tapped.
+     *
+     * Written locally first and unconditionally: the thread has to show what was typed the
+     * instant it is typed. If the server refuses it — no connection, or the hourly ceiling —
+     * the message is still there and the exchange log says why, rather than the line silently
+     * never appearing. Nothing here moves money, so a failed send costs a repeat, not a payment.
+     */
+    private fun say(to: String, body: String) {
+        val from = connected ?: run {
+            status = Status.Problem("Connect a wallet first", "A message is sent from your address.")
+            return
+        }
+        messages.add(Messages.Note(to, body, System.currentTimeMillis(), mine = true))
+        refreshLists()
+        lifecycleScope.launch {
+            val sent = ServerClient.sendMessage(from, to, body, Identity.label(this@MainActivity))
+            if (!sent) {
+                push("✗ message not delivered — it stays here, send it again")
+                status = Status.Problem("Message not delivered",
+                    "It's still in the thread. Check your connection and send it again.")
+            }
+        }
+    }
+
     /** Our request was just handed to a payer. */
     private fun onServed(req: PayRequest) {
         watch.add(
@@ -1005,6 +1075,7 @@ class MainActivity : ComponentActivity() {
     private fun refreshLists() {
         toPay.clear(); toPay.addAll(inbox.all())
         owed.clear(); owed.addAll(watch.all())
+        notes.clear(); notes.addAll(messages.all())
     }
 
     private fun applyMode(amount: String = lastAmount) {
@@ -1534,23 +1605,27 @@ private fun Thread(
     who: Contact,
     toPay: List<Inbox.Item>,
     owed: List<Watch.Entry>,
+    notes: List<Messages.Note>,
     paying: String?,
     onPay: (Inbox.Item) -> Unit,
     onDecline: (Inbox.Item) -> Unit,
     onWithdraw: (Watch.Entry) -> Unit,
     onBack: () -> Unit,
     onOpen: () -> Unit,
+    onSay: (String) -> Unit,
 ) {
     val name by produceState<String?>(initialValue = null, who.address) { value = Names.sol(who.address) }
     val theirs = toPay.filter { it.request.recipient == who.address }
     val ours = owed.filter { it.peer == who.address }
+    val said = notes.filter { it.peer == who.address }
     // One list, one clock. `Any` rather than a sealed wrapper because the two shapes already
     // carry everything a row needs and copying them into a third type would be a place for the
     // two to drift apart.
-    val lines: List<Any> = (theirs + ours).sortedBy {
+    val lines: List<Any> = (theirs + ours + said).sortedBy {
         when (it) {
             is Inbox.Item -> it.readAt
             is Watch.Entry -> it.createdAt
+            is Messages.Note -> it.at
             else -> 0L
         }
     }
@@ -1577,22 +1652,26 @@ private fun Thread(
             }
         }
 
-        val scroll = rememberScrollState()
-        // Opened at the newest, like any conversation. Keyed on maxValue rather than the item
-        // count: the count changes when the list is composed, the height only once it has been
-        // laid out, and scrolling before that lands on a bottom that does not exist yet.
-        LaunchedEffect(scroll.maxValue) { scroll.scrollTo(scroll.maxValue) }
-        Column(
-            Modifier.weight(1f).fillMaxWidth().verticalScroll(scroll),
+        // Built from the bottom up, newest first, which is what `reverseLayout` means: the list
+        // is ANCHORED to the end instead of being scrolled there afterwards. Two attempts at
+        // scrolling to the end — by pixel and by item — both landed a bubble short, because the
+        // height they aim at is only known after layout. There is nothing to aim at here.
+        LazyColumn(
+            Modifier.weight(1f).fillMaxWidth(),
+            reverseLayout = true,
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            if (lines.isEmpty()) {
-                Spacer(Modifier.height(30.dp))
-                Text("Nothing between you yet", color = D.Black, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
-                Spacer(Modifier.height(5.dp))
-                Text("Ask ${who.label} for money, or tap phones to pay them.", color = D.Quiet, fontSize = 13.sp)
+            // One Column, because a lazy item lays its children out on top of each other.
+            if (lines.isEmpty()) item {
+                Column {
+                    Spacer(Modifier.height(30.dp))
+                    Text("Nothing between you yet", color = D.Black, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                    Spacer(Modifier.height(5.dp))
+                    Text("Say hello, ask ${who.label} for money, or tap phones to pay them.",
+                        color = D.Quiet, fontSize = 13.sp)
+                }
             }
-            lines.forEach { line ->
+            items(lines.asReversed()) { line ->
                 when (line) {
                     is Inbox.Item -> Bubble(
                         mine = false,
@@ -1600,11 +1679,16 @@ private fun Thread(
                         at = line.paidAt ?: line.readAt,
                         state = when {
                             line.paid -> "You paid this"
+                            line.declined -> "You declined"
                             line.withdrawn -> "They took it back"
                             else -> "Asked you"
                         },
-                        done = line.paid,
-                        dead = line.withdrawn,
+                        mood = when {
+                            line.paid -> Mood.DONE
+                            line.declined -> Mood.REFUSED
+                            line.withdrawn -> Mood.DROPPED
+                            else -> Mood.OPEN
+                        },
                     ) {
                         if (line.payable) {
                             Spacer(Modifier.height(10.dp))
@@ -1622,27 +1706,35 @@ private fun Thread(
                                     onClick = { onDecline(line) },
                                     enabled = paying == null,
                                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                                ) { Text("Decline", color = D.Quiet, fontSize = 14.sp) }
+                                ) { Text("Decline", color = D.Danger, fontSize = 14.sp, fontWeight = FontWeight.SemiBold) }
                             }
                         }
                     }
+                    is Messages.Note -> Say(line)
                     is Watch.Entry -> Bubble(
                         mine = true,
                         amount = "${line.amount} ${line.symbol}",
-                        at = line.paidAt ?: line.createdAt,
+                        at = line.paidAt ?: line.withdrawnAt ?: line.createdAt,
                         state = when {
                             line.paid -> "They paid you"
                             line.rejected -> "${line.rejectedBy} declined"
+                            line.withdrawn -> "You took this back"
                             line.pending -> "${line.deferredBy} will pay later"
                             else -> "Waiting for them"
                         },
-                        done = line.paid,
-                        dead = line.rejected,
+                        mood = when {
+                            line.paid -> Mood.DONE
+                            line.rejected -> Mood.REFUSED
+                            line.withdrawn -> Mood.DROPPED
+                            else -> Mood.OPEN
+                        },
                     ) {
-                        if (!line.paid) {
+                        // Only while it can still be paid. A request they declined, or one
+                        // already taken back, has nothing left to take back.
+                        if (line.live && !line.rejected) {
                             Spacer(Modifier.height(8.dp))
                             Text(
-                                if (line.rejected) "Remove" else "Take it back",
+                                "Take it back",
                                 color = D.White.copy(alpha = .85f), fontSize = 13.sp,
                                 fontWeight = FontWeight.SemiBold,
                                 modifier = Modifier.clip(RoundedCornerShape(8.dp))
@@ -1652,13 +1744,44 @@ private fun Thread(
                     }
                 }
             }
-            Spacer(Modifier.height(8.dp))
+        }
+
+        Box(Modifier.fillMaxWidth().height(1.dp).background(D.Line))
+
+        // Words before money. Checking you have the right person is the thing everyone does
+        // before handing over cash in person, and the only alternative this app offered was
+        // reading 44 base58 characters off a screen — which nobody does.
+        var draft by remember(who.address) { mutableStateOf("") }
+        val sendable = draft.isNotBlank()
+        Row(Modifier.fillMaxWidth().padding(top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                Modifier.weight(1f).clip(RoundedCornerShape(22.dp)).background(D.Fill)
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+            ) {
+                if (draft.isEmpty()) {
+                    Text("Message ${who.label}", color = D.Quiet, fontSize = 14.sp, maxLines = 1)
+                }
+                BasicTextField(
+                    value = draft,
+                    // Capped where the server caps it, so nothing is typed that cannot be sent.
+                    onValueChange = { if (it.length <= Messages.MAX_BODY) draft = it },
+                    textStyle = TextStyle(color = D.Black, fontSize = 14.sp, fontFamily = Ui),
+                    cursorBrush = SolidColor(D.Blue),
+                    maxLines = 4,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            Spacer(Modifier.width(8.dp))
+            Box(
+                Modifier.size(44.dp).clip(CircleShape).background(if (sendable) D.Blue else D.Fill)
+                    .clickable(enabled = sendable) { onSay(draft.trim()); draft = "" },
+                contentAlignment = Alignment.Center,
+            ) { HIcon(R.drawable.hi_arrow_up_right, if (sendable) D.White else D.Quiet, 20.dp) }
         }
 
         // One button, because the sheet it opens is one screen: a Pay form with "Request
         // instead" on it. Two buttons here would promise two destinations and deliver one.
-        Box(Modifier.fillMaxWidth().height(1.dp).background(D.Line))
-        PrimaryButton("Pay or request", onClick = onOpen, modifier = Modifier.fillMaxWidth().padding(top = 14.dp))
+        PrimaryButton("Pay or request", onClick = onOpen, modifier = Modifier.fillMaxWidth().padding(top = 10.dp))
     }
 }
 
@@ -1669,23 +1792,65 @@ private fun Thread(
  * The corner nearest the speaker is squared off, which is what makes a stack of these read as
  * two voices rather than a list of cards.
  */
+/**
+ * A line of text in a thread. No amount, no state, no check — a message is only ever said.
+ *
+ * Deliberately quieter than a [Bubble]: money is what this screen is for, and if words were
+ * drawn at the same weight the amounts would stop standing out in a scroll.
+ */
+@Composable
+private fun Say(note: Messages.Note) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = if (note.mine) Arrangement.End else Arrangement.Start) {
+        Column(
+            Modifier.widthIn(max = 260.dp)
+                .clip(RoundedCornerShape(
+                    topStart = 18.dp, topEnd = 18.dp,
+                    bottomStart = if (note.mine) 18.dp else 5.dp,
+                    bottomEnd = if (note.mine) 5.dp else 18.dp,
+                ))
+                .background(if (note.mine) D.Blue else D.Fill)
+                .padding(horizontal = 15.dp, vertical = 10.dp),
+        ) {
+            Text(note.body, color = if (note.mine) D.White else D.Black, fontSize = 15.sp)
+            Spacer(Modifier.height(2.dp))
+            Text(ago(note.at), color = if (note.mine) D.White.copy(alpha = .7f) else D.Quiet, fontSize = 10.sp)
+        }
+    }
+}
+
+/** How a row ended, which is the only thing that decides how it is coloured. */
+private enum class Mood { OPEN, DONE, REFUSED, DROPPED }
+
 @Composable
 private fun Bubble(
     mine: Boolean,
     amount: String,
     at: Long,
     state: String,
-    done: Boolean,
-    dead: Boolean,
+    mood: Mood,
     extra: @Composable ColumnScope.() -> Unit,
 ) {
+    // Blue is only ever "ours, and still alive". A refusal is red on both sides — whoever said
+    // no, the row means the same thing — and something taken back is grey, because nothing
+    // happened and nothing will.
     val ground = when {
-        dead -> D.Fill
+        mood == Mood.REFUSED -> D.Danger.copy(alpha = .10f)
+        mood == Mood.DROPPED -> D.Fill
         mine -> D.Blue
         else -> D.Fill
     }
-    val ink = if (mine && !dead) D.White else if (dead) D.Quiet else D.Black
-    val faint = if (mine && !dead) D.White.copy(alpha = .8f) else D.Quiet
+    val ink = when {
+        mood == Mood.REFUSED -> D.Danger
+        mood == Mood.DROPPED -> D.Quiet
+        mine -> D.White
+        else -> D.Black
+    }
+    val faint = when {
+        mood == Mood.REFUSED -> D.Danger.copy(alpha = .75f)
+        mood == Mood.DROPPED -> D.Quiet
+        mine -> D.White.copy(alpha = .8f)
+        else -> D.Quiet
+    }
     Row(Modifier.fillMaxWidth(), horizontalArrangement = if (mine) Arrangement.End else Arrangement.Start) {
         Column(
             Modifier.widthIn(max = 260.dp)
@@ -1699,8 +1864,9 @@ private fun Bubble(
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(amount, color = ink, fontSize = 21.sp, fontWeight = FontWeight.Bold,
-                    fontFamily = Display, style = Figures)
-                if (done) {
+                    fontFamily = Display, style = Figures,
+                    textDecoration = if (mood == Mood.DROPPED) TextDecoration.LineThrough else null)
+                if (mood == Mood.DONE) {
                     Spacer(Modifier.width(7.dp))
                     HIcon(R.drawable.hi_verified, if (mine) D.White else D.Success, 16.dp)
                 }

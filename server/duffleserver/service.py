@@ -171,6 +171,41 @@ class Service:
         return self._deliver(to, {"type": "tap", "address": address, "label": str(label or "")[:64],
                                   "genesis": genesis or "", "brand": brand})
 
+    #: What one phone may send another in an hour. A message costs nothing to send and lands on
+    #: somebody else's lock screen, so the ceiling exists before anyone goes looking for it.
+    MESSAGE_LIMIT = 30
+
+    def send_message(self, frm: str, to: str, body: str, label: str = "") -> dict:
+        """A line of text between two phones that have tapped.
+
+        Payments carry no words, and the first thing anyone does before handing over money in
+        person is check they have the right person. This is that check.
+
+        **The body ends up on someone else's screen**, so it is treated the way `relay_tap`
+        treats a brand: length-capped and stripped of anything that is not printable. It is
+        never HTML, and nothing downstream renders it as such.
+
+        Open question, recorded rather than hidden: anyone who knows an address may write to it.
+        The rate limit is what stands in for a contact list until there is one.
+        """
+        if not verify.is_address(frm) or not verify.is_address(to) or frm == to:
+            raise ValueError("invalid address")
+        body = "".join(c for c in str(body or "") if c.isprintable() or c == "\n").strip()[:280]
+        if not body:
+            raise ValueError("empty message")
+        recent = self.store.messages_from(frm, time.time() - 3600)
+        if recent >= self.MESSAGE_LIMIT:
+            raise ValueError("too many messages")
+        row = self.store.add_message(frm, to, body, str(label or "")[:64])
+        row["live"] = self._deliver(to, {"type": "message", "from": frm, "label": row["label"],
+                                         "body": body, "at": row["at"], "id": row["id"]})
+        return row
+
+    def messages_for(self, recipient: str, since: float = 0.0) -> list[dict]:
+        if not verify.is_address(recipient):
+            raise ValueError("invalid recipient")
+        return self.store.messages_for(recipient, since)
+
     def _deliver(self, to: str, event: dict) -> int:
         """Live stream first, push for a closed app. Returns how many listeners heard it."""
         live = self.hub.publish(to, event)

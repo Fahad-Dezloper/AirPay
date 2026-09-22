@@ -38,6 +38,11 @@ class Watch(context: Context) {
         val rejectedBy: String? = null,
         /** The payer said "later". Not an answer: still expected money, just not yet. */
         val deferredBy: String? = null,
+        /**
+         * We took it back. Kept rather than deleted, for the same reason a decline is: the
+         * thread has to be able to say what happened, and "nothing is here" says nothing.
+         */
+        val withdrawnAt: Long? = null,
         /** "SOL" or the SPL mint asked for — with its decimals and name, as in [PayRequest]. */
         val token: String = "SOL",
         val decimals: Int = 9,
@@ -45,7 +50,14 @@ class Watch(context: Context) {
     ) {
         val paid get() = signature != null
         val rejected get() = rejectedBy != null
-        val pending get() = deferredBy != null && !paid && !rejected
+        val pending get() = deferredBy != null && !paid && !rejected && !withdrawn
+        val withdrawn get() = withdrawnAt != null && !paid
+        /**
+         * Still worth asking the chain about. A request we took back is not: the server stopped
+         * watching it too. If they pay it anyway the money still arrives in the wallet — this
+         * app simply will not be the thing that tells them so.
+         */
+        val live get() = !paid && !withdrawn
         val mint: String? get() = if (token == "SOL") null else token
         /** The amount in the token's smallest unit. */
         fun units(): Long? = PayRequest.baseUnits(amount, decimals)
@@ -83,6 +95,13 @@ class Watch(context: Context) {
         })
     }
 
+    /** We took it back. A paid request cannot be withdrawn — the money already moved. */
+    fun markWithdrawn(reference: String) {
+        save(all().map {
+            if (it.reference == reference && !it.paid) it.copy(withdrawnAt = System.currentTimeMillis()) else it
+        })
+    }
+
     fun remove(reference: String) = save(all().filter { it.reference != reference })
 
     fun all(): List<Entry> = try {
@@ -102,6 +121,7 @@ class Watch(context: Context) {
                 paidAt = o.optLong("p").takeIf { it > 0 },
                 rejectedBy = o.optString("rb").takeIf { it.isNotBlank() },
                 deferredBy = o.optString("db").takeIf { it.isNotBlank() },
+                withdrawnAt = o.optLong("wd").takeIf { it > 0 },
                 token = o.optString("k", "SOL").ifBlank { "SOL" },
                 decimals = o.optInt("d", 9),
                 symbol = o.optString("y", "SOL").ifBlank { "SOL" },
@@ -126,6 +146,7 @@ class Watch(context: Context) {
                 e.paidAt?.let { put("p", it) }
                 e.rejectedBy?.let { put("rb", it) }
                 e.deferredBy?.let { put("db", it) }
+                e.withdrawnAt?.let { put("wd", it) }
                 put("k", e.token)
                 put("d", e.decimals)
                 put("y", e.symbol)

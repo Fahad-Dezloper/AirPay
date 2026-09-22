@@ -122,6 +122,16 @@ def make_handler(service, helius_auth: str | None, limiter: RateLimit | None = N
                 # Public on purpose: the app shows these amounts, and a screen promising a
                 # number the server no longer pays would be worse than showing nothing.
                 return self._json(200, config_as_dict(service.reward_config()))
+            if url.path == "/v1/messages":
+                # What arrived while this phone was not listening. It asks for everything newer
+                # than the last message it holds, so a phone that never closed asks for nothing.
+                q = parse_qs(url.query)
+                try:
+                    rows = service.messages_for((q.get("recipient") or [""])[0],
+                                                float((q.get("since") or ["0"])[0]))
+                except ValueError as e:
+                    return self._json(400, {"error": str(e)})
+                return self._json(200, {"messages": rows})
             if url.path == "/v1/events":
                 return self._events((parse_qs(url.query).get("recipient") or [""])[0])
             return self._json(404, {"error": "not found"})
@@ -202,6 +212,13 @@ def make_handler(service, helius_auth: str | None, limiter: RateLimit | None = N
                     heard = service.relay_tap(body.get("to"), body.get("address"), body.get("label", ""),
                                               genesis=body.get("genesis") or None, brand=body.get("brand") or None)
                     return self._json(200, {"live": heard})
+                if path == "/v1/messages":
+                    try:
+                        row = service.send_message(body.get("from") or "", body.get("to") or "",
+                                                   body.get("body") or "", body.get("label") or "")
+                    except ValueError as e:
+                        return self._json(400, {"error": str(e)})
+                    return self._json(200, row)
                 if path == "/v1/rewards/preview":
                     # A read, but a POST: the wallet addresses belong in a body, not in a URL
                     # that proxies and logs keep.

@@ -91,6 +91,20 @@ object Push {
         )
     }
 
+    /**
+     * Somebody wrote to us. The body is shown on the lock screen, so `publicText` hides it
+     * there: a message is the one push in this app whose content is nobody else's business.
+     */
+    fun showMessage(context: Context, who: String, body: String) {
+        notify(
+            context, CHANNEL_TAPS, "Taps", tapId("msg$who"),
+            title = who.ifBlank { "Someone" },
+            text = body,
+            open = Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            publicText = "New message",
+        )
+    }
+
     /** Someone asked us for money through the server, after the phones had parted. */
     fun showRequested(context: Context, req: PayRequest) {
         notify(
@@ -221,6 +235,16 @@ class TapMessagingService : FirebaseMessagingService() {
                 Watch(this).markDeferred(ref, who)
                 Push.showDeferred(this, who, d["amount"].orEmpty(),
                     d["symbol"]?.takeIf { it.isNotBlank() && it.length <= 12 } ?: "SOL")
+            }
+            // A line of text from someone who has tapped us. Stored here, not only shown: the
+            // app is usually closed when one arrives, and the live stream never saw it.
+            "message" -> {
+                val from = d["from"]?.takeIf { PayRequest.isBase58Address(it) } ?: return
+                val body = d["body"].orEmpty().take(Messages.MAX_BODY).ifBlank { return }
+                val at = d["at"]?.toDoubleOrNull()?.let { (it * 1000).toLong() } ?: System.currentTimeMillis()
+                val fresh = Messages(this).add(Messages.Note(from, body, at, mine = false,
+                    id = d["id"]?.toLongOrNull() ?: 0L))
+                if (fresh) Push.showMessage(this, d["label"].orEmpty(), body)
             }
             // An introduction relayed because the phones parted before HELLO could cross.
             "tap" -> {

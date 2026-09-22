@@ -25,9 +25,15 @@ class Inbox(context: Context) {
         val paidAt: Long? = null,
         /** The person who asked took it back. Kept visible, greyed, rather than vanishing. */
         val withdrawn: Boolean = false,
+        /**
+         * We said no. Kept, like every other ending: a row that vanishes when you decline
+         * leaves the thread unable to answer "did they ask me, and what did I say" — which is
+         * the whole reason it is a thread. They can always ask again; that is a new row.
+         */
+        val declined: Boolean = false,
     ) {
         val paid get() = signature != null
-        val payable get() = !paid && !withdrawn
+        val payable get() = !paid && !withdrawn && !declined
     }
 
     /** Adds a freshly read request. Returns false if this exact request is already here. */
@@ -54,6 +60,11 @@ class Inbox(context: Context) {
         save(all().map { if (it.request.reference == reference && !it.paid) it.copy(withdrawn = true) else it })
     }
 
+    /** We declined. Never over-writing a payment: a paid request has no "no" left in it. */
+    fun markDeclined(reference: String) {
+        save(all().map { if (it.request.reference == reference && !it.paid) it.copy(declined = true) else it })
+    }
+
     fun remove(reference: String) = save(all().filter { it.request.reference != reference })
 
     fun get(reference: String): Item? = all().firstOrNull { it.request.reference == reference }
@@ -71,6 +82,7 @@ class Inbox(context: Context) {
                 signature = o.optString("s").takeIf { it.isNotBlank() },
                 paidAt = o.optLong("p").takeIf { it > 0 },
                 withdrawn = o.optBoolean("w"),
+                declined = o.optBoolean("n"),
             )
         }
     } catch (e: Exception) {
@@ -89,6 +101,7 @@ class Inbox(context: Context) {
                 item.signature?.let { put("s", it) }
                 item.paidAt?.let { put("p", it) }
                 if (item.withdrawn) put("w", true)
+                if (item.declined) put("n", true)
             })
         }
         prefs.edit().putString(KEY, arr.toString()).apply()

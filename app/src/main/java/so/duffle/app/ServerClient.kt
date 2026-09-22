@@ -49,6 +49,8 @@ object ServerClient {
     data class Rejected(val reference: String, val label: String) : Event
     /** The payer said "later". Not an answer — the request is still payable. */
     data class Deferred(val reference: String, val label: String, val amount: String) : Event
+    /** A line of text from someone who has tapped this phone. See [Messages]. */
+    data class Messaged(val from: String, val label: String, val body: String, val at: Long, val id: Long) : Event
 
     /**
      * Tells the server to watch a request. Idempotent — both phones call it, the payee when
@@ -130,6 +132,33 @@ object ServerClient {
         from.brand?.let { put("brand", it) }
     })
 
+    /** Sends one line of text to another phone. The server holds it until they collect it. */
+    suspend fun sendMessage(from: String, to: String, body: String, label: String): Boolean =
+        post("/v1/messages", JSONObject().apply {
+            put("from", from)
+            put("to", to)
+            put("body", body)
+            put("label", label)
+        })
+
+    /**
+     * Everything written to us since [since] (server seconds). Read on launch, because the
+     * live stream only carries what arrives while it is connected.
+     */
+    suspend fun messages(recipient: String, since: Double): List<Messages.Note> {
+        val o = read("/v1/messages?recipient=${URLEncoder.encode(recipient, "UTF-8")}&since=$since")
+            ?: return emptyList()
+        val arr = o.optJSONArray("messages") ?: return emptyList()
+        return (0 until arr.length()).mapNotNull { i ->
+            val m = arr.optJSONObject(i) ?: return@mapNotNull null
+            val from = m.optString("from")
+            val body = m.optString("body")
+            if (!PayRequest.isBase58Address(from) || body.isBlank()) return@mapNotNull null
+            Messages.Note(peer = from, body = body, at = (m.optDouble("at", 0.0) * 1000).toLong(),
+                mine = false, id = m.optLong("id"))
+        }
+    }
+
     /** Where to send a push when a payment to `recipient` lands. */
     suspend fun registerDevice(recipient: String, pushToken: String): Boolean =
         post("/v1/devices", JSONObject().apply {
@@ -207,6 +236,15 @@ object ServerClient {
             val o = JSONObject(json)
             o.getString("reference").takeIf { PayRequest.isBase58Address(it) }
                 ?.let { Deferred(it, o.optString("label"), o.optString("amount")) }
+        } catch (e: Exception) { null }
+        "message" -> try {
+            val o = JSONObject(json)
+            val from = o.getString("from")
+            val body = o.getString("body")
+            if (PayRequest.isBase58Address(from) && body.isNotBlank())
+                Messaged(from, o.optString("label"), body.take(Messages.MAX_BODY),
+                    (o.optDouble("at", 0.0) * 1000).toLong(), o.optLong("id"))
+            else null
         } catch (e: Exception) { null }
         "tap" -> try {
             val o = JSONObject(json)
