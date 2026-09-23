@@ -68,6 +68,16 @@ class TapPopupActivity : ComponentActivity() {
 
     private lateinit var wallet: Wallet
     private var peer by mutableStateOf<TapPayload?>(null)
+
+    /**
+     * Opened to wait for a tap rather than because one happened.
+     *
+     * The sheet then shows "touch both the mobiles" and fills itself in when the other phone
+     * arrives — which is why it needs a reader of its own: MainActivity stops its reader the
+     * moment it pauses, and it pauses to show this.
+     */
+    private var armed = false
+    private var reader: TapReader? = null
     private var phase by mutableStateOf<Phase>(Phase.Ready)
     private var address by mutableStateOf<String?>(null)
     private var shownAt = 0L
@@ -101,21 +111,23 @@ class TapPopupActivity : ComponentActivity() {
         WindowCompat.getInsetsController(window, window.decorView).isAppearanceLightNavigationBars = true
         setContent {
             MaterialTheme(colorScheme = lightColorScheme(primary = D.Blue, background = D.White, surface = D.White, onSurface = D.Black)) {
-                val p = peer ?: return@MaterialTheme
+                // No early return on a null peer any more: null IS a state now — the sheet
+                // open and waiting for the phones to touch.
+                val p = peer
                 PopupScreen(
                     peer = p,
                     phase = phase,
                     connected = address != null,
                     me = Identity.label(this).take(1).uppercase().ifBlank { "Y" },
                     myAddress = address.orEmpty(),
-                    history = Contacts(this).all().firstOrNull { it.address == p.address },
+                    history = p?.let { who -> Contacts(this).all().firstOrNull { it.address == who.address } },
                     onDismiss = { if (phase !is Phase.Working) finish() },
                     onConnect = ::connect,
                     onPay = ::pay,
                     onRequest = ::request,
                     onDecline = ::decline,
                     onLater = ::later,
-                    onVerified = { held -> Contacts(this).verify(p.address, held) },
+                    onVerified = { held -> p?.let { Contacts(this).verify(it.address, held) } },
                     onRetry = { phase = Phase.Ready },
                     onExplorer = { sig -> runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(Chain.explorerUrl(sig)))) } },
                     previewAmount = previewAmount,
@@ -143,6 +155,63 @@ class TapPopupActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * Listens for the other phone while the sheet is armed.
+     *
+     * Whatever it finds lands in this activity rather than starting another one: a request
+     * they had ready, or just their card. Either way the sheet already open becomes the sheet
+     * for that person, which is the whole reason this is here and not a second screen.
+     */
+    private fun arm() {
+        if (!armed || peer != null || reader != null) return
+        reader = TapReader(
+            activity = this,
+            onLog = { Log.i(TAG, it) },
+            onRequest = { req ->
+                runOnUiThread {
+                    if (peer != null) return@runOnUiThread
+                    // Saved first, exactly as MainActivity does: from here it survives a closed
+                    // sheet and can still be paid from Activity.
+                    Inbox(this).add(req)
+                    Contacts(this).record(req.recipient, req.label, false, brand = req.brand)
+                    Haptics.contact(this)
+                    disarm()
+                    peer = TapPayload.Request(req)
+                    phase = Phase.Ready
+                    shownAt = System.currentTimeMillis()
+                }
+            },
+            onCard = { card ->
+                runOnUiThread {
+                    if (peer != null) return@runOnUiThread
+                    Contacts(this).record(card.address, card.label, false, brand = card.brand)
+                    Haptics.contact(this)
+                    disarm()
+                    peer = TapPayload.Card(card)
+                    phase = Phase.Ready
+                    shownAt = System.currentTimeMillis()
+                }
+            },
+        ).also { it.start() }
+    }
+
+    private fun disarm() {
+        reader?.stop()
+        reader = null
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Reader mode only exists while a screen is in front, so it is armed here rather than
+        // once in onCreate — the same reason MainActivity re-arms on every resume.
+        arm()
+    }
+
+    override fun onPause() {
+        super.onPause()
+        disarm()
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         // Never swap the person under a payment in progress.
@@ -161,13 +230,24 @@ class TapPopupActivity : ComponentActivity() {
                 // validated exactly like radio input.
                 ?: intent.getStringExtra(EXTRA_PAYLOAD_JSON)?.takeIf { BuildConfig.PREVIEWS }
                     ?.let { TapPayload.parse(it.toByteArray()) }
-        } ?: return false
+        }
+        if (payload == null) {
+            // Armed: no payload yet, and the sheet is the thing that waits for one.
+            if (!intent.getBooleanExtra(EXTRA_ARMED, false)) return false
+            armed = true
+            phase = Phase.Ready
+            cameFrom = intent.getStringExtra(EXTRA_FROM)
+            return true
+        }
 
         // The same person can arrive twice in a moment — our NDEF read of them and their HELLO
         // to us — which should be one popup, not two.
         if (peer?.address == payload.address && System.currentTimeMillis() - shownAt < 4_000) return true
         if (payload.address == address) return false // our own phone, somehow
 
+        // Whoever it came from — our own reader, an NDEF intent, a push — the waiting is over,
+        // so the radio stops listening for a second person to walk into the same sheet.
+        disarm()
         peer = payload
         phase = Phase.Ready
         shownAt = System.currentTimeMillis()
@@ -429,6 +509,13 @@ class TapPopupActivity : ComponentActivity() {
         private const val EXTRA_PAYLOAD_JSON = "payload_json"
         private const val EXTRA_FROM = "from"
         private const val EXTRA_PREVIEW = "preview"
+        private const val EXTRA_ARMED = "armed"
+
+        /** The sheet, open and waiting for a tap, with nobody on the other side yet. */
+        fun armed(context: Context): Intent =
+            Intent(context, TapPopupActivity::class.java)
+                .putExtra(EXTRA_ARMED, true)
+                .putExtra(EXTRA_FROM, "tap-button")
 
         fun intent(context: Context, payload: TapPayload, cameFrom: String): Intent =
             Intent(context, TapPopupActivity::class.java)

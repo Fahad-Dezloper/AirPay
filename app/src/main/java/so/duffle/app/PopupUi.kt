@@ -14,6 +14,7 @@ import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
@@ -129,7 +130,12 @@ import so.duffle.app.TapPopupActivity.Phase
 @OptIn(ExperimentalSharedTransitionApi::class)
 @Composable
 internal fun PopupScreen(
-    peer: TapPayload,
+    /**
+     * Who is on the other side — null while the sheet is **armed**: open, waiting for the
+     * phones to touch, with nobody on the other end yet. The same sheet then fills in rather
+     * than being replaced, which is the whole point of doing it here instead of on the page.
+     */
+    peer: TapPayload?,
     phase: Phase,
     connected: Boolean,
     /** One letter for our own avatar. */
@@ -168,8 +174,9 @@ internal fun PopupScreen(
     var aboutThem by rememberSaveable { mutableStateOf(false) }
     // A Genesis token is a claim until the chain says otherwise. Checked for every phone, on
     // mainnet (where Genesis lives), and the "Verified Seeker" badge waits for the answer.
-    val genesis by produceState<Genesis.Check?>(initialValue = null, peer.address) {
-        value = withContext(Dispatchers.IO) { Genesis.check(peer.address) }
+    val genesis by produceState<Genesis.Check?>(initialValue = null, peer?.address) {
+        val who = peer?.address ?: return@produceState
+        value = withContext(Dispatchers.IO) { Genesis.check(who) }
         // Held and None are both answers; Unreachable is not one, and is not reported — a
         // chain we could not ask must never look like a chain that said no.
         when (value) {
@@ -180,7 +187,9 @@ internal fun PopupScreen(
     }
     // Fetched now, not when the device page opens: arriving mid-animation it changed "Checking…"
     // to a date while the sheet was still resizing, forcing a relayout during the move.
-    val wallet by produceState<WalletAge?>(initialValue = null, peer.address) { value = walletAge(peer.address) }
+    val wallet by produceState<WalletAge?>(initialValue = null, peer?.address) {
+        value = peer?.address?.let { walletAge(it) }
+    }
 
     // The sheet is positioned by one number: how far below its resting place it is, in pixels.
     // Rising, dragging, springing back and leaving all move that same number, so any of them can
@@ -287,15 +296,17 @@ internal fun PopupScreen(
         ) {
             Box(Modifier.align(Alignment.CenterHorizontally).size(36.dp, 4.dp).background(D.Line, CircleShape))
             Spacer(Modifier.height(16.dp))
-            val paying = peer is TapPayload.Card && connected && (phase == Phase.Ready || phase is Phase.Working)
-            PeerHeader(peer, me, history, title = if (paying && !aboutThem) "Pay ${peer.label.ifBlank { "them" }}" else peer.label.ifBlank { "Unknown phone" },
-                verified = genesis is Genesis.Check.Held,
-                onOpen = if (phase is Phase.Working) null else ({ aboutThem = !aboutThem }), open = aboutThem)
-            Spacer(Modifier.height(14.dp))
+            if (peer != null) {
+                val paying = peer is TapPayload.Card && connected && (phase == Phase.Ready || phase is Phase.Working)
+                PeerHeader(peer, me, history, title = if (paying && !aboutThem) "Pay ${peer.label.ifBlank { "them" }}" else peer.label.ifBlank { "Unknown phone" },
+                    verified = genesis is Genesis.Check.Held,
+                    onOpen = if (phase is Phase.Working) null else ({ aboutThem = !aboutThem }), open = aboutThem)
+                Spacer(Modifier.height(14.dp))
+            }
 
             // Typing and paying are one screen: the button morphs instead of the sheet swapping.
             BackHandler(enabled = aboutThem) { aboutThem = false }
-            val key = when (phase) {
+            val key = if (peer == null) "armed" else when (phase) {
                 Phase.Ready, is Phase.Working -> "form"
                 is Phase.Waiting -> "waiting"
                 is Phase.Success -> "success"
@@ -312,18 +323,22 @@ internal fun PopupScreen(
             ) { k ->
                 Column(Modifier.fillMaxWidth()) {
                     when (k) {
+                        // Waiting for the other phone. Shares the AnimatedContent with every
+                        // other state, so when the tap lands the sheet grows into the keypad
+                        // on the same spring rather than closing and reopening as a new one.
+                        "armed" -> ArmedBody(close)
                         // The keypad and the device page both stay built; switching only fades one
                         // out and the other in. Rebuilding the keypad form on the way back — amount,
                         // chip, twelve keys, shared-element setup — cost 85-150ms frames.
-                        "form" -> KeepBoth(
+                        "form" -> peer?.let { p -> KeepBoth(
                             showSecond = aboutThem && phase !is Phase.Working,
                             first = {
-                                Form(peer, phase, connected, amount, { amount = it }, token, { token = it }, holdings, onConnect, onPay, onRequest,
+                                Form(p, phase, connected, amount, { amount = it }, token, { token = it }, holdings, onConnect, onPay, onRequest,
                                     { leave(onDecline) }, { leave(onLater) }, confirming, { confirming = it }, covered = aboutThem)
                             },
-                            second = { AboutThem(peer, history, genesis, wallet, cameFrom, onBack = { aboutThem = false }) },
-                        )
-                        "waiting" -> (phase as? Phase.Waiting)?.let { WaitingBody(peer.label, it.amount, it.symbol, waitingNote, close) }
+                            second = { AboutThem(p, history, genesis, wallet, cameFrom, onBack = { aboutThem = false }) },
+                        ) }
+                        "waiting" -> (phase as? Phase.Waiting)?.let { WaitingBody(peer?.label.orEmpty(), it.amount, it.symbol, waitingNote, close) }
                         "success" -> (phase as? Phase.Success)?.let {
                             ResultBody(Result.Success, it.title, it.detail, it.signature, onExplorer, earned) {
                                 PrimaryButton("Done", close)
@@ -342,6 +357,59 @@ internal fun PopupScreen(
     }
     }
     }
+    }
+}
+
+/**
+ * The sheet before anybody is on the other end: open, radio on, waiting for the phones to meet.
+ *
+ * Pressing "Pay via Tap" used to arm the radio silently and leave the home screen looking
+ * exactly as it had a moment earlier — nothing said the phone was now listening, or that the
+ * next thing to do was physical. This is that sentence, and it holds the place the other
+ * person's name will appear.
+ *
+ * The pulse is the only moving thing on it. It is doing a job: NFC has no progress to report
+ * and about four centimetres of range, so the one honest signal is "still listening".
+ */
+@Composable
+private fun ArmedBody(onCancel: () -> Unit) {
+    val pulse = rememberInfiniteTransition(label = "armed")
+    val wave by pulse.animateFloat(
+        initialValue = 0f, targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(1_600, easing = LinearEasing), RepeatMode.Restart),
+        label = "wave",
+    )
+    Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+        Spacer(Modifier.height(10.dp))
+        Box(Modifier.size(132.dp), contentAlignment = Alignment.Center) {
+            Canvas(Modifier.fillMaxSize()) {
+                // Two rings a half-cycle apart, so there is always one on its way out.
+                for (i in 0..1) {
+                    val t = (wave + i * .5f) % 1f
+                    drawCircle(
+                        color = D.Blue.copy(alpha = .35f * (1f - t)),
+                        radius = size.minDimension * (.26f + .24f * t),
+                        style = Stroke(width = 2.dp.toPx()),
+                    )
+                }
+            }
+            Box(
+                Modifier.size(68.dp).clip(CircleShape).background(D.Blue),
+                contentAlignment = Alignment.Center,
+            ) { HIcon(R.drawable.hi_nfc, D.White, 34.dp) }
+        }
+        Spacer(Modifier.height(18.dp))
+        Text("Touch both the mobiles", color = D.Black, fontSize = 20.sp,
+            fontWeight = FontWeight.Bold, fontFamily = Display, textAlign = TextAlign.Center)
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "Hold the backs of the phones together until they buzz.",
+            color = D.Quiet, fontSize = 13.sp, textAlign = TextAlign.Center,
+            modifier = Modifier.padding(horizontal = 12.dp),
+        )
+        Spacer(Modifier.height(24.dp))
+        SecondaryButton("Cancel", onCancel, Modifier.fillMaxWidth())
+        Spacer(Modifier.height(4.dp))
     }
 }
 

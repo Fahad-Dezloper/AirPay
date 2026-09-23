@@ -1022,10 +1022,12 @@ class MainActivity : ComponentActivity() {
                             modifier = Modifier.align(Alignment.BottomCenter)
                                 .navigationBarsPadding().padding(bottom = 48.dp),
                             onTap = {
-                                // Straight into the gesture: arm the card so the other phone
-                                // can read a request, which is the half a tap cannot start.
-                                mode = if (mode == Mode.REQUEST) Mode.IDLE else Mode.REQUEST
+                                // The sheet does the waiting now. Arming the radio from here
+                                // left the home screen looking exactly as it had a second
+                                // earlier — nothing said the phone was listening, or that the
+                                // next move was physical.
                                 paidSignature = null
+                                startActivity(TapPopupActivity.armed(this@MainActivity))
                             },
                             onScan = { startActivity(ScanActivity.intent(this@MainActivity)) },
                         )
