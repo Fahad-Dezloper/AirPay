@@ -188,7 +188,26 @@ class ScanActivity : ComponentActivity() {
     private fun onCode(text: String) {
         if (handled) return
         Log.i(TAG, "scanned ${text.take(24)}…")
-        when (val got = SolanaPay.parse(text)) {
+        val got = SolanaPay.parse(text)
+
+        // Your own wallet, which is the single most likely thing to point this at: a Phantom
+        // receive code IS your address, and holding it up to see what happens is the obvious
+        // first thing anybody does. The confirm sheet refuses a self-payment by closing itself
+        // — a guard written for NFC, where tapping your own phone is nonsense — so through the
+        // camera it looked like the scanner had failed and dumped you back on the home screen.
+        // Checked here, where the camera is still pointed at the code and there is somewhere
+        // to say it.
+        val target = when (got) {
+            is SolanaPay.Scanned.Request -> got.recipient
+            is SolanaPay.Scanned.Address -> got.recipient
+            else -> null
+        }
+        if (target != null && target == Wallet(this).address) {
+            problem = "That's your own wallet. Scan the code of whoever you're paying."
+            return
+        }
+
+        when (got) {
             is SolanaPay.Scanned.Request -> {
                 val req = PayRequest(
                     recipient = got.recipient,
