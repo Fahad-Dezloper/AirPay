@@ -171,7 +171,20 @@ class ScanActivity : ComponentActivity() {
                                 codes.firstOrNull { it.format == Barcode.FORMAT_QR_CODE }
                                     ?.rawValue
                                     // Back to the main thread: this opens a screen.
-                                    ?.let { raw -> post { onCode(raw) } }
+                                    ?.let { raw ->
+                                        post {
+                                            // A camera loop must not be able to kill the app.
+                                            // It runs on whatever a stranger printed on a wall,
+                                            // and the one time this did throw — an MWA
+                                            // registration at the wrong point in the lifecycle
+                                            // — the crash dialog was the only thing the user
+                                            // saw. Still logged, so a real bug stays visible.
+                                            runCatching { onCode(raw) }.onFailure { e ->
+                                                Log.e(TAG, "reading that code failed", e)
+                                                problem = "Something went wrong reading that code."
+                                            }
+                                        }
+                                    }
                             }
                             // Always, and only once the model is done with the frame — closing
                             // the proxy early starves the camera and the preview freezes.
@@ -202,7 +215,11 @@ class ScanActivity : ComponentActivity() {
             is SolanaPay.Scanned.Address -> got.recipient
             else -> null
         }
-        if (target != null && target == Wallet(this).address) {
+        // `Wallet.addressOf`, not `Wallet(this)`: constructing a Wallet registers an MWA
+        // ActivityResultSender, which is only legal before the activity is STARTED. Called
+        // here, mid-scan at RESUMED, it threw IllegalStateException and took the app down.
+        // Nothing on this path needs a wallet session — only which address is ours.
+        if (target != null && target == Wallet.addressOf(this)) {
             problem = "That's your own wallet. Scan the code of whoever you're paying."
             return
         }

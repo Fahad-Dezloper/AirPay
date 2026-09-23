@@ -69,7 +69,7 @@ class Wallet(private val activity: ComponentActivity) {
     }
 
     /** Base58 address of the connected account, or null when not connected. */
-    var address: String? = linked.selected()?.address ?: prefs.getString(KEY_ADDRESS, null)
+    var address: String? = addressOf(activity)
         private set
 
     /**
@@ -293,5 +293,18 @@ class Wallet(private val activity: ComponentActivity) {
 
         private const val KEY_TOKEN = "auth_token"
         private const val KEY_ADDRESS = "address"
+
+        /**
+         * Which address this phone pays from, without opening a wallet session.
+         *
+         * Constructing a [Wallet] registers an MWA `ActivityResultSender`, which is only legal
+         * before an activity is STARTED — doing it to answer "what is my address?" from a
+         * running screen crashes the app. This is the same expression [address] uses, kept in
+         * one place so the two can never disagree about who "you" are.
+         */
+        fun addressOf(context: Context): String? =
+            Wallets(context).selected()?.address
+                ?: context.getSharedPreferences("wallet", Context.MODE_PRIVATE)
+                    .getString(KEY_ADDRESS, null)
     }
 }
