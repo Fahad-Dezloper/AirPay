@@ -563,6 +563,21 @@ class MainActivity : ComponentActivity() {
                                 else -> 60_000L
                             }
                         }
+                        // And the other direction: requests WE still owe. Paying one only
+                        // marks it when the confirmation comes back in time — a payment that
+                        // lands and confirms a moment too late leaves the row sitting there
+                        // with Pay and Decline on it, for money that has already gone.
+                        for (i in toPay.filter { it.payable }) {
+                            val ref = i.request.reference
+                            if (now < (next[ref] ?: 0L)) continue
+                            checkOwing(i)
+                            val age = now - i.readAt
+                            next[ref] = now + when {
+                                age < 60_000 -> 3_000L
+                                age < 10 * 60_000 -> 15_000L
+                                else -> 120_000L
+                            }
+                        }
                         delay(500)
                     }
                 }
@@ -1198,6 +1213,31 @@ class MainActivity : ComponentActivity() {
             )
             Chain.Found.NotYet -> offlineStreak = 0
         }
+    }
+
+    /**
+     * Has a request we owe already been paid?
+     *
+     * The chain is the only thing that can answer this, and it is asked because the moment of
+     * paying cannot be trusted to record it. [Payments.pay] returns `Sent` only when the
+     * confirmation comes back Confirmed; a payment that settles but confirms slowly — a
+     * rate-limited public node is enough — comes back `Failed("Sent, still confirming")`, and
+     * nothing marked the row. It then sat in the thread offering Pay and Decline for money
+     * that had already left, which is the single worst thing this screen can say.
+     *
+     * Cheap to be wrong in the safe direction: this only ever turns a row from unpaid to paid,
+     * and only on a signature the chain shows reaching the right address for the right amount.
+     */
+    private suspend fun checkOwing(item: Inbox.Item) {
+        val req = item.request
+        val units = req.units() ?: return
+        val found = withContext(Dispatchers.IO) {
+            Chain.findPayment(req.reference, req.recipient, units, req.mint)
+        }
+        if (found !is Chain.Found.Yes) return
+        inbox.markPaid(req.reference, found.signature)
+        refreshLists()
+        push("✓ ${req.amount} ${req.symbol} to ${req.label} was already paid — ${found.signature.take(10)}…")
     }
 
     /** One payment arrived, in full. */

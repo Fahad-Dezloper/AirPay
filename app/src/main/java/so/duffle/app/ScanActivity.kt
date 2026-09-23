@@ -36,6 +36,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.view.WindowCompat
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.common.InputImage
@@ -226,27 +230,43 @@ class ScanActivity : ComponentActivity() {
 
         when (got) {
             is SolanaPay.Scanned.Request -> {
-                val req = PayRequest(
-                    recipient = got.recipient,
-                    amount = got.amount,
-                    token = got.token,
-                    label = got.label.ifBlank { "Scanned code" },
-                    // A code with no reference of its own still needs one: it is how this phone
-                    // finds its own payment afterwards. Inventing it costs the payee nothing —
-                    // one extra read-only account — and claims nothing on their behalf.
-                    reference = got.reference ?: PayRequest.newReference(),
-                    decimals = if (got.token == "SOL") 9 else 6,
-                    symbol = if (got.token == "SOL") "SOL" else got.token.take(4),
-                )
-                if (req.validate() != null || req.units() == null) {
-                    problem = "That code didn't add up to a payment this app can make."
-                    return
-                }
                 handled = true
-                // Saved before it is shown, exactly like a tapped request: from here it
-                // survives a closed sheet or a killed app and can be paid from Activity.
-                Inbox(this).add(req)
-                open(TapPayload.Request(req))
+                // The mint decides what "0.2" means, and a Solana Pay code never says. This
+                // used to assume 6 for every SPL token, which silently builds a transferChecked
+                // for the wrong number of base units — the token program refuses it, so the
+                // failure is loud rather than costly, but it makes any mint that isn't 6 simply
+                // unpayable. Asked on a background thread, because this runs on the main one.
+                lifecycleScope.launch {
+                    val decimals = if (got.token == "SOL") 9 else {
+                        withContext(Dispatchers.IO) { Chain.mintInfo(got.token) }?.decimals
+                    }
+                    if (decimals == null) {
+                        handled = false
+                        problem = "Couldn't read that token on devnet. Nothing was sent."
+                        return@launch
+                    }
+                    val req = PayRequest(
+                        recipient = got.recipient,
+                        amount = got.amount,
+                        token = got.token,
+                        label = got.label.ifBlank { "Scanned code" },
+                        // A code with no reference of its own still needs one: it is how this
+                        // phone finds its own payment afterwards. Inventing it costs the payee
+                        // nothing — one extra read-only account — and claims nothing for them.
+                        reference = got.reference ?: PayRequest.newReference(),
+                        decimals = decimals,
+                        symbol = if (got.token == "SOL") "SOL" else got.token.take(4),
+                    )
+                    if (req.validate() != null || req.units() == null) {
+                        handled = false
+                        problem = "That code didn't add up to a payment this app can make."
+                        return@launch
+                    }
+                    // Saved before it is shown, exactly like a tapped request: from here it
+                    // survives a closed sheet or a killed app and can be paid from Activity.
+                    Inbox(this@ScanActivity).add(req)
+                    open(TapPayload.Request(req))
+                }
             }
             is SolanaPay.Scanned.Address -> {
                 handled = true
