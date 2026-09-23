@@ -1,3 +1,44 @@
 - ui 
 -- modal with big by defautl white screen waiting for txn if someone is sending. 
 -- send and request button only for sending or requesting money from the other connected phone
+
+
+Card version (idle tap — Pay or Request):
+adb -s SM02G4061995454 shell "am start -n so.duffle.app/.TapPopupActivity --es payload_json '{\"v\":4,\"k\":\"card\",\"r\":\"2qxPntVgWyxU2jQz2MLcUuCp71D9D1ZSTcbFvCcXWrUc\",\"l\":\"CPH2401\"}'"
+
+Request version (someone asking you for 0.2 SOL — Pay / Decline / Later):
+adb -s SM02G4061995454 shell "am start -n so.duffle.app/.TapPopupActivity --es payload_json '{\"v\":4,\"r\":\"2qxPntVgWyxU2jQz2MLcUuCp71D9D1ZSTcbFvCcXWrUc\",\"a\":\"0.2\",\"t\":\"SOL\",\"l\":\"CPH2401\",\"f\":\"8eYAaFEyuwxKwpa9qSbCTWj8VStg5MeAE9GPMyyMTfSn\"}'"
+
+
+PPT
+https://claude.ai/artifact/KW1AmFua5R5Btxj2LiK5CV
+
+tap on phone modal to see details -- DONE
+
+tap pay for approve modal -- DONE
+
+layout id or width animation for for smooth shift -- DONE
+
+add reward mechanism and show in the modal to the normal and both seeker user -- DONE
+
+skr integeration or offers and rewards pending -- done not fully
+
+SOL not aligned with number in any modal state
+
+no. of tap is diffrent in both phones not correct
+
+app ui and ux pending make it like the one the drag top contacts to bottom to send  clean on pinterest
+
+shwo the normal android phone to buy a seeker button
+
+sound on notification
+
+logo of tap
+
+add hardware ledger, neo banks cards
+
+auto approve functionality
+
+one missing thing to be more better than google pay and can be used
+
+on chat when i request which wallet will recieve money the selected ?
