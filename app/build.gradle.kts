@@ -82,6 +82,11 @@ dependencies {
     // Push for payments that land while the app is closed. Initialised by hand from
     // local.properties, so no google-services plugin and no build break without Firebase.
     implementation("com.google.firebase:firebase-messaging:25.1.3")
+    // Reading a QR off the camera. CameraX drives the preview and hands frames to ML Kit,
+    // which does the decoding on-device — no network, and no image leaves the phone.
+    implementation("androidx.camera:camera-camera2:1.6.0")
+    implementation("androidx.camera:camera-view:1.6.0")
+    implementation("com.google.mlkit:barcode-scanning:17.3.0")
     testImplementation("junit:junit:4.13.2")
     // Android stubs org.json in unit tests, so JSONObject.put() throws "not mocked".
     // The real implementation makes the wire-format tests run on the JVM.

@@ -649,6 +649,10 @@ class MainActivity : ComponentActivity() {
                     // statusBarsPadding, not a guessed top margin: the pill sits at the very
                     // top of the app and was drawing straight through the clock and battery.
                     Column(Modifier.fillMaxSize().statusBarsPadding()) {
+                    // A Box, so the pay bar can float over the page rather than queue up at
+                    // the end of it. Only the home page is scrollable behind it.
+                    val home = tab == Tab.TAP && thread == null && !cards
+                    Box(Modifier.weight(1f).fillMaxWidth()) {
                     // Built here, above everything, because two things read it: the bell's
                     // count in the header and the panel itself. Derived from the same lists
                     // the rest of the screen draws, so it cannot drift from them.
@@ -671,7 +675,7 @@ class MainActivity : ComponentActivity() {
                     val orphans = toPay.count { it.request.recipient !in known } +
                         owed.count { it.peer == null || it.peer !in known }
                     Column(
-                        Modifier.weight(1f).fillMaxWidth()
+                        Modifier.fillMaxSize()
                             .then(if (tab == Tab.TAP && !cards && !checking && thread == null)
                                 Modifier.verticalScroll(rememberScrollState()) else Modifier)
                             .padding(horizontal = 20.dp, vertical = 20.dp)
@@ -993,6 +997,24 @@ class MainActivity : ComponentActivity() {
                             SectionLabel("EXCHANGE")
                             LogView(log)
                         }
+
+                        // Room for the pay bar, which floats over this page rather than in it.
+                        if (tab == Tab.TAP && thread == null && !cards) Spacer(Modifier.height(116.dp))
+                    }
+
+                    if (home) {
+                        PayBar(
+                            modifier = Modifier.align(Alignment.BottomCenter)
+                                .navigationBarsPadding().padding(bottom = 48.dp),
+                            onTap = {
+                                // Straight into the gesture: arm the card so the other phone
+                                // can read a request, which is the half a tap cannot start.
+                                mode = if (mode == Mode.REQUEST) Mode.IDLE else Mode.REQUEST
+                                paidSignature = null
+                            },
+                            onScan = { startActivity(ScanActivity.intent(this@MainActivity)) },
+                        )
+                    }
                     }
                     }
                 }
@@ -2621,6 +2643,52 @@ private fun RequestsTab(
                 }
             }
         }
+    }
+}
+
+/**
+ * The two ways to pay somebody, pinned to the bottom of the home screen.
+ *
+ * Floating over the page rather than sitting at the end of it: these are what the app is FOR,
+ * and everything above them — balance, people, offers, bills, history — is context for the
+ * moment somebody actually wants to pay. Scrolling to reach the point of the app is the wrong
+ * shape. Home only, because on any other screen there is already something to do.
+ *
+ * Tap is the filled one. It is the thing Duffle does that nothing else does; a QR reader is
+ * table stakes, and making them look equal would be a claim about the product that is not true.
+ */
+@Composable
+private fun PayBar(modifier: Modifier, onTap: () -> Unit, onScan: () -> Unit) {
+    Row(
+        modifier.fillMaxWidth().padding(horizontal = 20.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        PayChoice("Pay via Tap", R.drawable.hi_nfc, filled = true, modifier = Modifier.weight(1f), onClick = onTap)
+        PayChoice("Scan any QR", R.drawable.hi_qr, filled = false, modifier = Modifier.weight(1f), onClick = onScan)
+    }
+}
+
+@Composable
+private fun PayChoice(
+    label: String,
+    @DrawableRes icon: Int,
+    filled: Boolean,
+    modifier: Modifier,
+    onClick: () -> Unit,
+) {
+    val interaction = remember { MutableInteractionSource() }
+    val ink = if (filled) D.White else D.Black
+    Row(
+        modifier.then(PressScale(interaction)).height(56.dp).clip(RoundedCornerShape(18.dp))
+            .background(if (filled) D.Blue else D.White)
+            .then(if (filled) Modifier else Modifier.border(1.5.dp, D.Line, RoundedCornerShape(18.dp)))
+            .clickable(interaction, indication = null, onClick = onClick),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        HIcon(icon, ink, 20.dp)
+        Spacer(Modifier.width(8.dp))
+        Text(label, color = ink, fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1)
     }
 }
 
