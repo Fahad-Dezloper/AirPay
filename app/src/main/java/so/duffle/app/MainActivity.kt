@@ -1644,39 +1644,16 @@ private fun BalanceCard(
                 maxLines = 1,
             )
 
-            Spacer(Modifier.height(12.dp))
-            // Sized to their words, together on the left. Request is the one that fills in when
-            // it is on, because it is the one that changes something — it arms the radio. Send
-            // only opens a sheet.
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Row(
-                    Modifier
-                        .clip(RoundedCornerShape(999.dp))
-                        .background(if (mode) D.Fill else D.Black)
-                        .clickable(enabled = wallet != null, onClick = onSend)
-                        .padding(start = 12.dp, end = 16.dp, top = 9.dp, bottom = 9.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    HIcon(R.drawable.hi_arrow_up_right, if (mode) D.Black else D.White, 15.dp)
-                    Spacer(Modifier.width(5.dp))
-                    Text(
-                        "Send", color = if (mode) D.Black else D.White, fontSize = 14.sp,
-                        fontWeight = FontWeight.Bold,
-                    )
-                }
-                Text(
-                    "Request", color = if (mode) D.White else D.Black, fontSize = 14.sp,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(999.dp))
-                        .background(if (mode) D.Blue else D.Fill)
-                        .clickable(enabled = wallet != null, onClick = onRequest)
-                        .padding(horizontal = 16.dp, vertical = 9.dp),
-                )
-            }
+            // Send and Request were here.
+            //
+            // Send did nothing the pay bar at the bottom does not do. Request is a different
+            // matter and worth knowing about: `Mode.REQUEST` is the ONLY thing that arms
+            // TapHostApduService.pending, so with no control for it this phone can no longer
+            // be the payee in a tap from the home screen. The machinery is left intact —
+            // `mode`, applyMode(), the amount field — so putting a way back in is one line
+            // wherever it belongs. Asking is still reachable through a person: their thread's
+            // "Pay or request", and "Request instead" on the tap sheet.
+
         }
 
         // The stack, which floats over this Row rather than sitting beside it — the balance
