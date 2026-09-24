@@ -17,6 +17,8 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.ui.zIndex
+import androidx.compose.ui.draw.shadow
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
@@ -925,6 +927,15 @@ class MainActivity : ComponentActivity() {
                                 paidSignature = null
                             },
                             onCards = { cards = true },
+                            onSelectWallet = { w ->
+                                wallet.use(w)
+                                connected = w.address
+                                myGenesis = null
+                                TapHostApduService.pending.value = null
+                                refreshWallets()
+                                applyMode(amount)
+                                push("— tapping with ${w.name} ${w.short}")
+                            },
                         )
                         if (connected == null) {
                             Spacer(Modifier.height(12.dp))
@@ -1483,11 +1494,9 @@ private fun WalletRow(
 /**
  * The wallet, its balance, and the two things you can do with it.
  *
- * Not a card any more. A dark slab at the top of a white page is the loudest object on the
- * screen, and it was spending that weight on a number you glance at — while the coloured stack
- * beside it, which is the part that actually says "you have four wallets", had to compete with
- * it. On the page directly, the balance is still the biggest thing in the section and the
- * stack is the only colour.
+ * Left: active wallet name + address badge, Total balance label, large tabular numbers,
+ * and pill actions (Send & Request).
+ * Right: clean interactive multi-card stack with brand logos peeking out from the right edge.
  */
 @Composable
 private fun BalanceCard(
@@ -1498,116 +1507,201 @@ private fun BalanceCard(
     onSend: () -> Unit,
     onRequest: () -> Unit,
     onCards: () -> Unit,
+    onSelectWallet: (Linked) -> Unit = {},
 ) {
-    // At most three behind. A fourth adds no information — you already know there are more —
-    // and every extra sliver eats width the balance needs.
+    val context = LocalContext.current
     val stack = others.take(3)
-    //: how much of each card behind is left showing. One number decides the whole pile: the
-    //: step between cards, the width the balance gives up, and the width of every sliver.
-    val step = 17.dp
-    val card = 40.dp
+    // Geometry settled in the sandbox — ui/src/components/WalletSection.js. One number decides
+    // the pile: `step` is the offset between cards AND the width of every visible sliver.
+    val step = 35.dp
+    val cardWidth = 72.dp
+    val cardHeight = 140.dp
 
-    Column(Modifier.fillMaxWidth()) {
-        Box(Modifier.fillMaxWidth().height(96.dp)) {
-            if (stack.isNotEmpty()) {
-                Box(
-                    Modifier.align(Alignment.CenterEnd)
-                        // Past the page's own gutter, so the pile runs off the edge of the
-                        // screen the way a stack of cards in a pocket does.
-                        .offset(x = 20.dp)
-                        .width(card + step * (stack.size - 1))
-                        .height(88.dp)
-                        .clip(RoundedCornerShape(topStart = 16.dp, bottomStart = 16.dp))
-                        .clickable(onClick = onCards),
-                ) {
-                    // Back to front, so the card nearest the balance is the one on top. Fixed
-                    // width and a stepped offset: filling to the container's right edge made
-                    // the FRONT card the widest, and it covered every card behind it.
-                    for (depth in stack.indices.reversed()) {
-                        Box(
-                            Modifier.align(Alignment.CenterStart)
-                                .offset(x = step * depth)
-                                .width(card)
-                                .height(88.dp - 8.dp * depth)
-                                .clip(RoundedCornerShape(topStart = 16.dp, bottomStart = 16.dp))
-                                .background(stack[depth].colour),
-                        )
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        // Left Column: Active wallet header + Balance + Action Pills
+        Column(
+            Modifier.weight(1f),
+        ) {
+            // Top: Active wallet name and address badge
+            Row(
+                Modifier
+                    .clip(RoundedCornerShape(10.dp))
+                    .clickable(onClick = onCards)
+                    .padding(vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                if (wallet != null) {
+                    Box(
+                        Modifier
+                            .size(22.dp)
+                            .clip(CircleShape)
+                            .background(wallet.colour),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        HIcon(wallet.iconRes, wallet.iconTint ?: Color.Unspecified, 13.dp)
                     }
+                    Spacer(Modifier.width(7.dp))
+                    Text(
+                        wallet.name,
+                        color = D.Black,
+                        fontSize = 14.5.sp,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = Ui,
+                        maxLines = 1,
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        wallet.short,
+                        color = D.Quiet,
+                        fontSize = 12.sp,
+                        style = Figures,
+                        maxLines = 1,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(D.Fill)
+                            .padding(horizontal = 7.dp, vertical = 2.5.dp),
+                    )
+                } else {
+                    Box(
+                        Modifier
+                            .size(20.dp)
+                            .clip(CircleShape)
+                            .background(D.Fill),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        HIcon(R.drawable.hi_wallet, D.Quiet, 12.dp)
+                    }
+                    Spacer(Modifier.width(7.dp))
+                    Text(
+                        "No wallet connected",
+                        color = D.Quiet,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold,
+                    )
                 }
             }
 
-            Column(
-                Modifier.align(Alignment.CenterStart)
-                    // Stops one step short of the front card, so every sliver is the same
-                    // width. The stack hangs 20dp past this column's gutter, so that much of
-                    // the room it takes is not this column's to give up.
-                    .padding(end = (step * (stack.size + 1) - 20.dp).coerceAtLeast(0.dp)),
+            Spacer(Modifier.height(10.dp))
+
+            Text(
+                "Total balance",
+                color = D.Quiet,
+                fontSize = 11.sp,
+                letterSpacing = 0.9.sp,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Spacer(Modifier.height(2.dp))
+            // The whole number carries the weight; the decimals are smaller, because nobody
+            // reads a balance to four places — they read the size of it.
+            Row(verticalAlignment = Alignment.Bottom) {
+                val sol = (balance as? Chain.Balance.Ok)?.sol
+                val whole = sol?.toLong()?.toString() ?: "—"
+                val frac = sol?.let { "%.4f".format(it).substringAfter('.') }
+                Text(
+                    whole, color = D.Black, fontSize = 38.sp, fontWeight = FontWeight.ExtraBold,
+                    fontFamily = Display, style = Figures,
+                )
+                if (frac != null) {
+                    Text(
+                        ".$frac", color = D.Quiet, fontSize = 19.sp, fontWeight = FontWeight.Bold,
+                        style = Figures, modifier = Modifier.padding(bottom = 4.dp),
+                    )
+                }
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    "SOL", color = D.Quiet, fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(bottom = 6.dp),
+                )
+            }
+
+            Spacer(Modifier.height(12.dp))
+            // Sized to their words, together on the left. Request is the one that fills in when
+            // it is on, because it is the one that changes something — it arms the radio. Send
+            // only opens a sheet.
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
                 Row(
-                    Modifier.clip(RoundedCornerShape(8.dp)).clickable(onClick = onCards)
-                        .padding(vertical = 2.dp),
+                    Modifier
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(if (mode) D.Fill else D.Black)
+                        .clickable(enabled = wallet != null, onClick = onSend)
+                        .padding(start = 12.dp, end = 16.dp, top = 9.dp, bottom = 9.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    // In its own colour, so the wallet you are about to spend from names
-                    // itself the same way its card does. The one thing on this screen that
-                    // must never be mistaken is WHICH wallet is selected.
-                    Text(wallet?.name ?: "No wallet", color = wallet?.ink ?: D.Quiet, fontSize = 13.sp,
-                        fontWeight = FontWeight.Bold, maxLines = 1)
-                    if (wallet != null) {
-                        Spacer(Modifier.width(6.dp))
-                        Text(wallet.short, color = D.Quiet.copy(alpha = .7f), fontSize = 12.sp,
-                            style = Figures, maxLines = 1)
-                    }
+                    HIcon(R.drawable.hi_arrow_up_right, if (mode) D.Black else D.White, 15.dp)
+                    Spacer(Modifier.width(5.dp))
+                    Text(
+                        "Send", color = if (mode) D.Black else D.White, fontSize = 14.sp,
+                        fontWeight = FontWeight.Bold,
+                    )
                 }
-                Spacer(Modifier.height(2.dp))
-                // The whole number carries the weight; the decimals are smaller, because
-                // nobody reads a balance to four places — they read the size of it.
-                Row(verticalAlignment = Alignment.Bottom) {
-                    val sol = (balance as? Chain.Balance.Ok)?.sol
-                    val whole = sol?.toLong()?.toString() ?: "—"
-                    val frac = sol?.let { "%.4f".format(it).substringAfter('.') }
-                    Text(whole, color = D.Black, fontSize = 46.sp, fontWeight = FontWeight.ExtraBold,
-                        fontFamily = Display, style = Figures)
-                    if (frac != null) {
-                        Text(".$frac", color = D.Quiet, fontSize = 23.sp,
-                            fontWeight = FontWeight.Bold, style = Figures,
-                            modifier = Modifier.padding(bottom = 5.dp))
-                    }
-                    Spacer(Modifier.width(7.dp))
-                    Text("SOL", color = D.Quiet, fontSize = 15.sp, fontWeight = FontWeight.SemiBold,
-                        modifier = Modifier.padding(bottom = 8.dp))
-                }
+                Text(
+                    "Request", color = if (mode) D.White else D.Black, fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(if (mode) D.Blue else D.Fill)
+                        .clickable(enabled = wallet != null, onClick = onRequest)
+                        .padding(horizontal = 16.dp, vertical = 9.dp),
+                )
             }
         }
 
-        Spacer(Modifier.height(12.dp))
-        // Pills, sized to their words and sitting together on the left — not two halves of the
-        // screen. Stretched full width they read as the page's main actions, which they are
-        // not: the main action is the bar at the bottom. These are what you do with the
-        // balance directly above them, so they stay the size of what they say.
-        Row(horizontalArrangement = Arrangement.spacedBy(9.dp), verticalAlignment = Alignment.CenterVertically) {
-            // Request is the one that fills in when it is on, because it is the one that
-            // changes something — it arms the radio. Send only opens a sheet.
-            Row(
-                Modifier.clip(RoundedCornerShape(999.dp))
-                    .background(if (mode) D.Fill else D.Black)
-                    .clickable(enabled = wallet != null, onClick = onSend)
-                    .padding(start = 13.dp, end = 18.dp, top = 10.dp, bottom = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
+        // The stack, which floats over this Row rather than sitting beside it — the balance
+        // keeps the full width and the cards lie on top of the space it is not using.
+        //
+        // Drawn FRONT LAST: the rightmost card is the one on top, so each card leaves the lip
+        // of the one before it showing on its left. Bottom-aligned, not centred, so the pile
+        // has a straight edge along the bottom the way a fanned deck does.
+        if (stack.isNotEmpty()) {
+            Box(
+                Modifier
+                    .align(Alignment.CenterVertically)
+                    // 20dp clears this column's gutter, another 20dp runs off the screen edge.
+                    .offset(x = 40.dp)
+                    .width(cardWidth + step * (stack.size - 1))
+                    .height(cardHeight + 2.dp * stack.size),
             ) {
-                HIcon(R.drawable.hi_arrow_up_right, if (mode) D.Black else D.White, 16.dp)
-                Spacer(Modifier.width(6.dp))
-                Text("Send", color = if (mode) D.Black else D.White, fontSize = 15.sp,
-                    fontWeight = FontWeight.Bold)
+                for (i in stack.indices) {
+                    val c = stack[i]
+                    val behind = stack.size - 1 - i
+                    val cardShape = RoundedCornerShape(topStart = 22.dp, bottomStart = 22.dp)
+                    val cardInteraction = remember { MutableInteractionSource() }
+                    Box(
+                        Modifier
+                            .align(Alignment.BottomStart)
+                            .offset(x = step * i)
+                            .width(cardWidth)
+                            // A hair taller towards the front, so the top edges fan.
+                            .height(cardHeight - 1.dp * behind)
+                            .then(PressScale(cardInteraction))
+                            .shadow(
+                                elevation = 6.dp,
+                                shape = cardShape,
+                                spotColor = Color(0x26000000),
+                                ambientColor = Color(0x14000000),
+                            )
+                            .clip(cardShape)
+                            .background(c.colour)
+                            .border(1.dp, Color.White.copy(alpha = 0.20f), cardShape)
+                            .clickable(cardInteraction, indication = null) {
+                                Haptics.tick(context)
+                                onSelectWallet(c)
+                            }
+                            .padding(start = 8.dp, top = 12.dp),
+                        contentAlignment = Alignment.TopStart,
+                    ) {
+                        HIcon(c.iconRes, c.iconTint ?: Color.Unspecified, 20.dp)
+                    }
+                }
             }
-            Text(
-                "Request", color = if (mode) D.White else D.Black, fontSize = 15.sp,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.clip(RoundedCornerShape(999.dp))
-                    .background(if (mode) D.Blue else D.Fill)
-                    .clickable(enabled = wallet != null, onClick = onRequest)
-                    .padding(horizontal = 18.dp, vertical = 10.dp),
-            )
         }
     }
 }

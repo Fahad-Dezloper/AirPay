@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- Solflare gothic S emblem -->
+    <path
+        android:fillColor="#FF14161B"
+        android:pathData="M16.5,4.5 L12.5,2.5 L9.5,4.2 L9.5,6.5 L12,5 L14.5,6.2 L14.5,7.8 L7.5,11.2 L7.5,14 L10.5,12.5 L10.5,10.2 L13.5,8.8 L13.5,9.8 L8,12.5 L8,16 L12,18 L15.5,16.2 L15.5,13.8 L13,15 L10.5,13.8 L10.5,12.2 L17.5,8.8 L17.5,6 Z" />
+    <path
+        android:fillColor="#FF14161B"
+        android:pathData="M6.5,8.5 L8.5,7.5 L8.5,9.5 Z" />
+    <path
+        android:fillColor="#FF14161B"
+        android:pathData="M18.5,14.5 L16.5,15.5 L16.5,13.5 Z" />
+</vector>

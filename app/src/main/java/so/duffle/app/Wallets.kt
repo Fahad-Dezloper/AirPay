@@ -51,16 +51,41 @@ data class Linked(
      * so two wallets never look the same and the same wallet never changes colour.
      */
     val colour: Color
+        //: These four are the values settled in the HTML sandbox (ui/src/data.js) — each card
+        //: painted to agree with the wallet's own app icon rather than with its published brand
+        //: hex, because the icon and the card sit a few pixels apart and a near-match reads
+        //: worse than either one alone.
         get() = when {
-            matches("phantom") -> Color(0xFFAB9FF2)
-            matches("solflare") -> Color(0xFFFC7227)
-            matches("backpack") -> Color(0xFFE33E3F)
+            matches("phantom") -> Color(0xFF9886E5)
+            matches("solflare") -> Color(0xFFFFEF47)
+            matches("backpack") -> Color(0xFF212122)
             // ".skr" catches Seeker Wallet by the only thing it says about itself: the account
             // name it reports is an SNS domain on that TLD. A wallet with no package and no
             // brand in its name is the built-in one on this phone.
             matches("seeker", "solanamobile", "seed vault", ".skr") -> Color(0xFF14F195)
+            matches("ledger") -> Color(0xFF2C323B)
             matches("ultimate") -> Color(0xFF3F8CFF)
             else -> SPARE[(address.hashCode().toUInt() % SPARE.size.toUInt()).toInt()]
+        }
+
+    val iconRes: Int
+        get() = when {
+            matches("phantom") -> R.drawable.ic_wallet_phantom
+            matches("solflare") -> R.drawable.ic_wallet_solflare
+            matches("backpack") -> R.drawable.ic_wallet_backpack
+            matches("seeker", "solanamobile", "seed vault", ".skr") -> R.drawable.ic_wallet_seeker
+            matches("ledger") -> R.drawable.ic_wallet_ledger
+            else -> R.drawable.ic_wallet_chip
+        }
+
+    val iconTint: Color?
+        get() = when {
+            matches("phantom") -> null // Intrinsic white with purple pupils
+            matches("solflare") -> Color(0xFF14161B) // Black gothic S
+            matches("backpack") -> null // Intrinsic crimson red backpack
+            matches("seeker", "solanamobile", "seed vault", ".skr") -> Color(0xFF0B0D10)
+            matches("ledger") -> Color.White
+            else -> Color.White
         }
 
     /**
@@ -82,7 +107,7 @@ data class Linked(
      */
     val ink: Color
         get() {
-            val c = colour
+            val c = if (matches("backpack")) Color(0xFFE33E3F) else colour
             val lum = 0.2126f * c.red + 0.7152f * c.green + 0.0722f * c.blue
             if (lum <= LEGIBLE) return c
             val k = LEGIBLE / lum
@@ -99,8 +124,8 @@ data class Linked(
         const val LEGIBLE = 0.45f
 
         val SPARE = listOf(
-            Color(0xFF008FFF), Color(0xFFFFC53D), Color(0xFF2BD9A6),
-            Color(0xFFFF7A6B), Color(0xFF8A7BFF), Color(0xFF38BDF8),
+            Color(0xFFFFCF33), Color(0xFF00D2C4), Color(0xFF008FFF),
+            Color(0xFFAB9FF2), Color(0xFFFF7A6B), Color(0xFF1B1D22),
         )
     }
 }
