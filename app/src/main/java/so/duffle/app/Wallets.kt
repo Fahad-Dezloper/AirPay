@@ -72,12 +72,32 @@ data class Linked(
      * com.solflare.mobile, app.backpack.mobile.standalone — is the app's own identity and
      * cannot be renamed by its owner.
      */
+    /**
+     * The same brand colour, dark enough to be read as text on white.
+     *
+     * A card can be any colour; a word cannot. Backpack red passes as it is, but Phantom's
+     * lavender and Seeker's Solana green are near-invisible at 13sp on a white page — they are
+     * chosen to sit behind white text, not to be it. Anything too light is scaled down until it
+     * carries, which keeps the hue and only takes the brightness.
+     */
+    val ink: Color
+        get() {
+            val c = colour
+            val lum = 0.2126f * c.red + 0.7152f * c.green + 0.0722f * c.blue
+            if (lum <= LEGIBLE) return c
+            val k = LEGIBLE / lum
+            return Color(c.red * k, c.green * k, c.blue * k)
+        }
+
     private fun matches(vararg needles: String): Boolean {
         val hay = "$name ${uri.orEmpty()} ${pkg.orEmpty()}".lowercase()
         return needles.any { it in hay }
     }
 
     private companion object {
+        /** Brightness a colour has to be under before it reads as text on white. */
+        const val LEGIBLE = 0.45f
+
         val SPARE = listOf(
             Color(0xFF008FFF), Color(0xFFFFC53D), Color(0xFF2BD9A6),
             Color(0xFFFF7A6B), Color(0xFF8A7BFF), Color(0xFF38BDF8),

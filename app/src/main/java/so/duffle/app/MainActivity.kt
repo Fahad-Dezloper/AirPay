@@ -932,15 +932,9 @@ class MainActivity : ComponentActivity() {
                                 onClick = { connectWallet(fresh = false) }, loading = busy)
                         }
 
-                        Spacer(Modifier.height(10.dp))
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("They see you as ", color = D.Quiet, fontSize = 12.sp)
-                            TextButton(onClick = { renaming = true }, contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)) {
-                                Text(myName, color = D.Blue, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                            }
-                        }
-
-                        Spacer(Modifier.height(6.dp))
+                        // "They see you as <name>" lived here. It was a second door to the
+                        // rename dialog the avatar now opens, and it spent a line explaining
+                        // something nobody had asked about yet.
 
                         val waiting = owed.count { !it.paid }
 
@@ -1554,8 +1548,11 @@ private fun BalanceCard(
                         .padding(vertical = 2.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text(wallet?.name ?: "No wallet", color = D.Quiet, fontSize = 13.sp,
-                        fontWeight = FontWeight.Medium, maxLines = 1)
+                    // In its own colour, so the wallet you are about to spend from names
+                    // itself the same way its card does. The one thing on this screen that
+                    // must never be mistaken is WHICH wallet is selected.
+                    Text(wallet?.name ?: "No wallet", color = wallet?.ink ?: D.Quiet, fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold, maxLines = 1)
                     if (wallet != null) {
                         Spacer(Modifier.width(6.dp))
                         Text(wallet.short, color = D.Quiet.copy(alpha = .7f), fontSize = 12.sp,
