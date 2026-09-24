@@ -721,6 +721,10 @@ class MainActivity : ComponentActivity() {
                             d = diag,
                             checking = checking,
                             unread = unread,
+                            me = myName,
+                            // Editing the name IS the profile, for now: it is the only thing
+                            // about yourself this app stores, and it is what other phones see.
+                            onProfile = { renaming = true },
                             onCheck = { checking = !checking },
                             onAlerts = {
                                 tab = Tab.ALERTS
@@ -2146,11 +2150,28 @@ private fun Header(
     d: Diagnostics,
     checking: Boolean,
     unread: Int,
+    /** What this phone calls itself — the initial goes in the avatar. */
+    me: String,
     onCheck: () -> Unit,
     onAlerts: () -> Unit,
+    onProfile: () -> Unit,
 ) {
     Column {
         Row(verticalAlignment = Alignment.CenterVertically) {
+            // Their initial rather than a generic silhouette: this app already draws every
+            // OTHER person as a letter in a circle, and drawing yourself the same way says
+            // "this is you, in the same terms as them". It is also the only picture of
+            // somebody the app is ever entitled to — nobody uploaded a photo.
+            val avatar = remember { MutableInteractionSource() }
+            Box(
+                Modifier.then(PressScale(avatar)).size(38.dp).clip(CircleShape).background(D.Fill)
+                    .clickable(avatar, indication = null, onClick = onProfile),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(me.take(1).uppercase().ifBlank { "Y" }, color = D.Quiet, fontSize = 16.sp,
+                    fontWeight = FontWeight.Bold, fontFamily = Display)
+            }
+            Spacer(Modifier.width(11.dp))
             // Long-press the wordmark for diagnostics and the exchange log. The status line
             // that used to carry them is gone, and they are a builder's tool, not a user's —
             // but they are how every NFC problem in this app has been read, so they keep a
