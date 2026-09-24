@@ -44,6 +44,16 @@ data class Linked(
     val short: String get() = "${address.take(4)}…${address.takeLast(4)}"
 
     /**
+     * What this ACCOUNT calls itself, when that is a name rather than the app's own brand.
+     *
+     * Seeker Wallet reports an SNS domain — "dezloper.skr" — which is the owner's name and
+     * worth showing. Phantom reports "Phantom", which says nothing the icon beside it has not
+     * already said. Null for the second kind, so the caller can fall back to the address.
+     */
+    val username: String?
+        get() = name.trim().takeIf { it.isNotBlank() && BRANDS.none { b -> it.equals(b, true) } }
+
+    /**
      * A colour per wallet, keyed on what the wallet says it is.
      *
      * Brand colours where they are known, because a person recognises Phantom purple faster than
@@ -126,6 +136,12 @@ data class Linked(
     }
 
     private companion object {
+        /** Names a wallet app gives itself. Anything else in `name` is the account's own. */
+        val BRANDS = listOf(
+            "phantom", "solflare", "backpack", "ledger", "ultimate", "seeker", "seed vault",
+            "solana mobile", "wallet",
+        )
+
         /** Brightness a colour has to be under before it reads as text on white. */
         const val LEGIBLE = 0.45f
 

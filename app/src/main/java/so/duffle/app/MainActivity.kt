@@ -1540,26 +1540,20 @@ private fun BalanceCard(
                     // background, so a circle of the same colour underneath only showed as a
                     // ring of it poking out from behind the corners.
                     WalletLogo(wallet, 22.dp, 7.dp)
-                    Spacer(Modifier.width(7.dp))
+                    Spacer(Modifier.width(8.dp))
+                    // The icon already says which wallet this is, so the name beside it was
+                    // saying it twice. What goes here instead is whatever identifies the
+                    // ACCOUNT: the owner's name when the wallet reports one — Seeker Wallet
+                    // gives its SNS domain — and the address when it does not.
                     Text(
-                        wallet.name,
-                        color = D.Black,
-                        fontSize = 14.5.sp,
-                        fontWeight = FontWeight.Bold,
-                        fontFamily = Ui,
+                        wallet.username ?: wallet.short,
+                        color = if (wallet.username != null) D.Black else D.Quiet,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        style = if (wallet.username == null) Figures else TextStyle.Default,
                         maxLines = 1,
-                    )
-                    Spacer(Modifier.width(6.dp))
-                    Text(
-                        wallet.short,
-                        color = D.Quiet,
-                        fontSize = 12.sp,
-                        style = Figures,
-                        maxLines = 1,
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(6.dp))
-                            .background(D.Fill)
-                            .padding(horizontal = 7.dp, vertical = 2.5.dp),
+                        modifier = Modifier.clip(RoundedCornerShape(6.dp)).background(D.Fill)
+                            .padding(horizontal = 8.dp, vertical = 3.dp),
                     )
                 } else {
                     Box(
@@ -1591,27 +1585,49 @@ private fun BalanceCard(
                 fontWeight = FontWeight.SemiBold,
             )
             Spacer(Modifier.height(2.dp))
-            // The whole number carries the weight; the decimals are smaller, because nobody
-            // reads a balance to four places — they read the size of it.
+            // In dollars, because "total balance" is a question about money and SOL is not an
+            // answer to it for most people.
+            //
+            // **This is devnet SOL priced at the mainnet rate**, so the figure is notional —
+            // what the balance would be worth. It decides a label and nothing else; every
+            // amount that is actually paid is still counted in SOL or in the token itself.
+            // When the price cannot be fetched the SOL figure is shown instead, rather than a
+            // dollar sign in front of a number nobody checked.
+            val sol = (balance as? Chain.Balance.Ok)?.sol
+            val rate by produceState<Double?>(initialValue = null) { value = Prices.solUsd() }
             Row(verticalAlignment = Alignment.Bottom) {
-                val sol = (balance as? Chain.Balance.Ok)?.sol
-                val whole = sol?.toLong()?.toString() ?: "—"
-                val frac = sol?.let { "%.4f".format(it).substringAfter('.') }
+                val dollars = sol?.let { s0 -> rate?.let { s0 * it } }
+                val shown = when {
+                    dollars != null -> Prices.money(dollars)
+                    sol != null -> "%.4f".format(sol)
+                    else -> "—"
+                }
+                val whole = shown.substringBefore('.')
+                val frac = shown.substringAfter('.', "")
+                if (dollars != null) {
+                    Text(
+                        "$", color = D.Quiet, fontSize = 26.sp, fontWeight = FontWeight.Bold,
+                        fontFamily = Display, modifier = Modifier.padding(bottom = 6.dp),
+                    )
+                    Spacer(Modifier.width(2.dp))
+                }
                 Text(
-                    whole, color = D.Black, fontSize = 38.sp, fontWeight = FontWeight.ExtraBold,
+                    whole, color = D.Black, fontSize = 52.sp, fontWeight = FontWeight.ExtraBold,
                     fontFamily = Display, style = Figures,
                 )
-                if (frac != null) {
+                if (frac.isNotEmpty()) {
                     Text(
-                        ".$frac", color = D.Quiet, fontSize = 19.sp, fontWeight = FontWeight.Bold,
-                        style = Figures, modifier = Modifier.padding(bottom = 4.dp),
+                        ".$frac", color = D.Quiet, fontSize = 24.sp, fontWeight = FontWeight.Bold,
+                        style = Figures, modifier = Modifier.padding(bottom = 6.dp),
                     )
                 }
-                Spacer(Modifier.width(6.dp))
-                Text(
-                    "SOL", color = D.Quiet, fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.padding(bottom = 6.dp),
-                )
+                if (dollars == null && sol != null) {
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        "SOL", color = D.Quiet, fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.padding(bottom = 8.dp),
+                    )
+                }
             }
 
             Spacer(Modifier.height(12.dp))
