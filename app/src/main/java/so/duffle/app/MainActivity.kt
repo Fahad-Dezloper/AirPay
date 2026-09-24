@@ -1612,14 +1612,14 @@ private fun BalanceCard(
             Text(
                 buildAnnotatedString {
                     if (dollars != null) {
-                        // Raised to the digits' cap height and pulled tight against the first
-                        // one. A baseline is the right thing for the decimals, which are the
-                        // same kind of mark as the digits — but a currency sign is a label on
-                        // the number, and sitting it on the baseline leaves it looking dropped
-                        // with a gap of its own sidebearing beside it.
+                        // Lifted part of the way, not all of it. A baseline is right for the
+                        // decimals — the same kind of mark as the digits — but a currency sign
+                        // is a label ON the number, so it rides a little above the baseline
+                        // and a little below the digit tops. `letterSpacing` here is the gap
+                        // after the sign: the font's own sidebearing is too tight at this size.
                         withStyle(SpanStyle(
                             fontSize = 30.sp, color = D.Quiet, fontWeight = FontWeight.Bold,
-                            baselineShift = BaselineShift(0.58f), letterSpacing = (-2).sp,
+                            baselineShift = BaselineShift(0.32f), letterSpacing = 3.sp,
                         )) {
                             append("$")
                         }
