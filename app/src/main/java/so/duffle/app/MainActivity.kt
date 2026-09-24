@@ -1583,31 +1583,34 @@ private fun BalanceCard(
             }
         }
 
-        Spacer(Modifier.height(14.dp))
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            // Request is the one that changes state — it arms the radio — so it is the one
-            // that fills in when it is on. Send just opens a sheet.
+        Spacer(Modifier.height(12.dp))
+        // Pills, sized to their words and sitting together on the left — not two halves of the
+        // screen. Stretched full width they read as the page's main actions, which they are
+        // not: the main action is the bar at the bottom. These are what you do with the
+        // balance directly above them, so they stay the size of what they say.
+        Row(horizontalArrangement = Arrangement.spacedBy(9.dp), verticalAlignment = Alignment.CenterVertically) {
+            // Request is the one that fills in when it is on, because it is the one that
+            // changes something — it arms the radio. Send only opens a sheet.
             Row(
-                Modifier.weight(1f).height(48.dp).clip(RoundedCornerShape(16.dp))
+                Modifier.clip(RoundedCornerShape(999.dp))
                     .background(if (mode) D.Fill else D.Black)
-                    .clickable(enabled = wallet != null, onClick = onSend),
-                horizontalArrangement = Arrangement.Center,
+                    .clickable(enabled = wallet != null, onClick = onSend)
+                    .padding(start = 13.dp, end = 18.dp, top = 10.dp, bottom = 10.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                HIcon(R.drawable.hi_arrow_up_right, if (mode) D.Black else D.White, 17.dp)
-                Spacer(Modifier.width(7.dp))
+                HIcon(R.drawable.hi_arrow_up_right, if (mode) D.Black else D.White, 16.dp)
+                Spacer(Modifier.width(6.dp))
                 Text("Send", color = if (mode) D.Black else D.White, fontSize = 15.sp,
                     fontWeight = FontWeight.Bold)
             }
-            Box(
-                Modifier.weight(1f).height(48.dp).clip(RoundedCornerShape(16.dp))
+            Text(
+                "Request", color = if (mode) D.White else D.Black, fontSize = 15.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.clip(RoundedCornerShape(999.dp))
                     .background(if (mode) D.Blue else D.Fill)
-                    .clickable(enabled = wallet != null, onClick = onRequest),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text("Request", color = if (mode) D.White else D.Black, fontSize = 15.sp,
-                    fontWeight = FontWeight.Bold)
-            }
+                    .clickable(enabled = wallet != null, onClick = onRequest)
+                    .padding(horizontal = 18.dp, vertical = 10.dp),
+            )
         }
     }
 }
