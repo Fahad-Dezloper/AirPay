@@ -168,7 +168,7 @@ object Push {
                 .setPublicVersion(
                     NotificationCompat.Builder(context, channel)
                         .setSmallIcon(android.R.drawable.stat_notify_more)
-                        .setContentTitle("Duffle")
+                        .setContentTitle("AirPay")
                         .setContentText(publicText)
                         .build()
                 )

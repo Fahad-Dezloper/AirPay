@@ -305,8 +305,13 @@ object Base58 {
 object Apdu {
 
     /**
-     * Proprietary AID: F0 + "Duffle". The F0 prefix is the range reserved for
+     * Proprietary AID: F0 + "Duffle" in ASCII. The F0 prefix is the range reserved for
      * non-registered applications, so it cannot collide with a real payment applet.
+     *
+     * **The name is AirPay now; these bytes still spell the old one, deliberately.** Both
+     * phones in a tap must route on the SAME AID, so changing it is a coordinated reinstall,
+     * not an edit — and it buys nothing anybody can see. Left alone until after submission;
+     * see pending.txt. Do not "correct" this comment to match the app name.
      */
     const val AID = "F0447566666C65"
 

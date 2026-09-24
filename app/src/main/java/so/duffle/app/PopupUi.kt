@@ -881,7 +881,7 @@ private fun AboutThem(
         }
         when (cameFrom) {
             "nfc", "hce", "app" -> DetailRow("Met") { Value("In person, by tap") }
-            "server", "notification" -> DetailRow("Met") { Value("Through Duffle, after a tap") }
+            "server", "notification" -> DetailRow("Met") { Value("Through AirPay, after a tap") }
         }
         DetailRow("With you") {
             Value(when {
@@ -1112,7 +1112,7 @@ private fun ConnectBody(working: String?, onConnect: () -> Unit) {
         Spacer(Modifier.height(14.dp))
         Text("Connect a wallet to pay or request", color = D.Black, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center)
         Spacer(Modifier.height(4.dp))
-        Text("Duffle never holds your keys.", color = D.Quiet, fontSize = 13.5.sp)
+        Text("AirPay never holds your keys.", color = D.Quiet, fontSize = 13.5.sp)
         Spacer(Modifier.height(20.dp))
         PrimaryButton(working ?: "Connect wallet", onConnect, loading = working != null)
     }

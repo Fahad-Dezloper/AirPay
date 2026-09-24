@@ -118,7 +118,7 @@ object Alerts {
 
         // Only ones that can still be acted on. An offer already claimed, or spent, is history.
         for (o in offers.filter { it.available }) {
-            val from = if (o.funder == "duffle") "from Duffle" else "from ${o.funder}"
+            val from = if (o.funder == "duffle") "from AirPay" else "from ${o.funder}"
             out += Alert(Kind.OFFER, o.what, "${o.reward} SKR · $from", offerAt(o.id))
         }
 

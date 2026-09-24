@@ -80,7 +80,7 @@ object WalletLink {
     /** Links [pkg]'s wallet. [launch] starts the intent — the caller owns the activity. */
     suspend fun authorize(pkg: String, launch: (Intent) -> Unit): Linking =
         session(pkg, launch) { client ->
-            val r = client.authorize(Uri.parse(Wallet.IDENTITY_URI), Uri.parse("favicon.ico"), "Duffle", CLUSTER)
+            val r = client.authorize(Uri.parse(Wallet.IDENTITY_URI), Uri.parse("favicon.ico"), "AirPay", CLUSTER)
                 .get(TIMEOUT_MS, TimeUnit.MILLISECONDS)
             val account = r.accounts.firstOrNull()
                 ?: return@session Linking.Failed("that wallet returned no account")
@@ -102,7 +102,7 @@ object WalletLink {
     suspend fun sign(pkg: String, token: String, tx: ByteArray, launch: (Intent) -> Unit): Signing =
         session(pkg, launch) { client ->
             val auth = runCatching {
-                client.reauthorize(Uri.parse(Wallet.IDENTITY_URI), Uri.parse("favicon.ico"), "Duffle", token)
+                client.reauthorize(Uri.parse(Wallet.IDENTITY_URI), Uri.parse("favicon.ico"), "AirPay", token)
                     .get(TIMEOUT_MS, TimeUnit.MILLISECONDS)
             }.getOrNull() ?: return@session Signing.NeedsReconnect
             if (auth.authToken == null) return@session Signing.NeedsReconnect

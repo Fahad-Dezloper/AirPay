@@ -427,7 +427,7 @@ class TapPopupActivity : ComponentActivity() {
         }
         if (!ServerClient.enabled) {
             // The phones have parted by now, so the request has no radio to travel over.
-            phase = Phase.Error("Requests need the Duffle server", "Paying works without it. To request after a tap, run the server — see server/README.md.")
+            phase = Phase.Error("Requests need the AirPay server", "Paying works without it. To request after a tap, run the server — see server/README.md.")
             return
         }
         lifecycleScope.launch {

@@ -54,10 +54,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 /**
- * Duffle's look, in one place.
+ * AirPay's look, in one place.
  *
  * These began inside the tap sheet, which was the only screen built to DUFFLE_DESIGN.md. The
- * rest of the app was still the dark developer console it started as, so opening Duffle meant
+ * rest of the app was still the dark developer console it started as, so opening AirPay meant
  * meeting two different products a second apart. Lifting them out rather than copying them is
  * the point: a second set of buttons and springs would drift from this one within a week, and
  * the copy that drifts is always the one somebody is looking at.

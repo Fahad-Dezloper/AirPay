@@ -46,7 +46,7 @@ class Wallet(private val activity: ComponentActivity) {
         ConnectionIdentity(
             Uri.parse(IDENTITY_URI),
             Uri.parse("favicon.ico"),
-            "Duffle",
+            "AirPay",
         )
     ).apply {
         // Devnet until the flow is proven end to end. Mainnet is a one-line change.
@@ -58,7 +58,7 @@ class Wallet(private val activity: ComponentActivity) {
     private var adapter = newAdapter(linked.selected()?.token ?: prefs.getString(KEY_TOKEN, null))
 
     init {
-        // A wallet connected before Duffle could hold more than one. Without this it keeps
+        // A wallet connected before AirPay could hold more than one. Without this it keeps
         // working and shows as "No wallet", because the list it is meant to appear in is empty.
         if (linked.all().isEmpty()) {
             prefs.getString(KEY_ADDRESS, null)?.let { old ->
@@ -73,7 +73,7 @@ class Wallet(private val activity: ComponentActivity) {
         private set
 
     /**
-     * Switches which linked wallet Duffle uses.
+     * Switches which linked wallet AirPay uses.
      *
      * Only the token changes hands. Android still decides which wallet app opens when signing —
      * there is no way to say "open Phantom" — so this is "which session do we present", not

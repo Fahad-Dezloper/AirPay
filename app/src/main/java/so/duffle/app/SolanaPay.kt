@@ -13,7 +13,7 @@ import java.net.URLDecoder
  * **Transaction requests are refused.** When the path is an https URL instead of an address,
  * Solana Pay means "POST to this server and it will hand you a transaction to sign". That is a
  * stranger's URL building a transaction this app would then ask someone to approve, and
- * nothing in Duffle is equipped to show them what it does. Refused by name, so the screen can
+ * nothing in AirPay is equipped to show them what it does. Refused by name, so the screen can
  * say which kind of code it was rather than "invalid".
  */
 object SolanaPay {
@@ -57,7 +57,7 @@ object SolanaPay {
         val body = text.substring("solana:".length)
         val target = body.substringBefore('?')
         if (target.startsWith("http", ignoreCase = true)) {
-            return Scanned.Refused("That's a transaction request — a link that builds a payment on a server. Duffle only pays codes it can read itself.")
+            return Scanned.Refused("That's a transaction request — a link that builds a payment on a server. AirPay only pays codes it can read itself.")
         }
         if (!PayRequest.isBase58Address(target)) return Scanned.Unknown
 

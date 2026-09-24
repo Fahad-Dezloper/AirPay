@@ -72,7 +72,7 @@ class ScanActivity : ComponentActivity() {
 
     private val ask = registerForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
         granted = ok
-        if (!ok) problem = "Duffle needs the camera to read a code. You can allow it in Settings."
+        if (!ok) problem = "AirPay needs the camera to read a code. You can allow it in Settings."
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -119,7 +119,7 @@ class ScanActivity : ComponentActivity() {
                             // devnet, and a real shop's code is for mainnet. Paying one here
                             // would settle perfectly and send the shop nothing.
                             Text(
-                                "Duffle pays on devnet. A real shop's code settles on mainnet — it would not reach them.",
+                                "AirPay pays on devnet. A real shop's code settles on mainnet — it would not reach them.",
                                 color = Color(0x99FFFFFF), fontSize = 11.sp, textAlign = TextAlign.Center,
                             )
                             Spacer(Modifier.height(14.dp))
@@ -285,7 +285,7 @@ class ScanActivity : ComponentActivity() {
     }
 
     companion object {
-        private const val TAG = "DuffleScan"
+        private const val TAG = "AirPayScan"
         fun intent(context: Context) = Intent(context, ScanActivity::class.java)
     }
 }

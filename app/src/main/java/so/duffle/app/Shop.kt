@@ -6,12 +6,12 @@ import org.json.JSONObject
  * Buying real things: phone credit, a Hotstar subscription, a PhonePe balance that settles the
  * electricity bill.
  *
- * The catalogue and the invoice come from Duffle's server, which holds the Bitrefill key —
+ * The catalogue and the invoice come from AirPay's server, which holds the Bitrefill key —
  * in the APK it would be readable by anyone who decompiled it. What comes back is an ordinary
  * Solana address and an amount in base units, so **paying for a recharge is the payment path
  * this app already has**, pointed somewhere other than a person.
  *
- * **This is the one thing Duffle does on mainnet.** Bitrefill settles in real USDC; a devnet
+ * **This is the one thing AirPay does on mainnet.** Bitrefill settles in real USDC; a devnet
  * transfer to that address would be a payment into nothing and a subscription that never
  * arrives. Every tap stays on devnet. The screen has to say which is which, every time.
  */

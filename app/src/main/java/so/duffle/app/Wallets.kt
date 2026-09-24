@@ -6,14 +6,14 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * The wallets this phone has linked, and which one is currently Duffle's.
+ * The wallets this phone has linked, and which one is currently AirPay's.
  *
  * One wallet was never enough: a Seeker owner keeps the hardware-backed wallet for anything that
  * matters and a hot wallet for spending, and the whole point of tapping is that it is casual.
  * The selected wallet is the one a tap pays from and the one a request is addressed to — so
  * switching is not a preference, it is "which pocket am I using".
  *
- * **Only the auth token is stored, never a key.** Duffle cannot sign anything on its own; each
+ * **Only the auth token is stored, never a key.** AirPay cannot sign anything on its own; each
  * of these is a session with a wallet app that can.
  *
  * **How a wallet is reached** decides what this list can promise. The Seeker ships a persistent
@@ -96,7 +96,7 @@ class Wallets(ctx: Context) {
         emptyList()
     }
 
-    /** The wallet Duffle is using, or null when none is linked. */
+    /** The wallet AirPay is using, or null when none is linked. */
     fun selected(): Linked? {
         val list = all()
         val chosen = prefs.getString(KEY_SELECTED, null)

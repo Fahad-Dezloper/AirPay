@@ -393,8 +393,11 @@ class MainActivity : ComponentActivity() {
             startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
                 type = "text/plain"
                 putExtra(Intent.EXTRA_TEXT,
-                    "$me is paying people by tapping phones with Duffle. " +
-                        "Tap to pay anyone, no address to type: https://duffle.so")
+                    // No link until there is a domain to link to. duffle.so does not resolve
+                    // (Phantom's favicon fetch for it fails), and a share message whose one
+                    // link is dead is worse than one with none. See pending.txt.
+                    "$me is paying people by tapping phones with AirPay. " +
+                        "Tap to pay anyone — no address to type.")
             }, "Invite a friend"))
         }
     }
@@ -1361,7 +1364,7 @@ class MainActivity : ComponentActivity() {
     private fun installCrashGuard() {
         val previous = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, error ->
-            android.util.Log.e("Duffle", "uncaught on ${thread.name}", error)
+            android.util.Log.e("AirPay", "uncaught on ${thread.name}", error)
             if (thread == mainLooper.thread) {
                 previous?.uncaughtException(thread, error)
             } else {
@@ -1584,7 +1587,7 @@ private fun WalletPicker(apps: List<WalletLink.App>, onPick: (WalletLink.App) ->
     Column(Modifier.fillMaxWidth()) {
         Text("Add a wallet", color = D.Black, fontSize = 22.sp, fontWeight = FontWeight.ExtraBold, fontFamily = Display)
         Spacer(Modifier.height(4.dp))
-        Text("Duffle never sees your keys — the wallet signs.", color = D.Quiet, fontSize = 13.5.sp)
+        Text("AirPay never sees your keys — the wallet signs.", color = D.Quiet, fontSize = 13.5.sp)
         Spacer(Modifier.height(16.dp))
         if (apps.isEmpty()) {
             Text("No wallet apps found on this phone.", color = D.Quiet, fontSize = 14.sp)
@@ -2136,7 +2139,7 @@ private fun Header(
 ) {
     Column {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("Duffle", color = D.Black, fontSize = 30.sp, fontWeight = FontWeight.ExtraBold,
+            Text("AirPay", color = D.Black, fontSize = 30.sp, fontWeight = FontWeight.ExtraBold,
                 fontFamily = Display, letterSpacing = (-0.5).sp)
             Spacer(Modifier.weight(1f))
             val interaction = remember { MutableInteractionSource() }
@@ -2296,7 +2299,7 @@ private fun BackHeader(title: String, onBack: () -> Unit) {
  * A row that stands for a whole screen.
  *
  * Google Pay's shape rather than a bank's: one page, with the depth a tap away. Three tabs of
- * equal weight would have claimed Duffle has three destinations, and it has one — the tap.
+ * equal weight would have claimed AirPay has three destinations, and it has one — the tap.
  * These say what is behind them, so opening them is a decision rather than a look.
  */
 @Composable
@@ -2345,7 +2348,7 @@ private fun EarnStrip(summary: Rewards.Summary?, onOpen: () -> Unit) {
  *
  * Drawn rather than iconed, and square rather than round, because the obvious version of this
  * row is three flat circles and that is a shape people have already seen in every payments app.
- * The marks are built from Duffle's own vocabulary: the discs of a balance, the notch of a
+ * The marks are built from AirPay's own vocabulary: the discs of a balance, the notch of a
  * ticket, two rings meeting the way the avatars do on a tap.
  */
 @Composable
@@ -2696,7 +2699,7 @@ private fun RequestsTab(
  * moment somebody actually wants to pay. Scrolling to reach the point of the app is the wrong
  * shape. Home only, because on any other screen there is already something to do.
  *
- * Tap is the filled one. It is the thing Duffle does that nothing else does; a QR reader is
+ * Tap is the filled one. It is the thing AirPay does that nothing else does; a QR reader is
  * table stakes, and making them look equal would be a claim about the product that is not true.
  */
 @Composable
@@ -3060,7 +3063,7 @@ private fun RewardsTab(connected: String?, isSeeker: Boolean) {
                         Column(Modifier.weight(1f)) {
                             Text(offer.what, color = D.Black, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
                             Text(
-                                if (offer.funder == "duffle") "${offer.app} · from Duffle"
+                                if (offer.funder == "duffle") "${offer.app} · from AirPay"
                                 else "${offer.app} · from ${offer.funder}",
                                 color = D.Quiet, fontSize = 12.sp,
                             )
