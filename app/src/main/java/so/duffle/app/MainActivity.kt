@@ -25,6 +25,7 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.style.BaselineShift
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.withStyle
@@ -1611,7 +1612,15 @@ private fun BalanceCard(
             Text(
                 buildAnnotatedString {
                     if (dollars != null) {
-                        withStyle(SpanStyle(fontSize = 30.sp, color = D.Quiet, fontWeight = FontWeight.Bold)) {
+                        // Raised to the digits' cap height and pulled tight against the first
+                        // one. A baseline is the right thing for the decimals, which are the
+                        // same kind of mark as the digits — but a currency sign is a label on
+                        // the number, and sitting it on the baseline leaves it looking dropped
+                        // with a gap of its own sidebearing beside it.
+                        withStyle(SpanStyle(
+                            fontSize = 30.sp, color = D.Quiet, fontWeight = FontWeight.Bold,
+                            baselineShift = BaselineShift(0.58f), letterSpacing = (-2).sp,
+                        )) {
                             append("$")
                         }
                     }
