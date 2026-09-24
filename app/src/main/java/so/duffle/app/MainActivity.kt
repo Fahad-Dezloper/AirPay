@@ -1595,40 +1595,45 @@ private fun BalanceCard(
             // dollar sign in front of a number nobody checked.
             val sol = (balance as? Chain.Balance.Ok)?.sol
             val rate by produceState<Double?>(initialValue = null) { value = Prices.solUsd() }
-            Row(verticalAlignment = Alignment.Bottom) {
-                val dollars = sol?.let { s0 -> rate?.let { s0 * it } }
-                val shown = when {
-                    dollars != null -> Prices.money(dollars)
-                    sol != null -> "%.4f".format(sol)
-                    else -> "—"
-                }
-                val whole = shown.substringBefore('.')
-                val frac = shown.substringAfter('.', "")
-                if (dollars != null) {
-                    Text(
-                        "$", color = D.Quiet, fontSize = 26.sp, fontWeight = FontWeight.Bold,
-                        fontFamily = Display, modifier = Modifier.padding(bottom = 6.dp),
-                    )
-                    Spacer(Modifier.width(2.dp))
-                }
-                Text(
-                    whole, color = D.Black, fontSize = 52.sp, fontWeight = FontWeight.ExtraBold,
-                    fontFamily = Display, style = Figures,
-                )
-                if (frac.isNotEmpty()) {
-                    Text(
-                        ".$frac", color = D.Quiet, fontSize = 24.sp, fontWeight = FontWeight.Bold,
-                        style = Figures, modifier = Modifier.padding(bottom = 6.dp),
-                    )
-                }
-                if (dollars == null && sol != null) {
-                    Spacer(Modifier.width(6.dp))
-                    Text(
-                        "SOL", color = D.Quiet, fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
-                        modifier = Modifier.padding(bottom = 8.dp),
-                    )
-                }
+            // ONE text run, not three Texts in a Row.
+            //
+            // Laid out as a row they were aligned by their bottom EDGES, and a glyph's bottom
+            // edge includes room for descenders it does not have — so the dollar sign and the
+            // decimals sank below the digits by however much their own font reserved. Spans
+            // inside a single Text share a baseline, which is the thing that actually needs to
+            // line up.
+            val dollars = sol?.let { s0 -> rate?.let { s0 * it } }
+            val shown = when {
+                dollars != null -> Prices.money(dollars)
+                sol != null -> "%.4f".format(sol)
+                else -> "—"
             }
+            Text(
+                buildAnnotatedString {
+                    if (dollars != null) {
+                        withStyle(SpanStyle(fontSize = 30.sp, color = D.Quiet, fontWeight = FontWeight.Bold)) {
+                            append("$")
+                        }
+                    }
+                    withStyle(SpanStyle(fontSize = 60.sp, color = D.Black, fontWeight = FontWeight.ExtraBold)) {
+                        append(shown.substringBefore('.'))
+                    }
+                    shown.substringAfter('.', "").takeIf { it.isNotEmpty() }?.let { frac ->
+                        withStyle(SpanStyle(fontSize = 26.sp, color = D.Quiet, fontWeight = FontWeight.Bold)) {
+                            append(".$frac")
+                        }
+                    }
+                    if (dollars == null && sol != null) {
+                        withStyle(SpanStyle(fontSize = 14.sp, color = D.Quiet, fontWeight = FontWeight.SemiBold)) {
+                            append(" SOL")
+                        }
+                    }
+                },
+                fontFamily = Display,
+                style = Figures,
+                lineHeight = 64.sp,
+                maxLines = 1,
+            )
 
             Spacer(Modifier.height(12.dp))
             // Sized to their words, together on the left. Request is the one that fills in when
