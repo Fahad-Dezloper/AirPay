@@ -1536,15 +1536,10 @@ private fun BalanceCard(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 if (wallet != null) {
-                    Box(
-                        Modifier
-                            .size(22.dp)
-                            .clip(CircleShape)
-                            .background(wallet.colour),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        HIcon(wallet.iconRes, wallet.iconTint ?: Color.Unspecified, 13.dp)
-                    }
+                    // No coloured disc behind it: the icon is its own tile with its own
+                    // background, so a circle of the same colour underneath only showed as a
+                    // ring of it poking out from behind the corners.
+                    WalletLogo(wallet, 22.dp, 7.dp)
                     Spacer(Modifier.width(7.dp))
                     Text(
                         wallet.name,
@@ -1691,14 +1686,19 @@ private fun BalanceCard(
                             .clip(cardShape)
                             .background(c.colour)
                             .border(1.dp, Color.White.copy(alpha = 0.20f), cardShape)
+                            // Opens the wallets screen rather than switching on the spot.
+                            // A tap that silently changed which wallet you are about to spend
+                            // from — and reshuffled the pile while your finger was on it — is
+                            // the one gesture here that should ask before it acts. Choosing
+                            // happens there, against a list, and is confirmed with Done.
                             .clickable(cardInteraction, indication = null) {
                                 Haptics.tick(context)
-                                onSelectWallet(c)
+                                onCards()
                             }
                             .padding(start = 8.dp, top = 12.dp),
                         contentAlignment = Alignment.TopStart,
                     ) {
-                        HIcon(c.iconRes, c.iconTint ?: Color.Unspecified, 20.dp)
+                        WalletLogo(c, 20.dp)
                     }
                 }
             }
@@ -1720,6 +1720,28 @@ private fun BalanceCard(
  * scheme to Seeker Wallet — so the app has to ask. Real labels and real icons, because a row
  * saying "app.phantom" is a worse chooser than the one we are replacing.
  */
+/**
+ * A wallet's mark.
+ *
+ * Two kinds live behind [Linked.iconRes] and they cannot be drawn the same way: a line vector
+ * that must be tinted to be visible, and the wallet's real app icon, which is a tile with its
+ * own background and its own colours. Tinting the second flattens it to a silhouette, so it is
+ * drawn as an image and clipped to a rounded square — a small app icon, which is what it is.
+ */
+@Composable
+private fun WalletLogo(w: Linked, size: Dp, radius: Dp = 6.dp) {
+    val tint = w.iconTint
+    if (tint == null) {
+        Image(
+            painterResource(w.iconRes), contentDescription = null,
+            modifier = Modifier.size(size).clip(RoundedCornerShape(radius)),
+            contentScale = ContentScale.Crop,
+        )
+    } else {
+        HIcon(w.iconRes, tint, size)
+    }
+}
+
 @Composable
 private fun WalletPicker(apps: List<WalletLink.App>, onPick: (WalletLink.App) -> Unit, onClose: () -> Unit) {
     Column(Modifier.fillMaxWidth()) {
@@ -1790,17 +1812,25 @@ private fun WalletsScreen(
                     .clickable { onPick(w) }
                     .padding(18.dp),
             ) {
+                // Black on a light card, white on a dark one. The same brightness test the
+                // wallet name uses, applied to the card it is written on.
+                val lum = 0.2126f * w.colour.red + 0.7152f * w.colour.green + 0.0722f * w.colour.blue
+                val ink = if (lum > 0.5f) D.Black else D.White
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(w.name, color = D.Black.copy(alpha = .75f), fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                    // Ink chosen against the card, not assumed. These used to be dark on the
+                    // understanding that every brand colour was light — true until Backpack
+                    // became #212122, at which point its name, its address and its button all
+                    // went invisible on their own card.
+                    Text(w.name, color = ink.copy(alpha = .8f), fontSize = 16.sp, fontWeight = FontWeight.Bold)
                     Spacer(Modifier.weight(1f))
-                    Text("•••• ${w.address.takeLast(4)}", color = D.Black.copy(alpha = .55f),
+                    Text("•••• ${w.address.takeLast(4)}", color = ink.copy(alpha = .6f),
                         fontSize = 15.sp, fontWeight = FontWeight.SemiBold, style = Figures)
                 }
                 Spacer(Modifier.weight(1f))
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(Modifier.size(34.dp).clip(CircleShape).background(D.White.copy(alpha = .35f)),
+                    Box(Modifier.size(34.dp).clip(CircleShape).background(ink.copy(alpha = .16f)),
                         contentAlignment = Alignment.Center) {
-                        HIcon(R.drawable.hi_wallet, D.Black.copy(alpha = .7f), 17.dp)
+                        HIcon(R.drawable.hi_wallet, ink.copy(alpha = .75f), 17.dp)
                     }
                     Spacer(Modifier.weight(1f))
                     // What "selected" means, said rather than implied by a tick: this is the
@@ -1816,7 +1846,7 @@ private fun WalletsScreen(
                             Text("Tapping with this", color = D.Black, fontSize = 13.sp, fontWeight = FontWeight.Bold)
                         }
                     } else {
-                        Text("Use this one", color = D.Black.copy(alpha = .6f), fontSize = 13.sp,
+                        Text("Use this one", color = ink.copy(alpha = .7f), fontSize = 13.sp,
                             fontWeight = FontWeight.SemiBold)
                     }
                 }

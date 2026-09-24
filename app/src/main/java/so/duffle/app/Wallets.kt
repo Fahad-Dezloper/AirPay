@@ -81,9 +81,15 @@ data class Linked(
     val iconTint: Color?
         get() = when {
             matches("phantom") -> null // Intrinsic white with purple pupils
-            matches("solflare") -> Color(0xFF14161B) // Black gothic S
+            // Null: this one is the wallet's real app icon, a tile with its own background.
+            // Tinting a photograph flattens it to a silhouette — the thin vector it replaced
+            // read as a scribble at 20dp, which is what this fixes.
+            matches("solflare") -> null
             matches("backpack") -> null // Intrinsic crimson red backpack
-            matches("seeker", "solanamobile", "seed vault", ".skr") -> Color(0xFF0B0D10)
+            // Null for the same reason as Solflare: this is the wallet's real app icon, a tile
+            // with its own background. Tinted, it was a set of loose black bars floating on
+            // the page while the other three read as app icons.
+            matches("seeker", "solanamobile", "seed vault", ".skr") -> null
             matches("ledger") -> Color.White
             else -> Color.White
         }
