@@ -69,6 +69,7 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -407,9 +408,6 @@ class MainActivity : ComponentActivity() {
         walletList = wallet.linked.all()
         balance = null
         rewardSummary = null
-        if (shopSections.isEmpty()) {
-            lifecycleScope.launch { Shop.sections()?.let { shopSections = it } }
-        }
         val addr = connected ?: return
         lifecycleScope.launch {
             val b = withContext(Dispatchers.IO) { Chain.balance(addr) }
@@ -588,6 +586,18 @@ class MainActivity : ComponentActivity() {
                 // The server's doorbell: while the app is on screen, a payment to us is
                 // announced the moment the server sees it. The announcement is only a reason
                 // to look — checkOwed verifies it on-chain before anything turns green.
+                // The shop, retried until it answers.
+                //
+                // It used to be fetched once, inside refreshWallets, and only when the list was
+                // still empty — so a single slow or failed call meant no "Pay a bill" section
+                // for the rest of the session, with nothing on screen to say why or any way to
+                // ask again. The catalogue is the server's and the server can be cold (its
+                // first call after a restart pages through Bitrefill), which is exactly when
+                // someone opens the app and finds the section missing.
+                LaunchedEffect(resumeTick) {
+                    if (shopSections.isEmpty()) Shop.sections()?.let { shopSections = it }
+                }
+
                 // Anything written to us while the app was closed. The live stream below only
                 // carries what arrives while it is connected, and a push only reaches a phone
                 // that has one — so the catch-up is the only thing that covers both.
@@ -1022,8 +1032,7 @@ class MainActivity : ComponentActivity() {
 
                     if (home) {
                         PayBar(
-                            modifier = Modifier.align(Alignment.BottomCenter)
-                                .navigationBarsPadding().padding(bottom = 48.dp),
+                            modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding(),
                             onTap = {
                                 // The sheet does the waiting now. Arming the radio from here
                                 // left the home screen looking exactly as it had a second
@@ -2704,12 +2713,24 @@ private fun RequestsTab(
  */
 @Composable
 private fun PayBar(modifier: Modifier, onTap: () -> Unit, onScan: () -> Unit) {
-    Row(
-        modifier.fillMaxWidth().padding(horizontal = 20.dp),
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        PayChoice("Pay via Tap", R.drawable.hi_nfc, filled = true, modifier = Modifier.weight(1f), onClick = onTap)
-        PayChoice("Scan any QR", R.drawable.hi_qr, filled = false, modifier = Modifier.weight(1f), onClick = onScan)
+    Column(modifier.fillMaxWidth()) {
+        // The page scrolls UNDER this, so it needs a floor. Without one the buttons sat on
+        // top of whatever happened to be behind them — the bill tiles, half of a history row —
+        // and read as two stickers dropped on the page rather than a bar it scrolls beneath.
+        // A fade rather than a hard edge, so nothing is ever abruptly cut in half.
+        Box(
+            Modifier.fillMaxWidth().height(28.dp)
+                .background(Brush.verticalGradient(listOf(Color.Transparent, D.White))),
+        )
+        Row(
+            Modifier.fillMaxWidth().background(D.White).padding(horizontal = 20.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            PayChoice("Pay via Tap", R.drawable.hi_nfc, filled = true, modifier = Modifier.weight(1f), onClick = onTap)
+            PayChoice("Scan any QR", R.drawable.hi_qr, filled = false, modifier = Modifier.weight(1f), onClick = onScan)
+        }
+        // Carries the white down to the very bottom, so nothing shows in the gap beneath it.
+        Box(Modifier.fillMaxWidth().height(48.dp).background(D.White))
     }
 }
 
