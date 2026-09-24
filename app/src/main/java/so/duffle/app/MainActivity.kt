@@ -1503,23 +1503,57 @@ private fun BalanceCard(
     onRequest: () -> Unit,
     onCards: () -> Unit,
 ) {
+    // At most three behind. A fourth adds no information — you already know there are more —
+    // and every extra sliver eats width the balance needs.
+    val stack = others.take(3)
+    //: how much of each card behind is left showing. One number decides the whole pile: the
+    //: step between cards, the width the balance gives up, and the width of every sliver.
+    val step = 17.dp
+    val CARD = 44.dp
     Box(Modifier.fillMaxWidth().height(168.dp)) {
-        // The stack behind, peeking. Drawn first so the card sits over it.
-        Row(
-            Modifier.align(Alignment.CenterEnd).height(140.dp),
-            horizontalArrangement = Arrangement.spacedBy((-26).dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            others.take(3).forEachIndexed { i, w ->
-                Box(
-                    Modifier.width(46.dp).height((140 - i * 10).dp)
-                        .clip(RoundedCornerShape(topStart = 18.dp, bottomStart = 18.dp))
-                        .background(w.colour)
-                )
+        // The stack behind, peeking.
+        //
+        // Drawn BACK TO FRONT. A Row painted them in list order, which put the furthest card
+        // on top of the nearest one and made the overlaps read as a shuffled pile. Each card
+        // now starts one step further right and runs to the same right edge, so every sliver
+        // is the same width and the one nearest the balance is the one in front.
+        if (stack.isNotEmpty()) {
+            Box(
+                Modifier.align(Alignment.CenterEnd)
+                    // Past the page's own gutter, so the pile runs off the edge of the screen
+                    // the way a stack of cards in a pocket does. Inside the gutter it read as
+                    // three coloured blocks that happened to stop short of the edge.
+                    .offset(x = 20.dp)
+                    .width(CARD + step * (stack.size - 1))
+                    .height(150.dp),
+            ) {
+                for (depth in stack.indices.reversed()) {
+                    Box(
+                        Modifier.align(Alignment.CenterStart)
+                            // Fixed width, stepped right. Filling to the container's right edge
+                            // instead made the FRONT card the widest, so it covered every card
+                            // behind it and three wallets showed up as one green rectangle.
+                            .offset(x = step * depth)
+                            .width(CARD)
+                            .height(150.dp - 10.dp * depth)
+                            .clip(RoundedCornerShape(topStart = 18.dp, bottomStart = 18.dp))
+                            .background(stack[depth].colour),
+                    )
+                }
             }
         }
         Column(
-            Modifier.fillMaxWidth(if (others.isEmpty()) 1f else 0.82f).height(160.dp)
+            Modifier.fillMaxWidth().height(160.dp)
+                // Ends a fixed distance short of the stack rather than at a fraction of the
+                // screen: the overlap is then always 17dp whether there is one card behind or
+                // three, instead of drifting with how many wallets happen to be linked.
+                // Sized so EVERY sliver is one step wide, including the front card's.
+                //
+                // The stack hangs 20dp past this column's gutter to reach the screen edge, so
+                // the balance has to give up that much less. Without subtracting it the front
+                // card showed twice as much of itself as the two behind it, and the pile read
+                // as one wide block with two thin stripes rather than three cards.
+                .padding(end = (step * stack.size - 20.dp).coerceAtLeast(0.dp))
                 .align(Alignment.CenterStart)
                 .clip(RoundedCornerShape(24.dp)).background(D.Black)
                 .padding(horizontal = 20.dp, vertical = 18.dp),

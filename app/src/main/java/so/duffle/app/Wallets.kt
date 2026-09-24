@@ -55,13 +55,25 @@ data class Linked(
             matches("phantom") -> Color(0xFFAB9FF2)
             matches("solflare") -> Color(0xFFFC7227)
             matches("backpack") -> Color(0xFFE33E3F)
-            matches("seeker", "solanamobile", "seed vault") -> Color(0xFF14F195)
+            // ".skr" catches Seeker Wallet by the only thing it says about itself: the account
+            // name it reports is an SNS domain on that TLD. A wallet with no package and no
+            // brand in its name is the built-in one on this phone.
+            matches("seeker", "solanamobile", "seed vault", ".skr") -> Color(0xFF14F195)
             matches("ultimate") -> Color(0xFF3F8CFF)
             else -> SPARE[(address.hashCode().toUInt() % SPARE.size.toUInt()).toInt()]
         }
 
+    /**
+     * The package is checked first, and it is the only reliable half.
+     *
+     * A wallet's `name` is whatever it chose to call the ACCOUNT, not itself: Seeker Wallet
+     * reports an SNS domain ("dezloper.skr"), which matches nothing, so the Seeker card came
+     * out of the spare palette instead of Solana green. The package — app.phantom,
+     * com.solflare.mobile, app.backpack.mobile.standalone — is the app's own identity and
+     * cannot be renamed by its owner.
+     */
     private fun matches(vararg needles: String): Boolean {
-        val hay = "$name ${uri.orEmpty()}".lowercase()
+        val hay = "$name ${uri.orEmpty()} ${pkg.orEmpty()}".lowercase()
         return needles.any { it in hay }
     }
 
