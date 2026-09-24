@@ -18,6 +18,8 @@ import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.SpanStyle
@@ -2139,6 +2141,7 @@ private fun Face(c: Contact, size: Dp, ring: Color? = null) {
 }
 
 @Composable
+@OptIn(ExperimentalFoundationApi::class)
 private fun Header(
     d: Diagnostics,
     checking: Boolean,
@@ -2148,8 +2151,16 @@ private fun Header(
 ) {
     Column {
         Row(verticalAlignment = Alignment.CenterVertically) {
+            // Long-press the wordmark for diagnostics and the exchange log. The status line
+            // that used to carry them is gone, and they are a builder's tool, not a user's —
+            // but they are how every NFC problem in this app has been read, so they keep a
+            // door. An invisible one, which is the right size for the audience.
             Text("AirPay", color = D.Black, fontSize = 30.sp, fontWeight = FontWeight.ExtraBold,
-                fontFamily = Display, letterSpacing = (-0.5).sp)
+                fontFamily = Display, letterSpacing = (-0.5).sp,
+                modifier = Modifier.clip(RoundedCornerShape(10.dp)).combinedClickable(
+                    interactionSource = remember { MutableInteractionSource() }, indication = null,
+                    onLongClick = onCheck, onClick = {},
+                ))
             Spacer(Modifier.weight(1f))
             val interaction = remember { MutableInteractionSource() }
             Box(contentAlignment = Alignment.TopEnd) {
@@ -2173,25 +2184,6 @@ private fun Header(
                     }
                 }
             }
-        }
-        Spacer(Modifier.height(2.dp))
-        // The status line is the diagnostics button now. It already says what the check would
-        // tell you — "Ready · Seeker · devnet" — so tapping the summary to see the detail is
-        // where anybody would look for it once the corner belongs to notifications.
-        Row(
-            Modifier.clip(RoundedCornerShape(8.dp)).clickable(onClick = onCheck)
-                .padding(vertical = 2.dp, horizontal = 1.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            val ok = d.blocker == null
-            Box(Modifier.size(7.dp).background(if (ok) D.Success else D.Danger, CircleShape))
-            Spacer(Modifier.width(7.dp))
-            Text(d.blocker ?: "Ready · ${d.model} · devnet",
-                color = if (ok) D.Quiet else D.Danger, fontSize = 13.sp)
-            Spacer(Modifier.width(6.dp))
-            // Rotated rather than a second drawable: it is the same arrow, turned over.
-            val turn by animateFloatAsState(if (checking) 180f else 0f, label = "turn")
-            HIcon(R.drawable.hi_arrow_down, D.Quiet, 13.dp, Modifier.graphicsLayer { rotationZ = turn })
         }
         AnimatedVisibility(visible = checking) {
             Column(
