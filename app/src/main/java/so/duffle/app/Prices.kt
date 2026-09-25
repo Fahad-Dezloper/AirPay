@@ -54,6 +54,23 @@ object Prices {
         null
     }
 
+    /**
+     * Dollars for one whole token, or null when there is no honest answer.
+     *
+     * SOL is priced live. Dollar stablecoins are a dollar by construction — that is the entire
+     * promise of one, and pricing them through an exchange would add noise to a constant. Every
+     * other token returns **null**, and null means the screen shows no dollar figure rather
+     * than a zero: most of what is held on devnet is a test mint with no market at all, and
+     * "$0.00" next to a balance reads as "worthless" when the truth is "unknown".
+     */
+    private val DOLLAR_PEGGED = setOf("USDC", "USDT", "PYUSD", "USDP", "DAI")
+
+    suspend fun unitUsd(h: Tokens.Holding): Double? = when {
+        h.isSol -> solUsd()
+        h.symbol.uppercase() in DOLLAR_PEGGED -> 1.0
+        else -> null
+    }
+
     /** "1,234.56" — grouped, two places, which is how money is read. */
     fun money(amount: Double): String = String.format("%,.2f", amount)
 }

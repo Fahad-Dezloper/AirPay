@@ -1426,7 +1426,7 @@ private fun SelectRing(selected: Boolean, content: @Composable () -> Unit) {
 
 /** A token's logo: SOL's ships with the app; others load from their metadata; a letter otherwise. */
 @Composable
-private fun TokenImage(t: Tokens.Holding, size: Dp) {
+internal fun TokenImage(t: Tokens.Holding, size: Dp) {
     val round = Modifier.size(size).clip(CircleShape)
     if (t.isSol) {
         Image(painterResource(R.drawable.token_sol), contentDescription = null, modifier = round, contentScale = ContentScale.Crop)
