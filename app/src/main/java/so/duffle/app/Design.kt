@@ -1,5 +1,24 @@
 package so.duffle.app
 
+import androidx.compose.foundation.layout.Column
+import androidx.activity.compose.BackHandler
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutLinearInEasing
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.rememberDraggableState
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.layout.onSizeChanged
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import androidx.annotation.DrawableRes
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.animateColorAsState
@@ -193,4 +212,105 @@ internal fun Modifier.cardShadow(radius: Dp) = drawBehind {
         Color(25, 28, 33).copy(alpha = .08f), topLeft = Offset(-px, -px),
         size = Size(size.width + 2 * px, size.height + 2 * px), cornerRadius = CornerRadius(r + px),
     )
+}
+
+/** `settle` from DUFFLE_DESIGN.md §3 — tray height and content swaps. */
+internal val Settle = spring<Float>(dampingRatio = 0.9f, stiffness = 247f)
+
+/**
+ * The app's tray, extracted so there is one of them.
+ *
+ * The tap sheet had this chrome built into it and every later sheet reached for Material's
+ * `ModalBottomSheet` instead — a different scrim, a different spring, a different radius, in the
+ * same app. This is the one in DUFFLE_DESIGN.md: it rises on `arrive`, overshooting a little to
+ * reward the gesture; it can be dragged down and caught mid-rise, because one number drives
+ * rising, dragging, springing back and leaving; and it leaves faster and quieter than it came,
+ * which is the rule about things leaving the way they arrived.
+ *
+ * The panel's corner is [OUTER]. Anything nested inside it should use `OUTER - its padding`, so
+ * the curves stay concentric rather than merely both being round.
+ */
+internal object Tray {
+    val OUTER = 28.dp
+    /** Side padding inside the tray, and therefore what an inner radius subtracts. */
+    val PAD = 20.dp
+    /** A block sitting directly inside the tray: concentric with it. */
+    val INNER = OUTER - PAD
+}
+
+@Composable
+internal fun Tray(
+    onClose: () -> Unit,
+    /** False while something must not be interrupted — a payment in flight. */
+    dismissible: Boolean = true,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    val scope = rememberCoroutineScope()
+    val scrim = remember { Animatable(0f) }
+    val offset = remember { Animatable(0f) }
+    var height by remember { mutableFloatStateOf(0f) }
+    var shown by remember { mutableStateOf(false) }
+    var leaving by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        val h = snapshotFlow { height }.first { it > 0f }
+        // Below the screen until it has been measured, so it never flashes in place.
+        offset.snapTo(h)
+        shown = true
+        launch { scrim.animateTo(1f, tween(220)) }
+        offset.animateTo(0f, Arrive)
+    }
+
+    fun leave() {
+        if (leaving || !dismissible) return
+        leaving = true
+        scope.launch { scrim.animateTo(0f, tween(150)) }
+        scope.launch {
+            // Quicker and quieter than the entrance.
+            offset.animateTo(height.coerceAtLeast(1f), tween(200, easing = FastOutLinearInEasing))
+            onClose()
+        }
+    }
+
+    BackHandler(enabled = dismissible) { leave() }
+
+    val drag = rememberDraggableState { delta ->
+        scope.launch {
+            val next = offset.value + delta
+            // Upward drag is resisted rather than refused, so the tray feels attached.
+            offset.snapTo(if (next < 0f) (offset.value + delta * .25f).coerceAtLeast(-40f) else next)
+        }
+    }
+
+    Box(
+        Modifier.fillMaxSize()
+            .drawBehind {
+                val gone = if (height > 0f) (offset.value / height).coerceIn(0f, 1f) else 0f
+                drawRect(Color.Black.copy(alpha = .28f * scrim.value * (1f - gone)))
+            }
+            .clickable(remember { MutableInteractionSource() }, indication = null) { leave() },
+        contentAlignment = Alignment.BottomCenter,
+    ) {
+        Column(
+            Modifier.fillMaxWidth()
+                .onSizeChanged { height = it.height.toFloat() }
+                .graphicsLayer { translationY = if (shown) offset.value else size.height }
+                .draggable(
+                    drag, Orientation.Vertical, enabled = shown && !leaving && dismissible,
+                    onDragStopped = { velocity ->
+                        // Far enough, or flicked: go. Otherwise settle back.
+                        if (offset.value > height * .25f || velocity > 1_200f) leave()
+                        else scope.launch { offset.animateTo(0f, Settle, initialVelocity = velocity) }
+                    },
+                )
+                .background(D.White, RoundedCornerShape(topStart = Tray.OUTER, topEnd = Tray.OUTER))
+                // Swallow taps so touching the tray never dismisses it.
+                .clickable(remember { MutableInteractionSource() }, indication = null) {}
+                .navigationBarsPadding()
+                .padding(start = Tray.PAD, end = Tray.PAD, top = 10.dp, bottom = 12.dp),
+        ) {
+            Box(Modifier.align(Alignment.CenterHorizontally).size(36.dp, 4.dp).background(D.Line, CircleShape))
+            content()
+        }
+    }
 }

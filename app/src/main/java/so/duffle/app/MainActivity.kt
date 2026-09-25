@@ -1844,10 +1844,14 @@ private fun checksFor(context: Context, w: Linked): List<Check> {
 /**
  * One linked wallet: what it is, what holds up when checked, and the way to unlink it.
  *
- * Sized to fit without scrolling. A sheet you have to scroll to reach the one button on it is
- * a sheet that hid the button.
+ * On the app's own [Tray] — the same chrome, scrim and `arrive` spring as the tap sheet, rather
+ * than Material's, which is a different scrim, a different spring and a different corner in the
+ * same app. The checks block is concentric with the tray: [Tray.INNER] is the outer radius
+ * minus the padding it sits inside, so the curves nest instead of merely both being round.
+ *
+ * The rows arrive staggered. Frequency decides how much a thing animates and this screen is
+ * rare, so it gets the entrance; everything on it is still interruptible.
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun WalletSheet(w: Linked, onRemove: () -> Unit, onClose: () -> Unit) {
     val context = LocalContext.current
@@ -1856,83 +1860,97 @@ private fun WalletSheet(w: Linked, onRemove: () -> Unit, onClose: () -> Unit) {
     var copied by remember { mutableStateOf(false) }
     val checks = remember(w.address, w.token, w.pkg) { checksFor(context, w) }
 
-    ModalBottomSheet(onDismissRequest = onClose, containerColor = D.White, dragHandle = null) {
-        Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 16.dp)) {
-            Box(Modifier.align(Alignment.CenterHorizontally).size(36.dp, 4.dp).background(D.Line, CircleShape))
-            Spacer(Modifier.height(18.dp))
+    Tray(onClose = onClose) {
+        Spacer(Modifier.height(18.dp))
 
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                WalletLogo(w, 46.dp, 14.dp)
-                Spacer(Modifier.width(13.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(w.username ?: w.name, color = D.Black, fontSize = 19.sp,
-                        fontWeight = FontWeight.Bold, fontFamily = Display, maxLines = 1)
-                    Spacer(Modifier.height(2.dp))
-                    // Short, and tappable. The full address is 44 characters that wrap to two
-                    // lines and are read by nobody; what people do with it is paste it.
-                    Text(
-                        if (copied) "Copied" else w.short,
-                        color = if (copied) D.Success else D.Quiet,
-                        fontSize = 12.5.sp, fontFamily = FontFamily.Monospace,
-                        modifier = Modifier.clip(RoundedCornerShape(6.dp))
-                            .clickable {
-                                clip.setText(AnnotatedString(w.address))
-                                copied = true
-                            }
-                            .padding(vertical = 1.dp),
-                    )
-                }
-                Text("Linked ${whenLinked(w.addedAt)}", color = D.Quiet, fontSize = 11.sp,
-                    textAlign = TextAlign.End)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            WalletLogo(w, 46.dp, 14.dp)
+            Spacer(Modifier.width(13.dp))
+            Column(Modifier.weight(1f)) {
+                Text(w.username ?: w.name, color = D.Black, fontSize = 19.sp,
+                    fontWeight = FontWeight.Bold, fontFamily = Display, maxLines = 1)
+                Spacer(Modifier.height(2.dp))
+                val copy = remember { MutableInteractionSource() }
+                // Short, and tappable. The full 44 characters wrap to two lines and are read by
+                // nobody; what people do with an address is paste it.
+                Text(
+                    if (copied) "Copied" else w.short,
+                    color = if (copied) D.Success else D.Quiet,
+                    fontSize = 12.5.sp, fontFamily = FontFamily.Monospace,
+                    modifier = Modifier.then(PressScale(copy)).clip(RoundedCornerShape(6.dp))
+                        .clickable(copy, indication = null) {
+                            clip.setText(AnnotatedString(w.address))
+                            copied = true
+                            Haptics.tick(context)
+                        }
+                        .padding(vertical = 1.dp),
+                )
             }
+            Text("Linked ${whenLinked(w.addedAt)}", color = D.Quiet, fontSize = 11.sp,
+                textAlign = TextAlign.End)
+        }
 
-            Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(16.dp))
 
-            Column(
-                Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(D.Fill)
-                    .padding(horizontal = 14.dp, vertical = 4.dp),
-            ) {
-                checks.forEach { c ->
-                    Row(Modifier.padding(vertical = 9.dp), verticalAlignment = Alignment.CenterVertically) {
-                        HIcon(
-                            if (c.ok) R.drawable.hi_tick else R.drawable.hi_alert,
-                            if (c.ok) D.Success else D.Danger, 16.dp,
-                        )
-                        Spacer(Modifier.width(10.dp))
-                        Column(Modifier.weight(1f)) {
-                            Text(c.label, color = D.Black, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                            c.detail?.let {
-                                Text(it, color = D.Quiet, fontSize = 11.sp,
-                                    fontFamily = if (it.startsWith("app.") || it.contains('.')) FontFamily.Monospace else FontFamily.Default,
-                                    maxLines = 1)
-                            }
+        Column(
+            Modifier.fillMaxWidth().clip(RoundedCornerShape(Tray.INNER)).background(D.Fill)
+                .padding(horizontal = 14.dp, vertical = 4.dp),
+        ) {
+            checks.forEachIndexed { i, c ->
+                // Staggered, nearest the cause first. Nature is not synchronous.
+                var here by remember { mutableStateOf(false) }
+                LaunchedEffect(Unit) { delay(120L + i * 60L); here = true }
+                val fade by animateFloatAsState(if (here) 1f else 0f, Settle, label = "check")
+                Row(
+                    Modifier.padding(vertical = 9.dp)
+                        .graphicsLayer { alpha = fade; translationY = (1f - fade) * 8.dp.toPx() },
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    HIcon(
+                        if (c.ok) R.drawable.hi_tick else R.drawable.hi_alert,
+                        if (c.ok) D.Success else D.Danger, 16.dp,
+                    )
+                    Spacer(Modifier.width(10.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(c.label, color = D.Black, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                        c.detail?.let {
+                            Text(it, color = D.Quiet, fontSize = 11.sp,
+                                fontFamily = if (it.contains('.')) FontFamily.Monospace else FontFamily.Default,
+                                maxLines = 1)
                         }
                     }
                 }
             }
-
-            Spacer(Modifier.height(12.dp))
-            // The strongest thing on this sheet, and the one line that is not a check because
-            // it is not a property of the wallet — it is what this app does not do.
-            Text(
-                "AirPay never receives your key. Every payment is signed inside the wallet and handed back already signed.",
-                color = D.Quiet, fontSize = 11.5.sp, lineHeight = 16.sp,
-            )
-
-            Spacer(Modifier.height(18.dp))
-            // Two taps, because relinking means going back through the wallet. Nothing is
-            // spent either way: this forgets a token, it does not touch the account.
-            Text(
-                if (confirming) "Tap again to remove" else "Remove wallet",
-                color = D.Danger, fontSize = 15.sp, fontWeight = FontWeight.Bold,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp))
-                    .background(D.Danger.copy(alpha = if (confirming) .16f else .08f))
-                    .clickable { if (confirming) onRemove() else confirming = true }
-                    .padding(vertical = 15.dp),
-            )
-            Spacer(Modifier.height(10.dp))
         }
+
+        Spacer(Modifier.height(12.dp))
+        // The strongest thing on this sheet, and the one line that is not a check — because it
+        // is not a property of the wallet. It is what this app does not do.
+        Text(
+            "AirPay never receives your key. Every payment is signed inside the wallet and handed back already signed.",
+            color = D.Quiet, fontSize = 11.5.sp, lineHeight = 16.sp,
+        )
+
+        Spacer(Modifier.height(18.dp))
+        // Two taps, because relinking means going back through the wallet. Nothing is spent
+        // either way: this forgets a token, it does not touch the account.
+        val remove = remember { MutableInteractionSource() }
+        Text(
+            if (confirming) "Tap again to remove" else "Remove wallet",
+            color = D.Danger, fontSize = 15.sp, fontWeight = FontWeight.Bold,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.fillMaxWidth().then(PressScale(remove))
+                .clip(RoundedCornerShape(Tray.INNER))
+                .background(D.Danger.copy(alpha = if (confirming) .16f else .08f))
+                .clickable(remove, indication = null) {
+                    if (confirming) onRemove() else {
+                        confirming = true
+                        Haptics.tick(context)
+                    }
+                }
+                .padding(vertical = 15.dp),
+        )
+        Spacer(Modifier.height(10.dp))
     }
 }
 
