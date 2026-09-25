@@ -23,6 +23,13 @@
             <action android:name="android.intent.action.VIEW" />
             <data android:scheme="solana-wallet" />
         </intent>
+        <!-- The stores, so getInstallSourceInfo will name them.
+             Package visibility filters the INSTALLER's name too: without being able to see
+             these, Android hands back null for where a wallet came from, and null is
+             indistinguishable from genuinely sideloaded. That turned a security check into a
+             false accusation against a wallet installed from the dApp Store. -->
+        <package android:name="com.solanamobile.dappstore" />
+        <package android:name="com.android.vending" />
     </queries>
 
     <application

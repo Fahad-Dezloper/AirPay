@@ -57,6 +57,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.graphics.drawscope.Stroke
+import android.content.Context
 import android.content.Intent
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.foundation.horizontalScroll
@@ -1783,61 +1784,144 @@ private fun WalletLogo(w: Linked, size: Dp, radius: Dp = 6.dp) {
 }
 
 /**
- * Everything this phone knows about one linked wallet, and the way to unlink it.
+ * What this phone can actually verify about a linked wallet.
  *
- * Opened from the address in §2. What it can honestly say is limited by what a wallet tells us
- * during authorization: which app it is, the address it authorized, when that happened, and
- * whether the session token from it is still held. It cannot say whether the token still WORKS
- * — only the wallet can answer that, and only by being asked to sign something — so the line
- * about it says what is held, not what will happen.
+ * Every line is the result of a check that runs, not a reassurance. The three that can be made
+ * locally and instantly:
+ *
+ *  * the wallet app is still installed — if it is gone the session is dead and no payment will
+ *    ever complete, which is worth knowing before standing in front of somebody;
+ *  * where that app came from — Android records the installer, so "from the Solana dApp Store"
+ *    is a fact rather than a claim, and a sideloaded wallet is named as one;
+ *  * whether the authorization token is held here.
+ *
+ * What is deliberately NOT claimed: that the token still works. Only the wallet can answer
+ * that, and only by being asked to sign something. A green tick for something unverified is
+ * worth less than no tick at all.
+ */
+private data class Check(val ok: Boolean, val label: String, val detail: String? = null)
+
+private fun checksFor(context: Context, w: Linked): List<Check> {
+    val pm = context.packageManager
+    val checks = mutableListOf<Check>()
+
+    val pkg = w.pkg?.takeIf { it.isNotBlank() }
+    if (pkg == null) {
+        // Linked before the picker existed, so there is no package to look up. Said plainly
+        // rather than shown as a failure — nothing is wrong, we simply cannot check.
+        checks += Check(false, "Wallet app not recorded", "Linked before AirPay tracked this")
+    } else {
+        val installed = runCatching { pm.getPackageInfo(pkg, 0) }.isSuccess
+        checks += Check(installed,
+            if (installed) "Wallet app installed" else "Wallet app is gone",
+            if (installed) pkg else "Reinstall $pkg to use this wallet")
+
+        if (installed) {
+            // "Could not ask" and "came from nowhere" are different answers and must not
+            // collapse into the same one. Android blanks the installer's name when the caller
+            // cannot see that package, so a swallowed failure here reads as "sideloaded" —
+            // an accusation, against a wallet that came from the dApp Store.
+            val source = runCatching { pm.getInstallSourceInfo(pkg) }
+            val from = source.getOrNull()?.installingPackageName
+            checks += when {
+                source.isFailure -> Check(true, "Install source not disclosed",
+                    "Android did not say where it came from")
+                from == "com.solanamobile.dappstore" -> Check(true, "From the Solana dApp Store")
+                from == "com.android.vending" -> Check(true, "From Google Play")
+                from == null -> Check(false, "Sideloaded", "Not installed from a store")
+                else -> Check(true, "Installed by", from)
+            }
+        }
+    }
+
+    checks += Check(w.token != null,
+        if (w.token != null) "Session held on this phone" else "No session held",
+        if (w.token != null) null else "The wallet will be asked to authorize again")
+
+    return checks
+}
+
+/**
+ * One linked wallet: what it is, what holds up when checked, and the way to unlink it.
+ *
+ * Sized to fit without scrolling. A sheet you have to scroll to reach the one button on it is
+ * a sheet that hid the button.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun WalletSheet(w: Linked, onRemove: () -> Unit, onClose: () -> Unit) {
+    val context = LocalContext.current
     val clip = LocalClipboardManager.current
     var confirming by remember { mutableStateOf(false) }
+    var copied by remember { mutableStateOf(false) }
+    val checks = remember(w.address, w.token, w.pkg) { checksFor(context, w) }
 
     ModalBottomSheet(onDismissRequest = onClose, containerColor = D.White, dragHandle = null) {
-        Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 18.dp)) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 16.dp)) {
             Box(Modifier.align(Alignment.CenterHorizontally).size(36.dp, 4.dp).background(D.Line, CircleShape))
             Spacer(Modifier.height(18.dp))
 
             Row(verticalAlignment = Alignment.CenterVertically) {
-                WalletLogo(w, 44.dp, 13.dp)
-                Spacer(Modifier.width(12.dp))
+                WalletLogo(w, 46.dp, 14.dp)
+                Spacer(Modifier.width(13.dp))
                 Column(Modifier.weight(1f)) {
                     Text(w.username ?: w.name, color = D.Black, fontSize = 19.sp,
                         fontWeight = FontWeight.Bold, fontFamily = Display, maxLines = 1)
+                    Spacer(Modifier.height(2.dp))
+                    // Short, and tappable. The full address is 44 characters that wrap to two
+                    // lines and are read by nobody; what people do with it is paste it.
                     Text(
-                        if (w.token != null) "Connected" else "Needs reconnecting",
-                        color = if (w.token != null) D.Success else D.Quiet, fontSize = 12.sp,
-                        fontWeight = FontWeight.SemiBold,
+                        if (copied) "Copied" else w.short,
+                        color = if (copied) D.Success else D.Quiet,
+                        fontSize = 12.5.sp, fontFamily = FontFamily.Monospace,
+                        modifier = Modifier.clip(RoundedCornerShape(6.dp))
+                            .clickable {
+                                clip.setText(AnnotatedString(w.address))
+                                copied = true
+                            }
+                            .padding(vertical = 1.dp),
                     )
+                }
+                Text("Linked ${whenLinked(w.addedAt)}", color = D.Quiet, fontSize = 11.sp,
+                    textAlign = TextAlign.End)
+            }
+
+            Spacer(Modifier.height(16.dp))
+
+            Column(
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(D.Fill)
+                    .padding(horizontal = 14.dp, vertical = 4.dp),
+            ) {
+                checks.forEach { c ->
+                    Row(Modifier.padding(vertical = 9.dp), verticalAlignment = Alignment.CenterVertically) {
+                        HIcon(
+                            if (c.ok) R.drawable.hi_tick else R.drawable.hi_alert,
+                            if (c.ok) D.Success else D.Danger, 16.dp,
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(c.label, color = D.Black, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                            c.detail?.let {
+                                Text(it, color = D.Quiet, fontSize = 11.sp,
+                                    fontFamily = if (it.startsWith("app.") || it.contains('.')) FontFamily.Monospace else FontFamily.Default,
+                                    maxLines = 1)
+                            }
+                        }
+                    }
                 }
             }
 
-            Spacer(Modifier.height(20.dp))
-
-            // The address in full, because a truncated one cannot be checked against anything.
-            Detail("Address", w.address, mono = true) {
-                clip.setText(AnnotatedString(w.address))
-            }
-            Detail("Linked", whenLinked(w.addedAt))
-            Detail("Wallet app", w.name)
-            // Only when there is one. A wallet linked before the picker existed has no package
-            // and is reached the original way; saying "unknown" would imply something is wrong.
-            w.pkg?.takeIf { it.isNotBlank() }?.let { Detail("Package", it, mono = true) }
-            Detail(
-                "Session",
-                if (w.token != null) "Held on this phone"
-                else "None — the next payment will ask the wallet to authorize again",
+            Spacer(Modifier.height(12.dp))
+            // The strongest thing on this sheet, and the one line that is not a check because
+            // it is not a property of the wallet — it is what this app does not do.
+            Text(
+                "AirPay never receives your key. Every payment is signed inside the wallet and handed back already signed.",
+                color = D.Quiet, fontSize = 11.5.sp, lineHeight = 16.sp,
             )
 
-            Spacer(Modifier.height(22.dp))
-
-            // Two taps, because it cannot be undone from here: relinking means going back
-            // through the wallet. Nothing is spent either way — this forgets a token, it does
-            // not touch the account, and the money stays exactly where it is.
+            Spacer(Modifier.height(18.dp))
+            // Two taps, because relinking means going back through the wallet. Nothing is
+            // spent either way: this forgets a token, it does not touch the account.
             Text(
                 if (confirming) "Tap again to remove" else "Remove wallet",
                 color = D.Danger, fontSize = 15.sp, fontWeight = FontWeight.Bold,
@@ -1847,42 +1931,18 @@ private fun WalletSheet(w: Linked, onRemove: () -> Unit, onClose: () -> Unit) {
                     .clickable { if (confirming) onRemove() else confirming = true }
                     .padding(vertical = 15.dp),
             )
-            Spacer(Modifier.height(8.dp))
-            Text(
-                "Removing it forgets the session on this phone. The account and everything in it are untouched.",
-                color = D.Quiet, fontSize = 11.5.sp, textAlign = TextAlign.Center,
-                modifier = Modifier.fillMaxWidth(),
-            )
             Spacer(Modifier.height(10.dp))
         }
     }
 }
 
-/** One labelled fact. Tappable only when there is something worth copying. */
-@Composable
-private fun Detail(label: String, value: String, mono: Boolean = false, onTap: (() -> Unit)? = null) {
-    Column(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
-            .then(if (onTap != null) Modifier.clickable(onClick = onTap) else Modifier)
-            .padding(vertical = 9.dp),
-    ) {
-        Text(label, color = D.Quiet, fontSize = 11.sp, letterSpacing = 0.8.sp,
-            fontWeight = FontWeight.SemiBold)
-        Spacer(Modifier.height(3.dp))
-        Text(
-            value, color = D.Black, fontSize = 13.5.sp, fontWeight = FontWeight.Medium,
-            fontFamily = if (mono) FontFamily.Monospace else FontFamily.Default,
-        )
-    }
-}
-
 /** "Today", "3 days ago", or a date once that stops being the useful answer. */
 private fun whenLinked(at: Long): String {
-    if (at <= 0) return "Before this phone kept track"
+    if (at <= 0) return "a while ago"
     val days = (System.currentTimeMillis() - at) / 86_400_000L
     return when {
-        days <= 0L -> "Today"
-        days == 1L -> "Yesterday"
+        days <= 0L -> "today"
+        days == 1L -> "yesterday"
         days < 30L -> "$days days ago"
         else -> java.text.SimpleDateFormat("d MMM yyyy", java.util.Locale.getDefault()).format(java.util.Date(at))
     }
