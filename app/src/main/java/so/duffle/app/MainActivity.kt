@@ -917,6 +917,7 @@ class MainActivity : ComponentActivity() {
                             return@Column
                         }
 
+                        Tag("2", checking)
                         BalanceCard(
                             wallet = walletList.firstOrNull { it.address == connected },
                             others = walletList.filter { it.address != connected },
@@ -976,6 +977,7 @@ class MainActivity : ComponentActivity() {
 
                         if (contactCount > 0) {
                             Spacer(Modifier.height(24.dp))
+                            Tag("3", checking)
                             People(
                                 list = contacts.all(),
                                 waiting = { addr ->
@@ -992,6 +994,7 @@ class MainActivity : ComponentActivity() {
 
                         if (Rewards.enabled) {
                             Spacer(Modifier.height(22.dp))
+                            Tag("4", checking)
                             EarnStrip(rewardSummary) { tab = Tab.REWARDS }
                             Spacer(Modifier.height(10.dp))
                             EarnTiles(
@@ -1005,6 +1008,7 @@ class MainActivity : ComponentActivity() {
                         }
                         if (shopSections.isNotEmpty()) {
                             Spacer(Modifier.height(22.dp))
+                            Tag("5", checking)
                             Text("Pay a bill", color = D.Black, fontSize = 17.sp,
                                 fontWeight = FontWeight.Bold, modifier = Modifier.padding(vertical = 4.dp))
                             Spacer(Modifier.height(10.dp))
@@ -1017,6 +1021,7 @@ class MainActivity : ComponentActivity() {
 
                         if (history.isNotEmpty()) {
                             Spacer(Modifier.height(22.dp))
+                            Tag("6", checking)
                             HistoryStrip(
                                 list = history,
                                 onViewAll = {
@@ -2317,6 +2322,7 @@ private fun Header(
     onProfile: () -> Unit,
 ) {
     Column {
+        Tag("1", checking)
         Row(verticalAlignment = Alignment.CenterVertically) {
             // Their initial rather than a generic silhouette: this app already draws every
             // OTHER person as a letter in a circle, and drawing yourself the same way says
@@ -2899,6 +2905,8 @@ private fun PayBar(modifier: Modifier, onTap: () -> Unit, onScan: () -> Unit) {
             Modifier.fillMaxWidth().background(D.White).padding(horizontal = 20.dp),
             horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
+            // §7 — see SECTIONS.md. Shown with the rest of them.
+
             PayChoice("Pay via Tap", R.drawable.hi_nfc, filled = true, modifier = Modifier.weight(1f), onClick = onTap)
             PayChoice("Scan any QR", R.drawable.hi_qr, filled = false, modifier = Modifier.weight(1f), onClick = onScan)
         }
@@ -3441,6 +3449,22 @@ private fun refusalText(why: String): String = when (why) {
     "chain_unreachable" -> "Couldn't check the chain — will retry"
     "no_payer" -> "We never learned who paid"
     else -> why.replace('_', ' ')
+}
+
+/**
+ * A section's number, shown on the device so a change can be asked for by number instead of
+ * described. Debug switch only — it rides on `checking`, the same long-press that shows
+ * diagnostics, and never appears otherwise. The map is in SECTIONS.md.
+ */
+@Composable
+private fun Tag(n: String, on: Boolean) {
+    if (!on) return
+    Text(
+        "§$n", color = D.White, fontSize = 10.sp, fontWeight = FontWeight.Bold, style = Figures,
+        modifier = Modifier.padding(top = 2.dp)
+            .clip(RoundedCornerShape(5.dp)).background(D.Blue)
+            .padding(horizontal = 5.dp, vertical = 1.dp),
+    )
 }
 
 @Composable
