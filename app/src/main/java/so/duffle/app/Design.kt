@@ -1,6 +1,11 @@
 package so.duffle.app
 
 import androidx.compose.foundation.layout.Column
+import androidx.compose.animation.SizeTransform
+import androidx.compose.animation.core.FiniteAnimationSpec
+import androidx.compose.animation.core.VisibilityThreshold
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.TextUnit
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutLinearInEasing
@@ -314,3 +319,54 @@ internal fun Tray(
         }
     }
 }
+
+/**
+ * A figure whose digits roll when it changes, the way an odometer does.
+ *
+ * DUFFLE_DESIGN.md asks for exactly this — "the amount rolls up in tabular figures" — and it is
+ * the right treatment for the one number on the home screen: switching wallets replaces every
+ * digit at once, and a straight swap gives no sense that one balance BECAME another.
+ *
+ * Each character is its own slot, so only the digits that actually changed move; the rest hold
+ * still. Direction carries meaning: a digit going up rolls up, one going down rolls down.
+ * Slots are staggered left to right, because a number is read that way.
+ *
+ * Tabular figures do the real work — without them every roll would also resize the slot and the
+ * whole figure would jitter sideways as it settled.
+ */
+@Composable
+internal fun FlowFigure(
+    text: String,
+    fontSize: TextUnit,
+    color: Color,
+    fontWeight: FontWeight,
+    modifier: Modifier = Modifier,
+    fontFamily: FontFamily? = null,
+) {
+    Row(modifier, verticalAlignment = Alignment.Bottom) {
+        text.forEachIndexed { i, ch ->
+            AnimatedContent(
+                targetState = ch,
+                transitionSpec = {
+                    val up = targetState > initialState
+                    val delay = i * 35
+                    val enter = slideInVertically(Settle.toInt(delay)) { h -> if (up) h else -h } +
+                        fadeIn(tween(160, delayMillis = delay))
+                    val exit = slideOutVertically(Settle.toInt(delay)) { h -> if (up) -h else h } +
+                        fadeOut(tween(120, delayMillis = delay))
+                    (enter togetherWith exit).using(SizeTransform(clip = false))
+                },
+                label = "digit",
+            ) { c ->
+                Text(
+                    c.toString(), color = color, fontSize = fontSize, fontWeight = fontWeight,
+                    fontFamily = fontFamily, style = Figures, maxLines = 1,
+                )
+            }
+        }
+    }
+}
+
+/** The `settle` spring as an Int animation, for the slide offsets. */
+private fun FiniteAnimationSpec<Float>.toInt(delay: Int): FiniteAnimationSpec<IntOffset> =
+    spring(dampingRatio = 0.9f, stiffness = 247f, visibilityThreshold = IntOffset.VisibilityThreshold)

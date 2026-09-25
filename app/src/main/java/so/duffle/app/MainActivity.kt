@@ -1627,53 +1627,47 @@ private fun BalanceCard(
             // dollar sign in front of a number nobody checked.
             val sol = (balance as? Chain.Balance.Ok)?.sol
             val rate by produceState<Double?>(initialValue = null) { value = Prices.solUsd() }
-            // ONE text run, not three Texts in a Row.
+            // Three runs now, not one, because each rolls on its own: the sign holds still
+            // while the whole number and the decimals animate their own digits.
             //
-            // Laid out as a row they were aligned by their bottom EDGES, and a glyph's bottom
-            // edge includes room for descenders it does not have — so the dollar sign and the
-            // decimals sank below the digits by however much their own font reserved. Spans
-            // inside a single Text share a baseline, which is the thing that actually needs to
-            // line up.
+            // A single Text put them on a shared baseline for free, and that is given up here
+            // — the row aligns to Bottom and the sign and cents are lifted by hand instead.
+            // Worth it: DUFFLE_DESIGN.md asks for the amount to roll, and a figure that swaps
+            // whole gives no sense that one balance BECAME another.
             val dollars = sol?.let { s0 -> rate?.let { s0 * it } }
             val shown = when {
                 dollars != null -> Prices.money(dollars)
                 sol != null -> "%.4f".format(sol)
                 else -> "—"
             }
-            Text(
-                buildAnnotatedString {
-                    if (dollars != null) {
-                        // Lifted part of the way, not all of it. A baseline is right for the
-                        // decimals — the same kind of mark as the digits — but a currency sign
-                        // is a label ON the number, so it rides a little above the baseline
-                        // and a little below the digit tops. `letterSpacing` here is the gap
-                        // after the sign: the font's own sidebearing is too tight at this size.
-                        withStyle(SpanStyle(
-                            fontSize = 30.sp, color = D.Quiet, fontWeight = FontWeight.Bold,
-                            baselineShift = BaselineShift(0.32f), letterSpacing = 3.sp,
-                        )) {
-                            append("$")
-                        }
-                    }
-                    withStyle(SpanStyle(fontSize = 60.sp, color = D.Black, fontWeight = FontWeight.ExtraBold)) {
-                        append(shown.substringBefore('.'))
-                    }
-                    shown.substringAfter('.', "").takeIf { it.isNotEmpty() }?.let { frac ->
-                        withStyle(SpanStyle(fontSize = 26.sp, color = D.Quiet, fontWeight = FontWeight.Bold)) {
-                            append(".$frac")
-                        }
-                    }
-                    if (dollars == null && sol != null) {
-                        withStyle(SpanStyle(fontSize = 14.sp, color = D.Quiet, fontWeight = FontWeight.SemiBold)) {
-                            append(" SOL")
-                        }
-                    }
-                },
-                fontFamily = Display,
-                style = Figures,
-                lineHeight = 64.sp,
-                maxLines = 1,
-            )
+            Row(verticalAlignment = Alignment.Bottom) {
+                if (dollars != null) {
+                    Text(
+                        "$", color = D.Quiet, fontSize = 30.sp, fontWeight = FontWeight.Bold,
+                        fontFamily = Display, style = Figures,
+                        modifier = Modifier.padding(bottom = 10.dp, end = 3.dp),
+                    )
+                }
+                FlowFigure(
+                    text = shown.substringBefore('.'),
+                    fontSize = 60.sp, color = D.Black,
+                    fontWeight = FontWeight.ExtraBold, fontFamily = Display,
+                )
+                shown.substringAfter('.', "").takeIf { it.isNotEmpty() }?.let { frac ->
+                    FlowFigure(
+                        text = ".$frac",
+                        fontSize = 26.sp, color = D.Quiet,
+                        fontWeight = FontWeight.Bold, fontFamily = Display,
+                        modifier = Modifier.padding(bottom = 6.dp),
+                    )
+                }
+                if (dollars == null && sol != null) {
+                    Text(
+                        " SOL", color = D.Quiet, fontSize = 14.sp, fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.padding(bottom = 8.dp),
+                    )
+                }
+            }
 
             // Send and Request were here.
             //
