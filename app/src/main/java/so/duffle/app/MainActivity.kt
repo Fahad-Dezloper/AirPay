@@ -23,6 +23,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.style.BaselineShift
@@ -143,6 +145,8 @@ class MainActivity : ComponentActivity() {
     private var busy by mutableStateOf(false)
     /** The wallet cards are open, covering the tab. */
     private var cards by mutableStateOf(false)
+    /** The wallet whose details sheet is open, or null. */
+    private var walletDetails by mutableStateOf<Linked?>(null)
     /** The installed wallet apps, while choosing which one to link. Null when not choosing. */
     private var picker by mutableStateOf<List<WalletLink.App>?>(null)
     /** Every linked wallet, re-read whenever one is added, switched or dropped. */
@@ -501,8 +505,6 @@ class MainActivity : ComponentActivity() {
                 var amount by rememberSaveable { mutableStateOf(lastAmount) }
                 // Re-read on every resume: NFC can be switched off while the app sits open,
                 // and a stale "Ready" is worse than no indicator at all.
-                var diag by remember { mutableStateOf(Diagnostics.read(this@MainActivity)) }
-                LaunchedEffect(resumeTick) { diag = Diagnostics.read(this@MainActivity) }
 
                 LaunchedEffect(Unit) {
                     scope.launch { TapHostApduService.events.collect { push(it) } }
@@ -721,7 +723,6 @@ class MainActivity : ComponentActivity() {
                             .windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.ime)),
                     ) {
                         Header(
-                            d = diag,
                             checking = checking,
                             unread = unread,
                             me = myName,
@@ -929,6 +930,9 @@ class MainActivity : ComponentActivity() {
                                 paidSignature = null
                             },
                             onCards = { cards = true },
+                            onDetails = {
+                                walletDetails = walletList.firstOrNull { it.address == connected }
+                            },
                             onSelectWallet = { w ->
                                 wallet.use(w)
                                 connected = w.address
@@ -1063,6 +1067,23 @@ class MainActivity : ComponentActivity() {
                     }
                     }
                     }
+                }
+
+                walletDetails?.let { w ->
+                    WalletSheet(
+                        w = w,
+                        onClose = { walletDetails = null },
+                        onRemove = {
+                            walletDetails = null
+                            wallet.linked.remove(w.address)
+                            // The selected one may have just gone; refreshWallets re-reads
+                            // which wallet is current and applyMode re-arms with it.
+                            connected = wallet.address
+                            refreshWallets()
+                            applyMode(amount)
+                            push("— removed ${w.name} ${w.short}")
+                        },
+                    )
                 }
 
                 if (renaming) {
@@ -1514,6 +1535,7 @@ private fun BalanceCard(
     onRequest: () -> Unit,
     onCards: () -> Unit,
     onSelectWallet: (Linked) -> Unit = {},
+    onDetails: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val stack = others.take(3)
@@ -1537,7 +1559,10 @@ private fun BalanceCard(
             Row(
                 Modifier
                     .clip(RoundedCornerShape(10.dp))
-                    .clickable(onClick = onCards)
+                    // The logo still goes to the wallets screen — that is where you SWITCH.
+                    // The address beside it opens this wallet's own details, which is a
+                    // different question and used to have nowhere to be asked.
+                    .clickable(onClick = onDetails)
                     .padding(vertical = 2.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -1747,10 +1772,119 @@ private fun WalletLogo(w: Linked, size: Dp, radius: Dp = 6.dp) {
         Image(
             painterResource(w.iconRes), contentDescription = null,
             modifier = Modifier.size(size).clip(RoundedCornerShape(radius)),
-            contentScale = ContentScale.Crop,
+            // Fit, not Crop. These icons are not all square — Backpack is 117x142, Seeker
+            // 681x607 — and filling a square box with them zoomed in and cut the edges off
+            // the artwork. Fit shows the whole thing.
+            contentScale = ContentScale.Fit,
         )
     } else {
         HIcon(w.iconRes, tint, size)
+    }
+}
+
+/**
+ * Everything this phone knows about one linked wallet, and the way to unlink it.
+ *
+ * Opened from the address in §2. What it can honestly say is limited by what a wallet tells us
+ * during authorization: which app it is, the address it authorized, when that happened, and
+ * whether the session token from it is still held. It cannot say whether the token still WORKS
+ * — only the wallet can answer that, and only by being asked to sign something — so the line
+ * about it says what is held, not what will happen.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun WalletSheet(w: Linked, onRemove: () -> Unit, onClose: () -> Unit) {
+    val clip = LocalClipboardManager.current
+    var confirming by remember { mutableStateOf(false) }
+
+    ModalBottomSheet(onDismissRequest = onClose, containerColor = D.White, dragHandle = null) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 18.dp)) {
+            Box(Modifier.align(Alignment.CenterHorizontally).size(36.dp, 4.dp).background(D.Line, CircleShape))
+            Spacer(Modifier.height(18.dp))
+
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                WalletLogo(w, 44.dp, 13.dp)
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(w.username ?: w.name, color = D.Black, fontSize = 19.sp,
+                        fontWeight = FontWeight.Bold, fontFamily = Display, maxLines = 1)
+                    Text(
+                        if (w.token != null) "Connected" else "Needs reconnecting",
+                        color = if (w.token != null) D.Success else D.Quiet, fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(20.dp))
+
+            // The address in full, because a truncated one cannot be checked against anything.
+            Detail("Address", w.address, mono = true) {
+                clip.setText(AnnotatedString(w.address))
+            }
+            Detail("Linked", whenLinked(w.addedAt))
+            Detail("Wallet app", w.name)
+            // Only when there is one. A wallet linked before the picker existed has no package
+            // and is reached the original way; saying "unknown" would imply something is wrong.
+            w.pkg?.takeIf { it.isNotBlank() }?.let { Detail("Package", it, mono = true) }
+            Detail(
+                "Session",
+                if (w.token != null) "Held on this phone"
+                else "None — the next payment will ask the wallet to authorize again",
+            )
+
+            Spacer(Modifier.height(22.dp))
+
+            // Two taps, because it cannot be undone from here: relinking means going back
+            // through the wallet. Nothing is spent either way — this forgets a token, it does
+            // not touch the account, and the money stays exactly where it is.
+            Text(
+                if (confirming) "Tap again to remove" else "Remove wallet",
+                color = D.Danger, fontSize = 15.sp, fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp))
+                    .background(D.Danger.copy(alpha = if (confirming) .16f else .08f))
+                    .clickable { if (confirming) onRemove() else confirming = true }
+                    .padding(vertical = 15.dp),
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "Removing it forgets the session on this phone. The account and everything in it are untouched.",
+                color = D.Quiet, fontSize = 11.5.sp, textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(10.dp))
+        }
+    }
+}
+
+/** One labelled fact. Tappable only when there is something worth copying. */
+@Composable
+private fun Detail(label: String, value: String, mono: Boolean = false, onTap: (() -> Unit)? = null) {
+    Column(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
+            .then(if (onTap != null) Modifier.clickable(onClick = onTap) else Modifier)
+            .padding(vertical = 9.dp),
+    ) {
+        Text(label, color = D.Quiet, fontSize = 11.sp, letterSpacing = 0.8.sp,
+            fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.height(3.dp))
+        Text(
+            value, color = D.Black, fontSize = 13.5.sp, fontWeight = FontWeight.Medium,
+            fontFamily = if (mono) FontFamily.Monospace else FontFamily.Default,
+        )
+    }
+}
+
+/** "Today", "3 days ago", or a date once that stops being the useful answer. */
+private fun whenLinked(at: Long): String {
+    if (at <= 0) return "Before this phone kept track"
+    val days = (System.currentTimeMillis() - at) / 86_400_000L
+    return when {
+        days <= 0L -> "Today"
+        days == 1L -> "Yesterday"
+        days < 30L -> "$days days ago"
+        else -> java.text.SimpleDateFormat("d MMM yyyy", java.util.Locale.getDefault()).format(java.util.Date(at))
     }
 }
 
@@ -2312,7 +2446,6 @@ private fun Face(c: Contact, size: Dp, ring: Color? = null) {
 @Composable
 @OptIn(ExperimentalFoundationApi::class)
 private fun Header(
-    d: Diagnostics,
     checking: Boolean,
     unread: Int,
     /** What this phone calls itself — the initial goes in the avatar. */
@@ -2368,21 +2501,6 @@ private fun Header(
                     ) {
                         Text(if (unread > 9) "9+" else "$unread", color = D.White, fontSize = 10.sp,
                             fontWeight = FontWeight.Bold, style = Figures)
-                    }
-                }
-            }
-        }
-        AnimatedVisibility(visible = checking) {
-            Column(
-                Modifier.padding(top = 10.dp).fillMaxWidth().clip(RoundedCornerShape(14.dp))
-                    .cardShadow(14.dp).background(D.White).padding(14.dp)
-            ) {
-                d.lines().forEach { (label, ok) ->
-                    Row(Modifier.padding(vertical = 3.dp), verticalAlignment = Alignment.CenterVertically) {
-                        HIcon(if (ok) R.drawable.hi_tick else R.drawable.hi_alert,
-                            if (ok) D.Success else D.Danger, 15.dp)
-                        Spacer(Modifier.width(9.dp))
-                        Text(label, color = if (ok) D.Quiet else D.Danger, fontSize = 13.sp)
                     }
                 }
             }
