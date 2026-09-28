@@ -170,7 +170,6 @@ class MainActivity : ComponentActivity() {
     /** The recharge screen's three answers: which number, which network, and what the SIMs say. */
     private var rechargeNumber by mutableStateOf("")
     private var rechargeOperator by mutableStateOf<Shop.Product?>(null)
-    private var sims by mutableStateOf<List<Sims.Sim>>(emptyList())
     /** The network lookup: whether it is in flight, and what it said last. */
     private var findingOperator by mutableStateOf(false)
     private var operatorNote by mutableStateOf<String?>(null)
@@ -295,32 +294,6 @@ class MainActivity : ComponentActivity() {
      * drawn: a price in USDC for goods priced in rupees is a quote against a moving rate, and
      * an old one is the difference between paying and being refused.
      */
-    /**
-     * Asking to see the SIMs.
-     *
-     * Only ever launched from the "Use my SIM" line on the recharge screen, where what it buys
-     * is on screen next to it. A decline is not an error and nothing is retried: the carrier
-     * name is still readable without it, and the number can always be typed.
-     */
-    private val askForSims = registerForActivityResult(
-        ActivityResultContracts.RequestPermission(),
-    ) { readSims() }
-
-    /** Re-reads the SIMs, and picks the network off the first one that names a known carrier. */
-    private fun readSims() {
-        sims = Sims.all(this)
-        if (rechargeOperator != null) return
-        val phone = shopSections.firstOrNull { it.products.any { p -> p.isMobileRecharge } } ?: return
-        val operators = phone.products.filter { it.isMobileRecharge }
-        for (sim in sims) {
-            Sims.productFor(sim.carrier, operators)?.let {
-                rechargeOperator = it
-                if (rechargeNumber.isBlank() && sim.number.isNotBlank()) rechargeNumber = sim.number
-                return
-            }
-        }
-    }
-
     /**
      * Works out which network a number is on, and selects it.
      *
@@ -746,7 +719,7 @@ class MainActivity : ComponentActivity() {
                 // first call after a restart pages through Bitrefill), which is exactly when
                 // someone opens the app and finds the section missing.
                 LaunchedEffect(resumeTick) {
-                    if (shopSections.isEmpty()) Shop.sections()?.let { shopSections = it; readSims() }
+                    if (shopSections.isEmpty()) Shop.sections()?.let { shopSections = it }
                 }
 
                 // Anything written to us while the app was closed. The live stream below only
@@ -1011,8 +984,6 @@ class MainActivity : ComponentActivity() {
                                         onNumber = { rechargeNumber = it },
                                         operator = rechargeOperator,
                                         onOperator = { rechargeOperator = it },
-                                        sims = sims,
-                                        onUseSims = { askForSims.launch(Sims.PERMISSION) },
                                         finding = findingOperator,
                                         found = operatorNote,
                                         onFind = { findOperator(it, sec) },
@@ -3304,8 +3275,6 @@ private fun RechargeSection(
     onNumber: (String) -> Unit,
     operator: Shop.Product?,
     onOperator: (Shop.Product) -> Unit,
-    sims: List<Sims.Sim>,
-    onUseSims: () -> Unit,
     finding: Boolean,
     found: String?,
     onFind: (String) -> Unit,
@@ -3340,56 +3309,23 @@ private fun RechargeSection(
             modifier = Modifier.fillMaxWidth(),
         )
 
-        // Find the network from the number itself. Asked of Bitrefill, which is the only
-        // source worth trusting here — see Shop.operatorFor.
-        Spacer(Modifier.height(4.dp))
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            PrimaryButton(
-                if (finding) "Checking the number…" else "Find network",
-                enabled = e164 != null && !finding,
-                loading = finding,
-                onClick = { e164?.let(onFind) },
-                modifier = Modifier.weight(1f),
-            )
-            if (sims.isEmpty()) {
-                Spacer(Modifier.width(10.dp))
-                Text(
-                    "Use my SIM",
-                    color = D.Blue, fontSize = 13.sp, fontWeight = FontWeight.Bold,
-                    modifier = Modifier.clip(RoundedCornerShape(10.dp)).clickable(onClick = onUseSims)
-                        .padding(horizontal = 10.dp, vertical = 10.dp),
-                )
-            }
+        // The lookup runs itself, the moment the number is complete. It used to be a button,
+        // which asked somebody to tell the app to do the one thing it was always going to do.
+        //
+        // Keyed on the normalised number, so it fires once per number rather than once per
+        // keystroke, and the pause lets somebody finish typing — or correct a digit — before
+        // anything is asked. Repeats cost nothing anyway: the server caches the answer.
+        LaunchedEffect(e164) {
+            val number = e164 ?: return@LaunchedEffect
+            delay(350)
+            onFind(number)
         }
-        found?.let {
-            Spacer(Modifier.height(8.dp))
-            Text(it, color = D.Quiet, fontSize = 12.sp, lineHeight = 16.sp)
-        }
-
-        if (sims.isNotEmpty()) {
+        if (finding || found != null) {
             Spacer(Modifier.height(10.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp),
-                modifier = Modifier.horizontalScroll(rememberScrollState())) {
-                sims.forEach { sim ->
-                    val product = Sims.productFor(sim.carrier, operators)
-                    Column(
-                        Modifier.clip(RoundedCornerShape(14.dp)).background(D.Fill)
-                            .clickable {
-                                if (sim.number.isNotBlank()) onNumber(sim.number)
-                                product?.let(onOperator)
-                            }
-                            .padding(horizontal = 14.dp, vertical = 10.dp),
-                    ) {
-                        Text(sim.carrier, color = D.Black, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                        Text(
-                            // Never invent a number. Most Indian SIMs do not carry one, and a
-                            // blank line saying so beats a plausible wrong one.
-                            sim.number.ifBlank { "SIM ${sim.slot + 1} · tap to use this network" },
-                            color = D.Quiet, fontSize = 11.sp, style = Figures,
-                        )
-                    }
-                }
-            }
+            Text(
+                if (finding) "Checking which network…" else found!!,
+                color = D.Quiet, fontSize = 12.sp, lineHeight = 16.sp,
+            )
         }
 
         Spacer(Modifier.height(20.dp))
