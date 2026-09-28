@@ -3524,57 +3524,47 @@ private fun RequestsTab(
  */
 @Composable
 private fun PayBar(modifier: Modifier, onTap: () -> Unit, onScan: () -> Unit) {
-    Column(modifier.fillMaxWidth()) {
-        // The page scrolls UNDER this, so it needs a floor. Without one the bar sat on top of
-        // whatever happened to be behind it — the bill tiles, half of a history row — and read
-        // as a sticker dropped on the page rather than something it scrolls beneath. A fade
-        // rather than a hard edge, so nothing is ever abruptly cut in half.
-        Box(
-            Modifier.fillMaxWidth().height(28.dp)
-                .background(Brush.verticalGradient(listOf(Color.Transparent, D.White))),
-        )
-        Row(Modifier.background(D.White).padding(start = 20.dp)) { Tag("7") }
+    Column(modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+        // No floor and no backdrop: the capsule floats and the page runs under it. It used to
+        // sit on a white strip with a gradient above it, which stopped content showing through
+        // — at the cost of a white slab across the bottom of every screenshot.
+        Row(Modifier.fillMaxWidth().padding(start = 20.dp)) { Tag("7") }
 
-        Box(
-            Modifier.fillMaxWidth().background(D.White).padding(horizontal = 20.dp),
-            contentAlignment = Alignment.Center,
+        // A white ring around the capsule, under a soft shadow. On a white page the ring is
+        // invisible as a colour and does its work as a gap: it holds the dark shape off the
+        // shadow so the bar reads as lifted rather than smudged.
+        //
+        // Width comes from the content, not the page. Stretched edge to edge the two halves
+        // were mostly empty and the labels ended up far from the seam that joins them — which
+        // is the one detail making this read as a single control.
+        Row(
+            Modifier.cardShadow(PayBarRadius)
+                .clip(RoundedCornerShape(PayBarRadius)).background(D.White)
+                .padding(PayBarRing),
+            // The seam is the ring carried through the middle, only tighter — narrow enough
+            // that the halves read as joined, wide enough to still be a join and not a crack.
+            horizontalArrangement = Arrangement.spacedBy(PayBarGap),
         ) {
-            // A white ring around the capsule, under a soft shadow. On a white page the ring
-            // is invisible as a colour and does its work as a gap: it holds the dark shape off
-            // the shadow so the bar reads as lifted rather than smudged.
-            //
-            // Width comes from the content, not the page. Stretched edge to edge the two halves
-            // were mostly empty and the labels ended up far from the seam that joins them —
-            // which is the one detail making this read as a single control.
-            Row(
-                Modifier.cardShadow(PayBarRadius)
-                    .clip(RoundedCornerShape(PayBarRadius)).background(D.White)
-                    .padding(PayBarRing),
-                // The seam is the ring, carried through the middle — the same white and the
-                // same width as the edge. It replaced a hairline, which had to fight to be
-                // visible against two very different fills and lost against the blue one.
-                horizontalArrangement = Arrangement.spacedBy(PayBarRing),
-            ) {
-                PayChoice(
-                    first = "Pay", second = "via Tap",
-                    icon = R.drawable.hi_nfc, iconFirst = true,
-                    fill = D.Black, shape = PayBarLeft, onClick = onTap,
-                )
-                PayChoice(
-                    first = "Scan", second = "any QR",
-                    icon = R.drawable.hi_scan, iconFirst = false,
-                    fill = D.Blue, shape = PayBarRight, onClick = onScan,
-                )
-            }
+            PayChoice(
+                first = "Pay", second = "via Tap",
+                icon = R.drawable.hi_nfc, iconFirst = true,
+                fill = D.Black, shape = PayBarLeft, onClick = onTap,
+            )
+            PayChoice(
+                first = "Scan", second = "any QR",
+                icon = R.drawable.hi_scan, iconFirst = false,
+                fill = D.Blue, shape = PayBarRight, onClick = onScan,
+            )
         }
-        // Carries the white down to the very bottom, so nothing shows in the gap beneath it.
-        Box(Modifier.fillMaxWidth().height(48.dp).background(D.White))
+        Spacer(Modifier.height(14.dp))
     }
 }
 
 /** Concentric, the way every other tray and card in the app is: outer = inner + the ring. */
 private val PayBarHeight = 72.dp
 private val PayBarRing = 5.dp
+/** The seam, narrower than the ring so the two halves sit closer without touching. */
+private val PayBarGap = 3.dp
 private val PayBarRadius = PayBarHeight / 2 + PayBarRing
 
 /**
