@@ -3334,31 +3334,41 @@ private fun RechargeSection(
         // somebody taps the answer to disagree with it. That path stays, because this decides
         // where real money goes and an app that cannot be corrected is worse than a wrong one.
         var picking by rememberSaveable { mutableStateOf(false) }
+        var query by rememberSaveable(operator?.id) { mutableStateOf("") }
         val chosen = operator
 
         if (chosen != null && !picking) {
+            // The header of the reference screen: who is being recharged, on which network,
+            // with the one way to disagree. It carries the number as well as the network —
+            // this is the last thing between a tap and real money leaving, and the number is
+            // the half that cannot be checked afterwards.
             Spacer(Modifier.height(18.dp))
             Row(
-                Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp))
-                    .background(D.Blue.copy(alpha = .08f))
-                    .clickable { picking = true }
-                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(D.Fill)
+                    .padding(14.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                val mark = chosen.name.removeSuffix(" India").removeSuffix(" Bundles")
+                Box(
+                    Modifier.size(42.dp).clip(CircleShape).background(D.Blue),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(mark.take(1).uppercase(), color = D.White, fontSize = 19.sp,
+                        fontWeight = FontWeight.ExtraBold, fontFamily = Display)
+                }
+                Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f)) {
-                    Text(
-                        chosen.name.removeSuffix(" India").removeSuffix(" Bundles").uppercase(),
-                        color = D.Blue, fontSize = 17.sp, fontWeight = FontWeight.ExtraBold,
-                        fontFamily = Display,
-                    )
-                    Spacer(Modifier.height(2.dp))
-                    Text(
-                        found ?: "Found from the number.",
-                        color = D.Quiet, fontSize = 11.5.sp, lineHeight = 15.sp,
-                    )
+                    Text(mark.uppercase(), color = D.Black, fontSize = 15.sp,
+                        fontWeight = FontWeight.ExtraBold, fontFamily = Display)
+                    Spacer(Modifier.height(1.dp))
+                    Text("+91 $number", color = D.Quiet, fontSize = 12.5.sp, style = Figures)
                 }
                 Spacer(Modifier.width(10.dp))
-                Text("Change", color = D.Blue, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                Text(
+                    "Change", color = D.Blue, fontSize = 12.5.sp, fontWeight = FontWeight.Bold,
+                    modifier = Modifier.clip(RoundedCornerShape(10.dp))
+                        .clickable { picking = true }.padding(horizontal = 8.dp, vertical = 6.dp),
+                )
             }
         } else if (picking || (found != null && !finding && chosen == null)) {
             // Either the lookup could not tell, or somebody disagreed with it.
@@ -3417,32 +3427,78 @@ private fun RechargeSection(
             }
             Spacer(Modifier.height(10.dp))
 
+            // Searching a list of fifty is not a nicety. It is also matched against the price,
+            // because the search anybody actually runs is the number they already know.
+            if (chosen.sellsPlans && plans.size > 8) {
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    singleLine = true,
+                    placeholder = { Text("Search — 349, or 28 days", color = D.Quiet) },
+                    leadingIcon = { HIcon(R.drawable.hi_search, D.Quiet, 17.dp) },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(12.dp))
+            }
+
             val ready = e164 != null
-            plans.forEach { pack ->
-                Row(
-                    Modifier.fillMaxWidth().padding(bottom = 8.dp).clip(RoundedCornerShape(16.dp))
+            val shown = plans.filter { Plans.matches(query, it.value, it.amount) }
+            if (shown.isEmpty()) {
+                Text("Nothing matches “$query”.", color = D.Quiet, fontSize = 13.sp)
+            }
+            val symbol = symbolFor(chosen.currency)
+            shown.forEach { pack ->
+                val detail = remember(pack.value) { Plans.of(pack.value) }
+                Column(
+                    Modifier.fillMaxWidth().padding(bottom = 8.dp).clip(RoundedCornerShape(18.dp))
                         .background(D.Fill)
                         .clickable(enabled = ready) { onBuy(chosen, pack.value, e164!!) }
-                        .padding(horizontal = 14.dp, vertical = 13.dp),
-                    verticalAlignment = Alignment.CenterVertically,
+                        .padding(14.dp),
                 ) {
-                    Column(Modifier.weight(1f)) {
+                    // 5G is the one badge worth carrying: it is stated in the line rather than
+                    // inferred, and it is what people filter on.
+                    if (detail.fast) {
                         Text(
-                            if (pack.amount > 0) "${symbolFor(chosen.currency)}${pack.amount}"
-                            else "${symbolFor(chosen.currency)}${pack.value}",
-                            color = if (ready) D.Black else D.Quiet,
-                            fontSize = 17.sp, fontWeight = FontWeight.Bold,
-                            fontFamily = Display, style = Figures,
+                            "5G", color = D.Success, fontSize = 10.sp, fontWeight = FontWeight.ExtraBold,
+                            modifier = Modifier.clip(RoundedCornerShape(6.dp))
+                                .background(D.Success.copy(alpha = .12f))
+                                .padding(horizontal = 6.dp, vertical = 2.dp),
                         )
-                        // A top-up's value is the price, so repeating it under itself would
-                        // say nothing. A plan's value is what you get for the price.
-                        if (chosen.sellsPlans) {
-                            Spacer(Modifier.height(2.dp))
-                            Text(pack.value, color = D.Quiet, fontSize = 12.5.sp, lineHeight = 17.sp)
-                        }
+                        Spacer(Modifier.height(8.dp))
                     }
-                    Spacer(Modifier.width(10.dp))
-                    HIcon(R.drawable.hi_arrow_up_right, if (ready) D.Blue else D.Quiet, 17.dp)
+                    Row(verticalAlignment = Alignment.Top) {
+                        Column(Modifier.width(96.dp)) {
+                            Text(
+                                if (pack.amount > 0) "$symbol${pack.amount}" else "$symbol${pack.value}",
+                                color = if (ready) D.Black else D.Quiet,
+                                fontSize = 21.sp, fontWeight = FontWeight.ExtraBold,
+                                fontFamily = Display, style = Figures,
+                            )
+                            // What it works out to per day, which is the only way a 28-day plan
+                            // and an 84-day one can be compared at a glance.
+                            Plans.perDay(pack.amount, detail.days, symbol)?.let {
+                                Text(it, color = D.Quiet, fontSize = 11.sp, style = Figures)
+                            }
+                        }
+                        // Validity and data as their own columns. Three numbers side by side are
+                        // read in a glance where the same three inside a sentence are not.
+                        if (detail.validity != null || detail.data != null) {
+                            detail.validity?.let { Labelled("Validity", it, Modifier.width(82.dp)) }
+                            detail.data?.let { Labelled("Data", it, Modifier.weight(1f)) }
+                        } else if (chosen.sellsPlans) {
+                            Text(pack.value, color = D.Quiet, fontSize = 12.5.sp,
+                                lineHeight = 17.sp, modifier = Modifier.weight(1f))
+                        } else {
+                            Spacer(Modifier.weight(1f))
+                        }
+                        HIcon(R.drawable.hi_arrow_up_right, if (ready) D.Blue else D.Quiet, 17.dp)
+                    }
+                    // The full line underneath, when the columns did not carry all of it —
+                    // "+ JioHotstar" and "+ Netflix Basic" are half the reason to pick a plan.
+                    if (chosen.sellsPlans && (detail.validity != null || detail.data != null)) {
+                        Spacer(Modifier.height(8.dp))
+                        Text(pack.value, color = D.Quiet, fontSize = 11.5.sp, lineHeight = 15.sp)
+                    }
                 }
             }
             if (!ready) {
@@ -3450,6 +3506,17 @@ private fun RechargeSection(
             }
         }
         Spacer(Modifier.height(24.dp))
+    }
+}
+
+/** A caption over a value — the shape that lets validity and data be compared down a column. */
+@Composable
+private fun Labelled(label: String, value: String, modifier: Modifier = Modifier) {
+    Column(modifier.padding(end = 8.dp)) {
+        Text(label, color = D.Quiet, fontSize = 10.sp, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.height(1.dp))
+        Text(value, color = D.Black, fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
+            lineHeight = 17.sp)
     }
 }
 

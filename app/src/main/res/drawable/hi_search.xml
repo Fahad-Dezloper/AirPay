@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A magnifier. Same 24dp box and 1.5 stroke as the rest of the set. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp" android:viewportWidth="24" android:viewportHeight="24">
+    <path
+        android:pathData="M11 19C15.42 19 19 15.42 19 11C19 6.58 15.42 3 11 3C6.58 3 3 6.58 3 11C3 15.42 6.58 19 11 19Z"
+        android:strokeColor="#FF000000" android:strokeWidth="1.5"
+        android:strokeLineCap="round" android:strokeLineJoin="round" />
+    <path
+        android:pathData="M21 21L17 17"
+        android:strokeColor="#FF000000" android:strokeWidth="1.5"
+        android:strokeLineCap="round" android:strokeLineJoin="round" />
+</vector>
