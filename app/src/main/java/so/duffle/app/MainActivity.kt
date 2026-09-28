@@ -84,6 +84,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import java.time.YearMonth
@@ -167,6 +169,14 @@ class MainActivity : ComponentActivity() {
     private var shopProduct by mutableStateOf<Shop.Product?>(null)
     /** What the other phone shows when you tap them. A model number is not a name. */
     private var myName by mutableStateOf("")
+    /**
+     * The `.skr` or `.sol` this wallet owns, once the chain has said.
+     *
+     * When it is set, nothing about [myName] matters: the other phone resolves this for itself
+     * and shows it with a tick, which is the whole difference between the two. Held in state so
+     * a name arriving from mainnet a second after launch appears without a reload.
+     */
+    private var myDomain by mutableStateOf<String?>(null)
     private var renaming by mutableStateOf(false)
 
     /** UI mirrors of the two on-disk lists. Disk is the truth; these are re-read after writes. */
@@ -423,7 +433,28 @@ class MainActivity : ComponentActivity() {
         balance = null
         holdings = emptyList()
         rewardSummary = null
-        val addr = connected ?: return
+        val addr = connected ?: run { myDomain = null; return }
+
+        // Whose name this wallet carries. Cleared first, and seeded from the last answer for
+        // *this* address only — switching wallets must not leave the previous one's name on
+        // screen for the second it takes mainnet to reply.
+        myDomain = Identity.domain(this, addr)
+        lifecycleScope.launch {
+            when (val name = Names.of(addr)) {
+                is Names.Name.Domain -> if (connected == addr) {
+                    myDomain = name.text
+                    Identity.rememberDomain(this@MainActivity, addr, name.text)
+                }
+                Names.Name.None -> if (connected == addr) {
+                    myDomain = null
+                    Identity.rememberDomain(this@MainActivity, addr, null)
+                }
+                // Unreachable: keep whatever was cached. A bad connection is not evidence that
+                // somebody stopped owning their name.
+                Names.Name.Unreachable -> Unit
+            }
+        }
+
         lifecycleScope.launch {
             val b = withContext(Dispatchers.IO) { Chain.balance(addr) }
             // Only report a balance for the wallet still selected — switching twice quickly
@@ -738,7 +769,10 @@ class MainActivity : ComponentActivity() {
                         Header(
                             checking = checking,
                             unread = unread,
-                            me = myName,
+                            // The on-chain name first: it is the one other people see, so it
+                            // should be the one on your own avatar. Falls through to a chosen
+                            // name, then to "Y" for you — never to a phone model again.
+                            me = myDomain ?: myName,
                             // Editing the name IS the profile, for now: it is the only thing
                             // about yourself this app stores, and it is what other phones see.
                             onProfile = { renaming = true },
@@ -811,6 +845,12 @@ class MainActivity : ComponentActivity() {
                                 owed = owed,
                                 notes = notes,
                                 paying = paying,
+                                onRename = { name ->
+                                    contacts.rename(live.address, name)
+                                    refreshLists()
+                                    // Their own claim is untouched; only our label for them moves.
+                                    Names.forget(live.address)
+                                },
                                 onPay = { item -> incoming = item.request },
                                 onDecline = { item ->
                                     val req = item.request
@@ -990,6 +1030,8 @@ class MainActivity : ComponentActivity() {
                                 modifier = Modifier.fillMaxWidth(),
                             )
                             Spacer(Modifier.height(12.dp))
+                            HowYouLook(myDomain, myName) { renaming = true }
+                            Spacer(Modifier.height(12.dp))
                         }
 
                         // §2d — the breakdown behind the one figure above.
@@ -1114,6 +1156,7 @@ class MainActivity : ComponentActivity() {
                 if (renaming) {
                     NameDialog(
                         current = myName,
+                        domain = myDomain,
                         onDismiss = { renaming = false },
                         onSave = { name ->
                             Identity.setLabel(this@MainActivity, name)
@@ -2296,6 +2339,100 @@ private fun WalletsScreen(
  * is the only one of the three they chose for themselves, then the phone's label, then nothing.
  * The address sits under it, short enough to recognise and too short to read out.
  */
+/**
+ * What to call somebody, and how much of it anyone actually checked.
+ *
+ * Four kinds of name reach this app and exactly one of them is evidence. Collapsing them into a
+ * single string is how a payments app ends up showing a stranger's chosen words with the same
+ * confidence as a fact — so they are kept apart here, and drawn differently.
+ *
+ * In order of preference:
+ *
+ *  1. **[Kind.Yours]** — what you named them. Never crossed a radio, never a claim anyone made
+ *     about themselves, written by you while they were standing in front of you.
+ *  2. **[Kind.Verified]** — a `.skr` or `.sol` this phone resolved from the chain. Nobody can
+ *     forge it, but nobody vetted who bought it either: it is unforgeable, not attested. The
+ *     badge says this address owns that name, and must never be read as "this is that person".
+ *  3. **[Kind.Claimed]** — the name their phone sent us. Useful for remembering who someone
+ *     was; worthless for deciding whether to trust them.
+ *  4. **[Kind.Anonymous]** — the address, shortened. Honest.
+ *
+ * [domain] is kept apart from [shown] on purpose: when you have renamed somebody who also owns
+ * a domain, a row can show your name for them *and* what the chain said, rather than one
+ * silently hiding the other.
+ */
+private data class Called(
+    val shown: String,
+    /** The on-chain name, when there is one. The only field that earns a tick. */
+    val domain: String?,
+    val kind: Kind,
+) {
+    enum class Kind { Yours, Verified, Claimed, Anonymous }
+
+    /** True only when the chain answered. Drives the tick, and nothing else does. */
+    val verified: Boolean get() = domain != null
+}
+
+/**
+ * Resolves a contact's name, asking the chain once per address.
+ *
+ * The lookup is mainnet and cached in [Names], so it settles quickly on a warm cache and never
+ * blocks a row from drawing: it starts from what is known locally and upgrades in place when
+ * the chain replies.
+ */
+@Composable
+private fun rememberCalled(contact: Contact): Called {
+    val domain by produceState<String?>(initialValue = null, contact.address) {
+        value = Names.label(contact.address)
+    }
+    val found = domain
+    return remember(found, contact.yours, contact.label, contact.address) {
+        val claimed = contact.claimed()
+        val yours = contact.yours
+        when {
+            !yours.isNullOrBlank() -> Called(yours, found, Called.Kind.Yours)
+            found != null -> Called(found, found, Called.Kind.Verified)
+            !claimed.isNullOrBlank() -> Called(claimed, null, Called.Kind.Claimed)
+            else -> Called(contact.short, null, Called.Kind.Anonymous)
+        }
+    }
+}
+
+/**
+ * A name with its provenance visible at a glance.
+ *
+ * The tick is the whole point: it appears for a chain-resolved name and for nothing else, so a
+ * stranger can tell a fact from a claim without reading any help text. A name we were merely
+ * told is drawn in the quiet colour for the same reason.
+ */
+@Composable
+private fun NameLine(
+    called: Called,
+    size: TextUnit,
+    modifier: Modifier = Modifier,
+    centred: Boolean = false,
+) {
+    Row(
+        modifier,
+        horizontalArrangement = if (centred) Arrangement.Center else Arrangement.Start,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            called.shown,
+            color = if (called.kind == Called.Kind.Claimed || called.kind == Called.Kind.Anonymous) D.Quiet else D.Black,
+            fontSize = size,
+            fontWeight = FontWeight.Medium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f, fill = false),
+        )
+        if (called.verified) {
+            Spacer(Modifier.width(3.dp))
+            HIcon(R.drawable.hi_verified, D.Blue, size.value.dp + 3.dp)
+        }
+    }
+}
+
 @Composable
 private fun People(list: List<Contact>, waiting: (String) -> Int, onAll: (() -> Unit)?, onPick: (Contact) -> Unit) {
     Column(Modifier.fillMaxWidth()) {
@@ -2313,10 +2450,7 @@ private fun People(list: List<Contact>, waiting: (String) -> Int, onAll: (() -> 
         Spacer(Modifier.height(8.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
             list.take(5).forEach { c ->
-                // Asked once per person, on mainnet where SNS lives. Null stays null: an
-                // address with no domain is the ordinary case, not a failure worth a
-                // placeholder.
-                val name by produceState<String?>(initialValue = null, c.address) { value = Names.sol(c.address) }
+                val called = rememberCalled(c)
                 val interaction = remember { MutableInteractionSource() }
                 Column(
                     Modifier.width(66.dp).then(PressScale(interaction)).clip(RoundedCornerShape(14.dp))
@@ -2330,7 +2464,7 @@ private fun People(list: List<Contact>, waiting: (String) -> Int, onAll: (() -> 
                             Modifier.fillMaxSize().clip(CircleShape).background(D.Fill),
                             contentAlignment = Alignment.Center,
                         ) {
-                            Text((name ?: c.label).take(1).uppercase(), color = D.Quiet,
+                            Text(called.shown.take(1).uppercase(), color = D.Quiet,
                                 fontSize = 21.sp, fontWeight = FontWeight.Bold, fontFamily = Display)
                         }
                         // Their phone, small, in the corner: it says whose it is without
@@ -2373,8 +2507,7 @@ private fun People(list: List<Contact>, waiting: (String) -> Int, onAll: (() -> 
                         }
                     }
                     Spacer(Modifier.height(7.dp))
-                    Text(name ?: c.label.ifBlank { "Unknown" }, color = D.Black, fontSize = 12.sp,
-                        fontWeight = FontWeight.Medium, maxLines = 1, textAlign = TextAlign.Center)
+                    NameLine(called, 12.sp, Modifier.fillMaxWidth(), centred = true)
                 }
             }
         }
@@ -2414,8 +2547,19 @@ private fun Thread(
     onBack: () -> Unit,
     onOpen: () -> Unit,
     onSay: (String) -> Unit,
+    onRename: (String) -> Unit,
 ) {
-    val name by produceState<String?>(initialValue = null, who.address) { value = Names.sol(who.address) }
+    val called = rememberCalled(who)
+    var renaming by remember(who.address) { mutableStateOf(false) }
+
+    if (renaming) {
+        ContactNameDialog(
+            called = called,
+            current = who.yours.orEmpty(),
+            onDismiss = { renaming = false },
+            onSave = { renaming = false; onRename(it) },
+        )
+    }
     val theirs = toPay.filter { it.request.recipient == who.address }
     val ours = owed.filter { it.peer == who.address }
     val said = notes.filter { it.peer == who.address }
@@ -2440,16 +2584,36 @@ private fun Thread(
             Spacer(Modifier.width(10.dp))
             Face(who, 44.dp)
             Spacer(Modifier.width(12.dp))
-            Column(Modifier.weight(1f)) {
+            Column(
+                Modifier.weight(1f).clip(RoundedCornerShape(10.dp))
+                    .clickable { renaming = true }.padding(horizontal = 4.dp, vertical = 2.dp),
+            ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(name ?: who.label.ifBlank { "Unknown" }, color = D.Black, fontSize = 19.sp,
-                        fontWeight = FontWeight.Bold, fontFamily = Display, maxLines = 1)
-                    if (who.seeker) {
+                    Text(
+                        called.shown, color = D.Black, fontSize = 19.sp,
+                        fontWeight = FontWeight.Bold, fontFamily = Display, maxLines = 1,
+                        overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false),
+                    )
+                    // The tick belongs to the name the chain confirmed, and to nothing else.
+                    // The Seeker badge is a separate claim about their hardware and is spelled
+                    // out below rather than given a second identical tick beside this one.
+                    if (called.verified) {
                         Spacer(Modifier.width(5.dp))
                         HIcon(R.drawable.hi_verified, D.Blue, 16.dp)
                     }
                 }
-                Text(who.short, color = D.Quiet, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    // When you have renamed somebody who owns a domain, their real name still
+                    // shows here — your label is for recognising them, not for hiding this.
+                    if (called.kind == Called.Kind.Yours && called.domain != null) {
+                        Text(called.domain, color = D.Blue, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                        Text(" · ", color = D.Quiet, fontSize = 11.sp)
+                    }
+                    Text(who.short, color = D.Quiet, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                    if (who.seeker) {
+                        Text(" · Seeker", color = D.Blue, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                    }
+                }
             }
         }
 
@@ -3863,35 +4027,216 @@ private val RowStyle = Modifier.fillMaxWidth().padding(vertical = 4.dp)
     .padding(horizontal = 14.dp, vertical = 12.dp)
 
 /**
- * Naming yourself. Until someone does, they are a phone model to everybody they tap — and
- * "CPH2401 wants 0.5 SOL" is a worse thing to approve than "Fahad wants 0.5 SOL".
+ * How you are about to appear to whoever pays this request.
+ *
+ * Placed here rather than in onboarding on purpose: asking to be paid is the moment you most
+ * want to be trusted, so it is the moment the difference between the two kinds of name is worth
+ * anything. Everywhere else it is a nag.
+ *
+ * Three states, and it never blocks any of them. Asking for money is not gated on owning a
+ * domain — a wall there would undo the whole point of a tap working with any Android phone, and
+ * it would put the friction on the person who has done nothing wrong. The friction belongs on
+ * the *payer's* screen, where an unverified name is drawn as the claim it is.
  */
 @Composable
-private fun NameDialog(current: String, onDismiss: () -> Unit, onSave: (String) -> Unit) {
+private fun HowYouLook(domain: String?, username: String, onEdit: () -> Unit) {
+    val verified = domain != null
+    Row(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
+            .background(if (verified) D.Blue.copy(alpha = .07f) else D.Fill)
+            .clickable(onClick = onEdit).padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text("They will see", color = D.Quiet, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(3.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    domain ?: username.ifBlank { "your address" },
+                    color = if (verified || username.isNotBlank()) D.Black else D.Quiet,
+                    fontSize = 15.sp, fontWeight = FontWeight.Bold, maxLines = 1,
+                    overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false),
+                )
+                if (verified) {
+                    Spacer(Modifier.width(4.dp))
+                    HIcon(R.drawable.hi_verified, D.Blue, 14.dp)
+                }
+            }
+            Spacer(Modifier.height(2.dp))
+            Text(
+                when {
+                    verified -> "Yours on chain — their phone checks it, you can't be copied."
+                    username.isNotBlank() -> "No tick: they only have your word for this name."
+                    else -> "Nobody will know who asked. Tap to pick a name."
+                },
+                color = D.Quiet, fontSize = 11.sp,
+            )
+        }
+        if (!verified) {
+            Spacer(Modifier.width(8.dp))
+            Text("Change", color = D.Blue, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+        }
+    }
+}
+
+/**
+ * Naming somebody else — the only name in the app that cannot be wrong.
+ *
+ * It never crossed the radio, nobody claimed it about themselves, and you wrote it while they
+ * were standing in front of you. That is why it beats both the name their phone sent and the
+ * one the chain resolved: those answer "who does this address say it is", and this answers
+ * "who is this, to me".
+ *
+ * It stays on this phone. A directory mapping people to wallet addresses is exactly the kind of
+ * thing that should never leave the device, which is already [Contacts]' rule.
+ */
+@Composable
+private fun ContactNameDialog(
+    called: Called,
+    current: String,
+    onDismiss: () -> Unit,
+    onSave: (String) -> Unit,
+) {
     var text by rememberSaveable { mutableStateOf(current) }
+    val problem = Username.problem(text)
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = D.White,
-        title = { Text("Your name", color = D.Black) },
+        title = { Text("Name this person", color = D.Black) },
         text = {
             Column {
-                Text("Shown on the other phone when you tap someone.", color = D.Quiet, fontSize = 13.sp)
+                // What everyone else would see, so it is clear what is being overridden.
+                if (called.domain != null) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(called.domain, color = D.Black, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                        Spacer(Modifier.width(4.dp))
+                        HIcon(R.drawable.hi_verified, D.Blue, 14.dp)
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "Their name on chain. Yours is just for you — this one still shows " +
+                            "underneath.",
+                        color = D.Quiet, fontSize = 12.sp,
+                    )
+                } else {
+                    Text(
+                        "Kept on this phone, and only you see it.",
+                        color = D.Quiet, fontSize = 13.sp,
+                    )
+                }
                 Spacer(Modifier.height(12.dp))
                 OutlinedTextField(
                     value = text,
-                    onValueChange = { if (it.length <= 40) text = it },
+                    onValueChange = { if (it.length <= Username.MAX) text = it },
                     singleLine = true,
-                    placeholder = { Text(android.os.Build.MODEL, color = D.Quiet) },
-                    supportingText = { Text("${text.trim().length}/40", color = D.Quiet) },
+                    isError = problem != null,
+                    supportingText = {
+                        Text(
+                            problem ?: "Leave it empty to go back to their own name.",
+                            color = if (problem != null) D.Danger else D.Quiet,
+                        )
+                    },
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
         },
         confirmButton = {
-            TextButton(onClick = { onSave(text) }, enabled = text.isNotBlank()) {
+            TextButton(onClick = { onSave(text) }, enabled = problem == null) {
                 Text("Save", color = D.Blue, fontWeight = FontWeight.Bold)
             }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel", color = D.Quiet) } },
+    )
+}
+
+/**
+ * Naming yourself.
+ *
+ * Two quite different things can happen here, and the dialog says which one you got:
+ *
+ *  * **You own a `.skr` or `.sol`.** Then there is nothing to type. The other phone resolves it
+ *    from the chain and shows it with a tick, and a username would only sit underneath saying
+ *    something weaker. Every Seeker gets a `.skr` with the device, so this is the normal case
+ *    for the phones this app was built for.
+ *  * **You don't.** Then you can type a name so people have something to remember you by — but
+ *    it travels over the radio as your word for it, arrives without a tick, and the dialog says
+ *    so rather than letting it look like the first case.
+ *
+ * The dot rule is enforced here and again on the wire: a username containing one could pose as
+ * a domain and borrow a tick it never earned. See [Username].
+ */
+@Composable
+private fun NameDialog(
+    current: String,
+    domain: String?,
+    onDismiss: () -> Unit,
+    onSave: (String) -> Unit,
+) {
+    var text by rememberSaveable { mutableStateOf(current) }
+    val problem = Username.problem(text)
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = D.White,
+        title = { Text(if (domain != null) "Your name" else "Pick a name", color = D.Black) },
+        text = {
+            Column {
+                if (domain != null) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(domain, color = D.Black, fontSize = 20.sp,
+                            fontWeight = FontWeight.Bold, fontFamily = Display)
+                        Spacer(Modifier.width(5.dp))
+                        HIcon(R.drawable.hi_verified, D.Blue, 17.dp)
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "This is yours on chain, so everyone you tap sees it with the tick. " +
+                            "Nothing to set up.",
+                        color = D.Quiet, fontSize = 13.sp,
+                    )
+                } else {
+                    Text(
+                        "Shown on the other phone when you tap someone.",
+                        color = D.Quiet, fontSize = 13.sp,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    OutlinedTextField(
+                        value = text,
+                        onValueChange = { if (it.length <= Username.MAX) text = it },
+                        singleLine = true,
+                        isError = problem != null,
+                        supportingText = {
+                            Text(
+                                problem ?: "${text.trim().length}/${Username.MAX}",
+                                color = if (problem != null) D.Danger else D.Quiet,
+                            )
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    // The nudge, stated as what it actually buys rather than as "security":
+                    // a username only exists inside this app, and a domain does not.
+                    Text(
+                        "A name you type arrives without a tick — they only have your word " +
+                            "for it. A .skr or .sol is yours on chain: it can't be copied, it " +
+                            "works in every Solana app, and people can pay you by name from " +
+                            "anywhere. Every Seeker comes with a .skr.",
+                        color = D.Quiet, fontSize = 12.sp,
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            if (domain != null) {
+                TextButton(onClick = onDismiss) { Text("Done", color = D.Blue, fontWeight = FontWeight.Bold) }
+            } else {
+                TextButton(
+                    onClick = { onSave(text) },
+                    enabled = problem == null && Username.clean(text) != null,
+                ) { Text("Save", color = D.Blue, fontWeight = FontWeight.Bold) }
+            }
+        },
+        dismissButton = {
+            if (domain == null) TextButton(onClick = onDismiss) { Text("Cancel", color = D.Quiet) }
+        },
     )
 }

@@ -109,6 +109,7 @@ data class PayRequest(
         // Readable and in range but not expressible in lamports, e.g. "0.0000000001" or "0".
         amount.isNotBlank() && units() == null -> "That amount can't be paid in $symbol."
         label.length > 64 -> "The request has an oversized label."
+        Username.looksLikeDomain(label) -> "The request has a name shaped like a domain."
         else -> null
     }
 
@@ -209,6 +210,10 @@ data class TapCard(
         !PayRequest.isBase58Address(address) -> "That phone sent an invalid address."
         genesis != null && !PayRequest.isBase58Address(genesis) -> "That phone sent an invalid Genesis token."
         label.length > 64 -> "That phone sent an oversized name."
+        // A username may not wear a domain's clothes. Names with a dot are resolved from the
+        // chain and never travel by radio, so one arriving here is a phone claiming a name it
+        // did not prove — which is exactly what the tick is supposed to rule out.
+        Username.looksLikeDomain(label) -> "That phone sent a name shaped like a domain."
         else -> null
     }
 
