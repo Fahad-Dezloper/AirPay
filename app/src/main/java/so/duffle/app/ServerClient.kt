@@ -269,15 +269,21 @@ object ServerClient {
      * no server, no network, a refusal — because every caller's honest fallback is to say
      * nothing rather than to guess.
      */
-    internal suspend fun ask(path: String, body: JSONObject): JSONObject? {
+    /**
+     * @param timeoutMs how long to wait. Eight seconds suits our own endpoints, which answer out
+     *   of sqlite. It is not enough for the ones that stand in front of somebody else's API: a
+     *   cold operator lookup takes about three seconds upstream, and a phone on ordinary wifi
+     *   ran past the budget and reported "could not check" for an answer that arrived fine.
+     */
+    internal suspend fun ask(path: String, body: JSONObject, timeoutMs: Int = 8_000): JSONObject? {
         if (!enabled) return null
         return withContext(Dispatchers.IO) {
             try {
                 val c = (URL(base + path).openConnection() as HttpURLConnection).apply {
                     requestMethod = "POST"
                     doOutput = true
-                    connectTimeout = 8_000
-                    readTimeout = 8_000
+                    connectTimeout = timeoutMs
+                    readTimeout = timeoutMs
                     setRequestProperty("Content-Type", "application/json")
                 }
                 c.outputStream.use { it.write(body.toString().toByteArray()) }

@@ -182,9 +182,11 @@ object Shop {
      * real money that does not come back.
      */
     suspend fun operatorFor(phone: String): Operator {
+        // Longer than the default: this stands in front of Bitrefill rather than our own
+        // database, and a cold lookup is about three seconds before the network is counted.
         val o = ServerClient.ask("/v1/shop/operator", JSONObject().apply {
             put("phone_number", phone)
-        }) ?: return Operator.Unreachable
+        }, timeoutMs = 20_000) ?: return Operator.Unreachable
         if (!o.optBoolean("operator_found", false)) return Operator.Unknown
         val j = o.optJSONObject("product") ?: return Operator.Unknown
         return Operator.Found(product(j))

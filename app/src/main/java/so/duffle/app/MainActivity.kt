@@ -3320,38 +3320,81 @@ private fun RechargeSection(
             delay(350)
             onFind(number)
         }
-        if (finding || found != null) {
-            Spacer(Modifier.height(10.dp))
-            Text(
-                if (finding) "Checking which network…" else found!!,
-                color = D.Quiet, fontSize = 12.sp, lineHeight = 16.sp,
-            )
+        if (finding) {
+            Spacer(Modifier.height(12.dp))
+            Text("Checking which network…", color = D.Quiet, fontSize = 12.sp)
         }
 
-        Spacer(Modifier.height(20.dp))
-        Text("Network", color = D.Quiet, fontSize = 11.sp, letterSpacing = 1.sp,
-            fontWeight = FontWeight.SemiBold)
-        Spacer(Modifier.height(8.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp),
-            modifier = Modifier.horizontalScroll(rememberScrollState())) {
-            operators.forEach { p ->
-                val on = operator?.id == p.id
-                Text(
-                    p.name.removeSuffix(" India").removeSuffix(" Bundles"),
-                    color = if (on) D.White else D.Black,
-                    fontSize = 13.sp, fontWeight = FontWeight.Bold,
-                    modifier = Modifier.clip(RoundedCornerShape(999.dp))
-                        .background(if (on) D.Blue else D.Fill)
-                        .clickable { onOperator(p) }
-                        .padding(horizontal = 14.dp, vertical = 9.dp),
-                )
+        // Once the network is known it is a FACT, not a question, so it stops being a row of
+        // choices and becomes one line saying what it is. A list of every network with one
+        // highlighted asks somebody to check the app's work on something the app now knows
+        // better than they do.
+        //
+        // The list only comes back when it has to: when the lookup could not tell, or when
+        // somebody taps the answer to disagree with it. That path stays, because this decides
+        // where real money goes and an app that cannot be corrected is worse than a wrong one.
+        var picking by rememberSaveable { mutableStateOf(false) }
+        val chosen = operator
+
+        if (chosen != null && !picking) {
+            Spacer(Modifier.height(18.dp))
+            Row(
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp))
+                    .background(D.Blue.copy(alpha = .08f))
+                    .clickable { picking = true }
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        chosen.name.removeSuffix(" India").removeSuffix(" Bundles").uppercase(),
+                        color = D.Blue, fontSize = 17.sp, fontWeight = FontWeight.ExtraBold,
+                        fontFamily = Display,
+                    )
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        found ?: "Found from the number.",
+                        color = D.Quiet, fontSize = 11.5.sp, lineHeight = 15.sp,
+                    )
+                }
+                Spacer(Modifier.width(10.dp))
+                Text("Change", color = D.Blue, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            }
+        } else if (picking || (found != null && !finding && chosen == null)) {
+            // Either the lookup could not tell, or somebody disagreed with it.
+            Spacer(Modifier.height(18.dp))
+            found?.takeIf { chosen == null }?.let {
+                Text(it, color = D.Quiet, fontSize = 12.sp, lineHeight = 16.sp)
+                Spacer(Modifier.height(10.dp))
+            }
+            Text("Network", color = D.Quiet, fontSize = 11.sp, letterSpacing = 1.sp,
+                fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.horizontalScroll(rememberScrollState())) {
+                operators.forEach { p ->
+                    val on = chosen?.id == p.id
+                    Text(
+                        p.name.removeSuffix(" India").removeSuffix(" Bundles"),
+                        color = if (on) D.White else D.Black,
+                        fontSize = 13.sp, fontWeight = FontWeight.Bold,
+                        modifier = Modifier.clip(RoundedCornerShape(999.dp))
+                            .background(if (on) D.Blue else D.Fill)
+                            .clickable { onOperator(p); picking = false }
+                            .padding(horizontal = 14.dp, vertical = 9.dp),
+                    )
+                }
             }
         }
 
-        val chosen = operator
         if (chosen == null) {
-            Spacer(Modifier.height(20.dp))
-            Text("Pick a network to see what it sells.", color = D.Quiet, fontSize = 13.sp)
+            // Nothing to say yet. Before a number is typed the screen is one box, which is the
+            // whole instruction — a "pick a network" prompt above an empty field is a second
+            // question asked before the first one has been answered.
+            if (found != null && !finding) {
+                Spacer(Modifier.height(20.dp))
+                Text("Pick a network to see what it sells.", color = D.Quiet, fontSize = 13.sp)
+            }
         } else {
             Spacer(Modifier.height(20.dp))
             val plans = remember(chosen.id) {
