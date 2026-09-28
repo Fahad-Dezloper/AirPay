@@ -171,6 +171,9 @@ class MainActivity : ComponentActivity() {
     private var rechargeNumber by mutableStateOf("")
     private var rechargeOperator by mutableStateOf<Shop.Product?>(null)
     private var sims by mutableStateOf<List<Sims.Sim>>(emptyList())
+    /** The network lookup: whether it is in flight, and what it said last. */
+    private var findingOperator by mutableStateOf(false)
+    private var operatorNote by mutableStateOf<String?>(null)
     /** What the other phone shows when you tap them. A model number is not a name. */
     private var myName by mutableStateOf("")
     /**
@@ -316,6 +319,57 @@ class MainActivity : ComponentActivity() {
                 return
             }
         }
+    }
+
+    /**
+     * Works out which network a number is on, and selects it.
+     *
+     * Bitrefill's answer names a product, which is not always one the Phone section carries —
+     * it has several Jio products and the section shows the one with plans. So the id is used
+     * to find our own equivalent, and the looked-up product is the fallback when we have none.
+     *
+     * Every outcome says something. A silent button that sometimes does nothing is worse than
+     * one that says it could not tell.
+     */
+    private fun findOperator(phone: String, section: Shop.Section) {
+        if (findingOperator) return
+        lifecycleScope.launch {
+            findingOperator = true
+            operatorNote = null
+            try {
+                when (val r = Shop.operatorFor(phone)) {
+                    is Shop.Operator.Found -> {
+                        val ours = section.products.firstOrNull { it.id == r.product.id }
+                            ?: section.products.filter { it.isMobileRecharge }
+                                .firstOrNull { sameNetwork(it.id, r.product.id) }
+                            ?: r.product
+                        rechargeOperator = ours
+                        val name = ours.name.removeSuffix(" India").removeSuffix(" Bundles")
+                        operatorNote = "$name — from the number itself, so porting is accounted for."
+                    }
+                    Shop.Operator.Unknown -> operatorNote =
+                        "Could not tell which network that is. Pick it below."
+                    Shop.Operator.Unreachable -> operatorNote =
+                        "Could not check just now. Pick the network below."
+                }
+            } finally {
+                findingOperator = false
+            }
+        }
+    }
+
+    /**
+     * Whether two product ids are the same network.
+     *
+     * Bitrefill files one network under several products — "my-jio-store-india" and
+     * "reliance-jio-india-bundles" are both Jio — so the lookup can name one the Phone section
+     * does not carry. Matched on the operator word rather than the id, which is the only part
+     * the two share.
+     */
+    private fun sameNetwork(ours: String, theirs: String): Boolean {
+        val words = listOf("jio", "airtel", "vodafone", "vi-", "bsnl", "mtnl")
+        val mine = words.firstOrNull { it in ours } ?: return false
+        return mine in theirs || (mine == "jio" && "jio" in theirs)
     }
 
     private fun buy(product: Shop.Product, value: String, category: String, phone: String? = null) {
@@ -959,6 +1013,9 @@ class MainActivity : ComponentActivity() {
                                         onOperator = { rechargeOperator = it },
                                         sims = sims,
                                         onUseSims = { askForSims.launch(Sims.PERMISSION) },
+                                        finding = findingOperator,
+                                        found = operatorNote,
+                                        onFind = { findOperator(it, sec) },
                                         onBuy = { p, v, phone -> buy(p, v, sec.title, phone) },
                                     )
                                 } else {
@@ -3249,6 +3306,9 @@ private fun RechargeSection(
     onOperator: (Shop.Product) -> Unit,
     sims: List<Sims.Sim>,
     onUseSims: () -> Unit,
+    finding: Boolean,
+    found: String?,
+    onFind: (String) -> Unit,
     onBuy: (Shop.Product, String, String) -> Unit,
 ) {
     // Only the products that actually credit a number. The Phone section also carries eSIMs
@@ -3280,17 +3340,33 @@ private fun RechargeSection(
             modifier = Modifier.fillMaxWidth(),
         )
 
-        // The SIMs, when the phone will name them. Tapping one fills the number where it is
-        // known and always picks the network, which is the half that matters.
-        if (sims.isEmpty()) {
-            Spacer(Modifier.height(8.dp))
-            Text(
-                "Use my SIM",
-                color = D.Blue, fontSize = 13.sp, fontWeight = FontWeight.Bold,
-                modifier = Modifier.clip(RoundedCornerShape(10.dp)).clickable(onClick = onUseSims)
-                    .padding(horizontal = 8.dp, vertical = 6.dp),
+        // Find the network from the number itself. Asked of Bitrefill, which is the only
+        // source worth trusting here — see Shop.operatorFor.
+        Spacer(Modifier.height(4.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            PrimaryButton(
+                if (finding) "Checking the number…" else "Find network",
+                enabled = e164 != null && !finding,
+                loading = finding,
+                onClick = { e164?.let(onFind) },
+                modifier = Modifier.weight(1f),
             )
-        } else {
+            if (sims.isEmpty()) {
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    "Use my SIM",
+                    color = D.Blue, fontSize = 13.sp, fontWeight = FontWeight.Bold,
+                    modifier = Modifier.clip(RoundedCornerShape(10.dp)).clickable(onClick = onUseSims)
+                        .padding(horizontal = 10.dp, vertical = 10.dp),
+                )
+            }
+        }
+        found?.let {
+            Spacer(Modifier.height(8.dp))
+            Text(it, color = D.Quiet, fontSize = 12.sp, lineHeight = 16.sp)
+        }
+
+        if (sims.isNotEmpty()) {
             Spacer(Modifier.height(10.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp),
                 modifier = Modifier.horizontalScroll(rememberScrollState())) {

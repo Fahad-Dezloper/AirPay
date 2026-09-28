@@ -24,6 +24,7 @@ import logging
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 log = logging.getLogger("duffle.shop")
@@ -36,6 +37,10 @@ USER_AGENT = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.3
 
 #: A catalogue changes far more slowly than people browse it, and it costs four calls to read.
 CATALOG_TTL = 3600.0
+
+#: Which network a number is on. Porting takes days, so minutes of cache are free — and the
+#: lookup rate-limits long before the catalogue does.
+OPERATOR_TTL = 600.0
 
 #: What a person is actually trying to do, in the order they would look for it. Bitrefill's own
 #: categories are shop-shaped ("apparel", "game-stores"); these are bill-shaped.
@@ -54,11 +59,15 @@ SECTIONS = (
 class Shop:
     """Bitrefill, reduced to the two things Duffle needs: what can I buy, and where do I pay."""
 
+    #: number -> (asked_at, answer). See OPERATOR_TTL.
+    _operators: dict
+
     def __init__(self, api_key: str | None, country: str = "IN"):
         self.api_key = api_key
         self.country = country
         self._catalog: tuple[float, list[dict]] | None = None
         self._lock = threading.Lock()
+        self._operators = {}
 
     @property
     def enabled(self) -> bool:
@@ -184,6 +193,34 @@ class Shop:
             "product_id": product_id,
             "value": value,
         }
+
+    def operator(self, phone_number: str) -> dict:
+        """Which network a number is on, according to Bitrefill.
+
+        The only honest way to answer this. India has had full mobile number portability since
+        2011, so the prefix says who ISSUED a number and not who runs it now — a prefix table
+        would be confidently wrong for a very large number of people, and a recharge sent to the
+        wrong network is real money gone. This asks the shop that has to deliver it.
+
+        Answers are cached: the same number gets looked up every time somebody edits a digit and
+        presses the button again, and the endpoint rate-limits (429) well before the catalogue
+        does. Portability takes days, so a few minutes of cache costs nothing.
+        """
+        number = (phone_number or "").strip()
+        if not number.startswith("+") or not number[1:].isdigit() or len(number) < 8:
+            return {"operator_found": False}
+        now = time.time()
+        hit = self._operators.get(number)
+        if hit and now - hit[0] < OPERATOR_TTL:
+            return hit[1]
+        d = self._get("/check_phone_number?phone_number=" + urllib.parse.quote(number))
+        product = d.get("data") or {}
+        out = {
+            "operator_found": bool(d.get("operator_found")) and bool(product.get("id")),
+            "product": self._trim(product) if product.get("id") else None,
+        }
+        self._operators[number] = (now, out)
+        return out
 
     def order(self, invoice_id: str) -> dict:
         """What happened to an invoice. The app asks after paying, and keeps asking: delivery

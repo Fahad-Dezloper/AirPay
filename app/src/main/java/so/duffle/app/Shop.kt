@@ -162,6 +162,34 @@ object Shop {
         )
     }
 
+    /** What a number's network turned out to be. */
+    sealed interface Operator {
+        /** Bitrefill named the network, and this is what it sells for it. */
+        data class Found(val product: Product) : Operator
+        /** Asked, and it does not recognise the number. */
+        data object Unknown : Operator
+        /** Could not ask. Different from [Unknown], because one is an answer and one is not. */
+        data object Unreachable : Operator
+    }
+
+    /**
+     * Which network a number is on.
+     *
+     * Answered by the shop that has to deliver the recharge, which is the only source worth
+     * trusting: India has had full mobile number portability since 2011, so a prefix says who
+     * **issued** a number rather than who runs it now. A prefix table would be confidently
+     * wrong for a very large number of people, and a recharge sent to the wrong network is
+     * real money that does not come back.
+     */
+    suspend fun operatorFor(phone: String): Operator {
+        val o = ServerClient.ask("/v1/shop/operator", JSONObject().apply {
+            put("phone_number", phone)
+        }) ?: return Operator.Unreachable
+        if (!o.optBoolean("operator_found", false)) return Operator.Unknown
+        val j = o.optJSONObject("product") ?: return Operator.Unknown
+        return Operator.Found(product(j))
+    }
+
     /** What became of it. Delivery follows the payment by seconds, so the caller keeps asking. */
     suspend fun order(invoiceId: String): String? {
         val o = ServerClient.ask("/v1/shop/order", JSONObject().apply {

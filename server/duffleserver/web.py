@@ -198,6 +198,13 @@ def make_handler(service, helius_auth: str | None, limiter: RateLimit | None = N
                         # Includes "out of stock" and "no such product", which are answers
                         # rather than faults — the app shows them as the reason it cannot buy.
                         return self._json(502, {"error": str(e) or "the shop did not answer"})
+                if path == "/v1/shop/operator":
+                    try:
+                        return self._json(200, shop.operator(str(body.get("phone_number") or "")))
+                    except Exception as e:
+                        # A lookup that cannot be made is not a failure worth blocking on: the
+                        # app falls back to asking which network, which is what it did before.
+                        return self._json(200, {"operator_found": False, "error": str(e)[:120]})
                 if path == "/v1/shop/order":
                     try:
                         return self._json(200, shop.order(str(body.get("invoice_id") or "")))
