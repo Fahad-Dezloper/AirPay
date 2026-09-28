@@ -3549,22 +3549,21 @@ private fun PayBar(modifier: Modifier, onTap: () -> Unit, onScan: () -> Unit) {
             Row(
                 Modifier.cardShadow(PayBarRadius)
                     .clip(RoundedCornerShape(PayBarRadius)).background(D.White)
-                    .padding(PayBarRing)
-                    .clip(RoundedCornerShape(PayBarRadius - PayBarRing)),
+                    .padding(PayBarRing),
+                // The seam is the ring, carried through the middle — the same white and the
+                // same width as the edge. It replaced a hairline, which had to fight to be
+                // visible against two very different fills and lost against the blue one.
+                horizontalArrangement = Arrangement.spacedBy(PayBarRing),
             ) {
                 PayChoice(
-                    first = "Pay via", second = "Tap",
+                    first = "Pay", second = "via Tap",
                     icon = R.drawable.hi_nfc, iconFirst = true,
-                    fill = D.Black, onClick = onTap,
+                    fill = D.Black, shape = PayBarLeft, onClick = onTap,
                 )
-                // The seam. It has to read against BOTH fills, so it is a fixed light line
-                // rather than white-on-alpha: at low alpha it disappeared into the blue half
-                // entirely and the two halves just met at a colour change.
-                Box(Modifier.width(1.5.dp).height(PayBarHeight).background(D.White.copy(alpha = .45f)))
                 PayChoice(
                     first = "Scan", second = "any QR",
                     icon = R.drawable.hi_scan, iconFirst = false,
-                    fill = D.Blue, onClick = onScan,
+                    fill = D.Blue, shape = PayBarRight, onClick = onScan,
                 )
             }
         }
@@ -3579,6 +3578,23 @@ private val PayBarRing = 5.dp
 private val PayBarRadius = PayBarHeight / 2 + PayBarRing
 
 /**
+ * The corners where the two halves meet.
+ *
+ * Square inner edges made the seam look like a cut through one shape rather than the join
+ * between two, and a hard corner against a soft outer one is the sort of mismatch that reads as
+ * unfinished even when nobody can say why. Rounded — but well short of the capsule ends, so the
+ * outer edge stays the thing that gives the bar its shape.
+ */
+private val PayBarInner = 24.dp
+private val PayBarEnd = PayBarHeight / 2
+private val PayBarLeft = RoundedCornerShape(
+    topStart = PayBarEnd, bottomStart = PayBarEnd, topEnd = PayBarInner, bottomEnd = PayBarInner,
+)
+private val PayBarRight = RoundedCornerShape(
+    topStart = PayBarInner, bottomStart = PayBarInner, topEnd = PayBarEnd, bottomEnd = PayBarEnd,
+)
+
+/**
  * One half of the bar.
  *
  * [iconFirst] is what mirrors the two sides about the divider — it decides whether the mark
@@ -3591,11 +3607,12 @@ private fun PayChoice(
     @DrawableRes icon: Int,
     iconFirst: Boolean,
     fill: Color,
+    shape: RoundedCornerShape,
     onClick: () -> Unit,
 ) {
     val interaction = remember { MutableInteractionSource() }
     Row(
-        Modifier.height(PayBarHeight).background(fill)
+        Modifier.height(PayBarHeight).clip(shape).background(fill)
             .clickable(interaction, indication = null, onClick = onClick)
             .padding(horizontal = 16.dp),
         horizontalArrangement = Arrangement.spacedBy(10.dp),
