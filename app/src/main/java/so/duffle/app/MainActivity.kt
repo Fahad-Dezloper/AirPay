@@ -443,11 +443,14 @@ class MainActivity : ComponentActivity() {
     private suspend fun watchOrder(inv: Shop.Invoice) {
         repeat(12) {
             delay(5_000)
-            val st = Shop.order(inv.id) ?: return@repeat
-            push("shop: order $st")
-            orders.setStatus(inv.id, st)
+            val d = Shop.order(inv.id) ?: return@repeat
+            push("shop: order ${d.status}")
+            orders.setStatus(inv.id, d.status)
+            // The code, saved the moment it exists. This screen is often gone by the time
+            // delivery lands, so it cannot be the only place it is kept.
+            d.code?.let { orders.setCode(inv.id, it) }
             refreshLists()
-            if (st == "delivered") {
+            if (d.delivered) {
                 push("✓ delivered")
                 return
             }
@@ -589,10 +592,13 @@ class MainActivity : ComponentActivity() {
         if (open.isEmpty()) return
         lifecycleScope.launch {
             for (o in open) {
-                val st = Shop.order(o.invoiceId) ?: continue
-                if (st != o.status) {
-                    orders.setStatus(o.invoiceId, st)
-                    push("shop: ${o.name} — $st")
+                val d = Shop.order(o.invoiceId) ?: continue
+                // The catch-up matters more than the live watcher for this: the code usually
+                // lands after the app is closed, so this is where most of them are collected.
+                d.code?.let { orders.setCode(o.invoiceId, it) }
+                if (d.status != o.status) {
+                    orders.setStatus(o.invoiceId, d.status)
+                    push("shop: ${o.name} — ${d.status}")
                 }
             }
             refreshLists()
@@ -4276,7 +4282,25 @@ private fun TxnRow(t: History.Txn, onOpen: () -> Unit) {
         Column(Modifier.weight(1f)) {
             Text(t.title, color = D.Black, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
             Spacer(Modifier.height(1.dp))
-            Text(t.note ?: t.category, color = if (t.note != null) D.Blue else D.Quiet, fontSize = 12.sp, maxLines = 1)
+            // A code is the one thing on this row somebody needs to USE, so it is monospaced,
+            // and tapping it copies rather than opening the row. A code you cannot get out of
+            // the app is barely delivered.
+            if (t.code != null) {
+                val clip = LocalClipboardManager.current
+                var copied by remember(t.code) { mutableStateOf(false) }
+                Text(
+                    if (copied) "Copied" else t.code,
+                    color = D.Blue, fontSize = 12.sp, maxLines = 1,
+                    fontFamily = FontFamily.Monospace,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.clip(RoundedCornerShape(6.dp)).clickable {
+                        clip.setText(AnnotatedString(t.code)); copied = true
+                    },
+                )
+            } else {
+                Text(t.note ?: t.category, color = if (t.note != null) D.Blue else D.Quiet,
+                    fontSize = 12.sp, maxLines = 1)
+            }
         }
         Spacer(Modifier.width(10.dp))
         Column(horizontalAlignment = Alignment.End) {

@@ -41,6 +41,14 @@ class Orders(context: Context) {
          * told what plan a number is on, so the nearest true statement is what you chose before.
          */
         val recipient: String? = null,
+        /**
+         * The code, PIN or link this purchase produced.
+         *
+         * The whole point of buying a gift card, and the app used to throw it away — see
+         * [Shop.order]. Kept here because it has to survive the screen that was open when it
+         * arrived: delivery lands seconds after payment and the buyer is often already gone.
+         */
+        val code: String? = null,
         /** What it cost, already formatted: "0.56 USDC". */
         val paid: String,
         val signature: String,
@@ -55,6 +63,15 @@ class Orders(context: Context) {
     }
 
     fun add(o: Order) = save(listOf(o) + all().filter { it.invoiceId != o.invoiceId })
+
+    /** Writes down what a purchase produced. Never overwritten once set. */
+    fun setCode(invoiceId: String, code: String) {
+        // Never overwritten. A later poll returning something emptier must not erase the code
+        // somebody has already been shown and may be relying on.
+        save(all().map {
+            if (it.invoiceId == invoiceId && it.code.isNullOrBlank()) it.copy(code = code) else it
+        })
+    }
 
     fun setStatus(invoiceId: String, status: String) {
         save(all().map { if (it.invoiceId == invoiceId) it.copy(status = status) else it })
@@ -74,6 +91,7 @@ class Orders(context: Context) {
                 paid = o.optString("c"), signature = o.optString("s"),
                 status = o.optString("t", "paid").ifBlank { "paid" }, at = o.optLong("a"),
                 recipient = o.optString("r").takeIf { it.isNotBlank() },
+                code = o.optString("k").takeIf { it.isNotBlank() },
             )
         }
     } catch (e: Exception) {
@@ -93,6 +111,7 @@ class Orders(context: Context) {
                 put("t", o.status)
                 put("a", o.at)
                 o.recipient?.let { put("r", it) }
+                o.code?.let { put("k", it) }
             })
         }
         prefs.edit().putString(KEY, arr.toString()).apply()

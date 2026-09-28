@@ -34,6 +34,8 @@ object History {
         val peer: String? = null,
         /** Shop orders only: what became of it, when that is still worth saying. */
         val note: String? = null,
+        /** Shop orders only: the code, PIN or link it produced. Worth copying, so kept apart. */
+        val code: String? = null,
     ) {
         val incoming get() = kind == Kind.RECEIVED
         val month: YearMonth get() = monthOf(at)
@@ -84,10 +86,14 @@ object History {
                 at = o.at,
                 signature = o.signature,
                 note = when {
-                    o.delivered -> null
+                    // The code IS the purchase. A delivered row that says nothing is a receipt
+                    // for something the buyer never received.
+                    !o.code.isNullOrBlank() -> o.code
+                    o.delivered -> "Delivered — no code for this one"
                     o.failed -> "Didn't go through — ${o.status}"
                     else -> "On its way"
                 },
+                code = o.code,
             )
         }
 

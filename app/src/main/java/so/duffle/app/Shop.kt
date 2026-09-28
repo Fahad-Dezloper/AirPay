@@ -207,11 +207,55 @@ object Shop {
         return Operator.Found(product(j))
     }
 
-    /** What became of it. Delivery follows the payment by seconds, so the caller keeps asking. */
-    suspend fun order(invoiceId: String): String? {
+    /**
+     * What became of an order, **including the thing that was bought**.
+     *
+     * A gift card is a code. The screen says "Code delivered to you" and for a long time that
+     * was not true of this app: the server fetched Bitrefill's `redemption_info` and this
+     * function read the status out of the reply and dropped the rest on the floor. Somebody
+     * could pay real money for a Hotstar subscription and the app would tell them it had been
+     * delivered without ever saying what.
+     *
+     * The shape of that field is Bitrefill's and varies by product, so it is read leniently:
+     * whatever looks like a code, a PIN or a link is pulled out, and anything unrecognised is
+     * kept verbatim rather than discarded. Showing an odd-looking string beats swallowing the
+     * one thing the purchase was for.
+     */
+    data class Delivery(val status: String, val code: String?) {
+        val delivered get() = status == "delivered"
+    }
+
+    suspend fun order(invoiceId: String): Delivery? {
         val o = ServerClient.ask("/v1/shop/order", JSONObject().apply {
             put("invoice_id", invoiceId)
         }) ?: return null
-        return o.optString("status").ifBlank { null }
+        val status = o.optString("status").ifBlank { null } ?: return null
+        return Delivery(status, redemption(o.optJSONArray("orders")))
+    }
+
+    /** Whatever the buyer actually needs, out of a field whose shape is not ours to fix. */
+    private fun redemption(orders: org.json.JSONArray?): String? {
+        if (orders == null) return null
+        for (i in 0 until orders.length()) {
+            val r = orders.optJSONObject(i)?.opt("redemption") ?: continue
+            readable(r)?.let { return it }
+        }
+        return null
+    }
+
+    private fun readable(any: Any?): String? = when (any) {
+        null, JSONObject.NULL -> null
+        is String -> any.takeIf { it.isNotBlank() }
+        is org.json.JSONArray ->
+            (0 until any.length()).mapNotNull { readable(any.opt(it)) }.joinToString("\n")
+                .takeIf { it.isNotBlank() }
+        is JSONObject -> {
+            // The fields worth showing, in the order somebody would read them. Anything else
+            // falls through to the whole object, which is ugly and still better than nothing.
+            val parts = listOf("code", "pin", "link", "url", "instructions", "other")
+                .mapNotNull { k -> any.opt(k)?.let { readable(it) }?.let { v -> v } }
+            parts.joinToString("\n").takeIf { it.isNotBlank() } ?: any.toString().takeIf { it != "{}" }
+        }
+        else -> any.toString().takeIf { it.isNotBlank() }
     }
 }
