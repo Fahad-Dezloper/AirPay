@@ -43,6 +43,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.core.graphics.drawable.toBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.painter.BitmapPainter
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.draw.drawBehind
 import androidx.annotation.DrawableRes
@@ -1796,8 +1797,14 @@ private fun TokenBadges(holdings: List<Tokens.Holding>, rate: Double?, onCopy: (
     // One day of SOL, fetched once for the row rather than per card.
     val day by produceState<List<Double>?>(initialValue = null) { value = Prices.solDay() }
 
+    // The row runs to both screen edges, not to this column's gutter, so a card scrolling out
+    // slides off the SCREEN instead of being clipped by an invisible margin — and the inset is
+    // put back inside the scroller, so the first and last card still sit on the gutter at rest.
+    val screen = LocalConfiguration.current.screenWidthDp.dp
     Row(
-        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+        Modifier.offset(x = (-20).dp).width(screen)
+            .horizontalScroll(rememberScrollState())
+            .padding(horizontal = 20.dp, vertical = 4.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         holdings.forEach { h ->
@@ -1815,45 +1822,46 @@ private fun TokenBadges(holdings: List<Tokens.Holding>, rate: Double?, onCopy: (
 
             // A shadow, because the card body is white on a white page: without an edge the
             // head read as a dark block with loose text under it rather than one object.
-            Box(Modifier.then(PressScale(press)).width(186.dp).cardShadow(22.dp)) {
+            Box(Modifier.then(PressScale(press)).width(190.dp).cardShadow(24.dp)) {
               Column(
                 Modifier.fillMaxWidth()
-                    .clip(RoundedCornerShape(22.dp)).background(D.White)
+                    .clip(RoundedCornerShape(24.dp)).background(D.White)
                     .clickable(press, indication = null) { onCopy(h.mint ?: "SOL") },
               ) {
-                // The head: the day's line, with the logo straddling its lower edge.
+                // Room for the logo, which stands above the head rather than inside it.
+                Spacer(Modifier.height(16.dp))
                 Box(
-                    Modifier.fillMaxWidth().height(74.dp)
-                        .clip(RoundedCornerShape(22.dp)).background(Color(0xFF14161B)),
+                    Modifier.fillMaxWidth().height(70.dp)
+                        .clip(RoundedCornerShape(24.dp)).background(Color(0xFF0E1013)),
                 ) {
                     if (series != null && series.size > 2) {
                         Sparkline(
                             series,
                             up = (move ?: 0.0) >= 0,
                             modifier = Modifier.align(Alignment.CenterEnd)
-                                .padding(start = 72.dp, end = 14.dp, top = 14.dp, bottom = 14.dp)
+                                .padding(start = 76.dp, end = 16.dp, top = 14.dp, bottom = 14.dp)
                                 .fillMaxSize(),
                         )
                     }
                 }
 
-                Column(Modifier.padding(start = 14.dp, end = 14.dp, top = 26.dp, bottom = 14.dp)) {
+                Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 16.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         val named = h.name.isNotBlank() &&
                             !h.name.equals(h.symbol, true) && !h.name.startsWith(h.symbol)
                         Text(
-                            if (named) h.name else "Unnamed token",
-                            color = D.Quiet, fontSize = 12.sp, fontWeight = FontWeight.Medium,
-                            maxLines = 1, modifier = Modifier.weight(1f, fill = false),
+                            if (named) h.name else "Unnamed",
+                            color = D.Quiet, fontSize = 13.sp, fontWeight = FontWeight.Medium,
+                            fontStyle = FontStyle.Italic, maxLines = 1,
+                            modifier = Modifier.weight(1f, fill = false),
                         )
-                        // Only when there is a move to report.
                         if (move != null) {
                             Spacer(Modifier.width(8.dp))
                             val up = move >= 0
                             Row(
                                 Modifier.clip(RoundedCornerShape(999.dp))
-                                    .background(Color(0xFF14161B))
-                                    .padding(horizontal = 8.dp, vertical = 3.dp),
+                                    .background(Color(0xFF0E1013))
+                                    .padding(start = 7.dp, end = 9.dp, top = 4.dp, bottom = 4.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
                                 HIcon(
@@ -1864,36 +1872,36 @@ private fun TokenBadges(holdings: List<Tokens.Holding>, rate: Double?, onCopy: (
                                 Text(
                                     "%s%.2f%%".format(if (up) "+" else "", move * 100),
                                     color = if (up) D.Success else D.Danger,
-                                    fontSize = 10.sp, fontWeight = FontWeight.Bold, style = Figures,
+                                    fontSize = 11.sp, fontWeight = FontWeight.Bold, style = Figures,
                                 )
                             }
                         }
                     }
 
-                    Spacer(Modifier.height(6.dp))
+                    Spacer(Modifier.height(8.dp))
                     Text(
-                        "${h.shown} ${h.symbol}", color = D.Black, fontSize = 21.sp,
+                        "${h.shown} ${h.symbol}", color = D.Black, fontSize = 22.sp,
                         fontWeight = FontWeight.ExtraBold, fontFamily = Display,
                         fontStyle = FontStyle.Italic, style = Figures, maxLines = 1,
                     )
-                    Spacer(Modifier.height(1.dp))
+                    Spacer(Modifier.height(2.dp))
                     Text(
                         if (worth != null) "$${Prices.money(worth)}" else "No market price",
-                        color = D.Quiet, fontSize = 12.sp, fontStyle = FontStyle.Italic,
+                        color = D.Quiet, fontSize = 13.sp, fontWeight = FontWeight.Medium,
                         style = Figures, maxLines = 1,
                     )
                 }
               }
 
-              // Drawn over both halves rather than inside the head, so it can sit ON the seam
-              // — which is what makes the two halves read as one card instead of stacked ones.
+              // Standing proud of the head's top-left corner, the way the reference does — a
+              // rounded square, not a circle, because these are app icons and that is the shape
+              // they are drawn as everywhere else in this app.
               Box(
-                  Modifier.align(Alignment.TopStart)
-                      .offset(x = 14.dp, y = 50.dp)
-                      .size(44.dp).clip(CircleShape).background(D.White)
-                      .padding(3.dp),
+                  Modifier.align(Alignment.TopStart).padding(start = 12.dp)
+                      .size(58.dp).clip(RoundedCornerShape(18.dp)).background(Color(0xFF0E1013))
+                      .padding(4.dp),
                   contentAlignment = Alignment.Center,
-              ) { TokenImage(h, 38.dp) }
+              ) { TokenImage(h, 50.dp) }
             }
         }
     }
