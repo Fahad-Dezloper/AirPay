@@ -127,3 +127,50 @@ class PlansTest {
         assertTrue(Plans.matches("   ", "anything at all", 0))
     }
 }
+
+/**
+ * The shelves a plan list is split into.
+ *
+ * Classification, not ranking — every assertion here can be checked by reading the line it is
+ * made about, which is the whole reason these shelves exist and "Trending" does not.
+ */
+class ShelvesTest {
+
+    private fun shelves(line: String) = Plans.shelves(line)
+
+    @Test fun `a data pack is on the data shelf`() {
+        assertTrue(Plans.Shelf.Data in shelves("30GB – 30 Day Data Pack"))
+        assertFalse(Plans.Shelf.Talktime in shelves("30GB – 30 Day Data Pack"))
+    }
+
+    @Test fun `a plan can sit on several shelves`() {
+        // This is one line selling three things, and hiding it from two of them would be wrong.
+        val s = shelves("2GB/Day + JioHotstar – 84 Days")
+        assertTrue(Plans.Shelf.Data in s)
+        assertTrue(Plans.Shelf.Ott in s)
+        assertTrue(Plans.Shelf.All in s)
+    }
+
+    @Test fun `5G is its own shelf and only when stated`() {
+        assertTrue(Plans.Shelf.Fast in shelves("2GB/Day 5G Plan – 84 Days"))
+        assertFalse(Plans.Shelf.Fast in shelves("1.5GB/Day – 28 Days"))
+    }
+
+    @Test fun `talktime is money on the phone, not an allowance`() {
+        assertTrue(Plans.Shelf.Talktime in shelves("₹39.37 Talktime Top-Up"))
+        assertTrue(Plans.Shelf.Talktime in shelves("500"))
+        // A data pack is not talktime even though both are bought with money.
+        assertFalse(Plans.Shelf.Talktime in shelves("12GB – 7 Day Data Pack"))
+    }
+
+    @Test fun `unlimited is not counted as a data allowance`() {
+        val s = shelves("Unlimited, 7 Days")
+        assertTrue(Plans.Shelf.Unlimited in s)
+        assertFalse("'Unlimited' is not a number of GB", Plans.Shelf.Data in s)
+    }
+
+    @Test fun `everything is on the All shelf`() {
+        listOf("500", "Unlimited, 7 Days", "2GB/Day 5G Plan – 84 Days", "₹39.37 Talktime Top-Up")
+            .forEach { assertTrue(it, Plans.Shelf.All in shelves(it)) }
+    }
+}

@@ -408,7 +408,7 @@ class MainActivity : ComponentActivity() {
                                         orders.add(Orders.Order(
                                             invoiceId = inv.id, name = product.name, value = value,
                                             paid = inv.shown, signature = sent.signature,
-                                            category = category,
+                                            category = category, recipient = phone,
                                             status = "paid", at = System.currentTimeMillis(),
                                         ))
                                         refreshLists()
@@ -987,6 +987,7 @@ class MainActivity : ComponentActivity() {
                                         finding = findingOperator,
                                         found = operatorNote,
                                         onFind = { findOperator(it, sec) },
+                                        past = bought,
                                         onBuy = { p, v, phone -> buy(p, v, sec.title, phone) },
                                     )
                                 } else {
@@ -3278,6 +3279,8 @@ private fun RechargeSection(
     finding: Boolean,
     found: String?,
     onFind: (String) -> Unit,
+    /** Everything bought before, so the screen can say what was chosen for this number last. */
+    past: List<Orders.Order>,
     onBuy: (Shop.Product, String, String) -> Unit,
 ) {
     // Only the products that actually credit a number. The Phone section also carries eSIMs
@@ -3427,6 +3430,54 @@ private fun RechargeSection(
             }
             Spacer(Modifier.height(10.dp))
 
+            // What you chose for THIS number last time.
+            //
+            // Every recharge app shows a "recommended plan" here. They get it from a plan API
+            // that ships the category with the data, or from their own record of what you have
+            // bought — nobody can be told what plan a number is currently on, because no third
+            // party is given that (see the note on the operator lookup). So this is the honest
+            // version of the same idea: not a recommendation, a memory.
+            val last = remember(e164, past) {
+                past.firstOrNull { it.recipient != null && it.recipient == e164 }
+            }
+            if (last != null) {
+                val again = plans.firstOrNull { it.value == last.value }
+                Row(
+                    Modifier.fillMaxWidth().padding(bottom = 12.dp)
+                        .clip(RoundedCornerShape(16.dp)).background(D.Blue.copy(alpha = .08f))
+                        .clickable(enabled = again != null && e164 != null) {
+                            again?.let { onBuy(chosen, it.value, e164!!) }
+                        }
+                        .padding(14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("LAST TIME", color = D.Blue, fontSize = 10.sp, letterSpacing = 1.sp,
+                            fontWeight = FontWeight.ExtraBold)
+                        Spacer(Modifier.height(3.dp))
+                        Text(
+                            if (again != null && again.amount > 0)
+                                "${symbolFor(chosen.currency)}${again.amount} · ${last.value}"
+                            else last.value,
+                            color = D.Black, fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold,
+                            lineHeight = 18.sp,
+                        )
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            if (again == null) "No longer sold — pick another below."
+                            else "You recharged this number ${ago(last.at)}.",
+                            color = D.Quiet, fontSize = 11.sp,
+                        )
+                    }
+                    if (again != null) {
+                        Spacer(Modifier.width(10.dp))
+                        Text("Again", color = D.White, fontSize = 13.sp, fontWeight = FontWeight.Bold,
+                            modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(D.Blue)
+                                .padding(horizontal = 16.dp, vertical = 9.dp))
+                    }
+                }
+            }
+
             // Searching a list of fifty is not a nicety. It is also matched against the price,
             // because the search anybody actually runs is the number they already know.
             if (chosen.sellsPlans && plans.size > 8) {
@@ -3441,10 +3492,44 @@ private fun RechargeSection(
                 Spacer(Modifier.height(12.dp))
             }
 
+            // The shelves, and only the ones with something on them. A tab that opens onto an
+            // empty list is a promise the catalogue did not keep.
+            val shelved = remember(chosen.id) { plans.associateWith { Plans.shelves(it.value) } }
+            val tabs = remember(shelved) {
+                Plans.Shelf.entries.filter { sh -> shelved.values.any { sh in it } }
+                    .filter { it != Plans.Shelf.All || shelved.size > 4 }
+            }
+            var shelf by rememberSaveable(chosen.id) { mutableStateOf(Plans.Shelf.All) }
+            if (tabs.size > 1) {
+                Row(
+                    Modifier.horizontalScroll(rememberScrollState()).padding(bottom = 12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    tabs.forEach { t ->
+                        val on = shelf == t
+                        Text(
+                            t.label,
+                            color = if (on) D.White else D.Black,
+                            fontSize = 12.5.sp, fontWeight = FontWeight.Bold,
+                            modifier = Modifier.clip(RoundedCornerShape(999.dp))
+                                .background(if (on) D.Black else D.Fill)
+                                .clickable { shelf = t }
+                                .padding(horizontal = 13.dp, vertical = 8.dp),
+                        )
+                    }
+                }
+            }
+
             val ready = e164 != null
-            val shown = plans.filter { Plans.matches(query, it.value, it.amount) }
+            val shown = plans.filter {
+                Plans.matches(query, it.value, it.amount) && shelf in (shelved[it] ?: emptySet())
+            }
             if (shown.isEmpty()) {
-                Text("Nothing matches “$query”.", color = D.Quiet, fontSize = 13.sp)
+                Text(
+                    if (query.isBlank()) "Nothing on this shelf."
+                    else "Nothing matches “$query”.",
+                    color = D.Quiet, fontSize = 13.sp,
+                )
             }
             val symbol = symbolFor(chosen.currency)
             shown.forEach { pack ->

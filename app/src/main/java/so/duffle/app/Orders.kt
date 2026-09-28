@@ -33,6 +33,14 @@ class Orders(context: Context) {
         val category: String = "",
         /** The denomination in the product's own currency, e.g. "50". */
         val value: String,
+        /**
+         * The number it was credited to, for a recharge. Null for everything else.
+         *
+         * Kept so the recharge screen can say what you last bought for **this** number, which is
+         * the only honest version of a "recommended plan" available here: no third party can be
+         * told what plan a number is on, so the nearest true statement is what you chose before.
+         */
+        val recipient: String? = null,
         /** What it cost, already formatted: "0.56 USDC". */
         val paid: String,
         val signature: String,
@@ -65,6 +73,7 @@ class Orders(context: Context) {
                 category = o.optString("g"),
                 paid = o.optString("c"), signature = o.optString("s"),
                 status = o.optString("t", "paid").ifBlank { "paid" }, at = o.optLong("a"),
+                recipient = o.optString("r").takeIf { it.isNotBlank() },
             )
         }
     } catch (e: Exception) {
@@ -83,6 +92,7 @@ class Orders(context: Context) {
                 put("s", o.signature)
                 put("t", o.status)
                 put("a", o.at)
+                o.recipient?.let { put("r", it) }
             })
         }
         prefs.edit().putString(KEY, arr.toString()).apply()

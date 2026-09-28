@@ -74,6 +74,50 @@ object Plans {
     }
 
     /**
+     * The shelves a plan list can honestly be split into.
+     *
+     * Every real recharge app has tabs like these and gets them from a plan API that ships the
+     * categories with the data. Bitrefill does not: it sends one flat list. So these are
+     * **derived from the line itself** — classification, not ranking. "Data" means the line
+     * sells data, and that is checkable by reading it.
+     *
+     * What is deliberately missing is Trending and Popular. Those are not properties of a plan,
+     * they are counts of what other people bought, and nobody here has that number. Sorting by
+     * something else and calling it trending would be a fact invented on a screen where money
+     * leaves. See [MainActivity]'s recharge screen for the one honest substitute: what **you**
+     * last bought for this number.
+     */
+    enum class Shelf(val label: String) {
+        All("All"),
+        Data("Data"),
+        Unlimited("Unlimited"),
+        Ott("With OTT"),
+        Talktime("Talktime"),
+        Fast("5G"),
+    }
+
+    /** Streaming and music thrown in with a plan — the half of a bundle people choose on. */
+    private val OTT = listOf(
+        "hotstar", "netflix", "prime", "sony", "zee", "jiosaavn", "saavn", "swiggy",
+        "ott", "fancode", "apps", "jiocinema", "jiotv",
+    )
+
+    /** Which shelves a plan belongs on. A plan can sit on several — most do. */
+    fun shelves(line: String, detail: Detail = of(line)): Set<Shelf> {
+        val l = line.lowercase()
+        val out = mutableSetOf(Shelf.All)
+        if (detail.fast) out += Shelf.Fast
+        if (OTT.any { it in l }) out += Shelf.Ott
+        if ("unlimited" in l) out += Shelf.Unlimited
+        if (detail.data != null && detail.data != "Unlimited") out += Shelf.Data
+        // Money onto the phone rather than an allowance: no data and no unlimited anything.
+        if (detail.data == null && ("talktime" in l || "top-up" in l || line.toIntOrNull() != null)) {
+            out += Shelf.Talktime
+        }
+        return out
+    }
+
+    /**
      * What it works out to per day, e.g. "₹12.45/day".
      *
      * Only when there is a real number of days to divide by. This is the figure that makes two
