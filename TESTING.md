@@ -17,6 +17,14 @@ in one sitting and the bugs fixed together.
 - Unlock the Seeker before testing: the HCE service declares `requireDeviceUnlock="true"`, so a
   locked phone serves nothing. The agent cannot enter the PIN.
 - Don't screenshot mid-tap; it has been linked to reader mode being torn down.
+- **If "Pay a bill" (§5) or the Offers tiles (§4) vanish, the server address is stale, not the
+  code.** `duffle.server` in local.properties is baked into the APK at build time as
+  `BuildConfig.TAP_SERVER_URL`, and the Mac's DHCP lease moves (it has been .34, .40 and .52).
+  Both sections render only when the server answers, and they hide silently when it does not —
+  there is nothing on screen saying why. Check with `ipconfig getifaddr en0`, compare against
+  `grep TAP_SERVER_URL app/build/generated/source/buildConfig/debug/so/duffle/app/BuildConfig.java`,
+  then fix local.properties and **rebuild** — reinstalling the old APK changes nothing, because
+  the address is compiled in.
 
 ## Run on 2026-09-20 — results
 
