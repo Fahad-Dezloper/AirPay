@@ -160,6 +160,10 @@ class MainActivity : ComponentActivity() {
     private var balance by mutableStateOf<Chain.Balance?>(null)
     /** Every token this wallet holds, for the breakdown under the balance. */
     private var holdings by mutableStateOf<List<Tokens.Holding>>(emptyList())
+    /** What the market says about each held mint: verified, and what it is worth. */
+    private var market by mutableStateOf<Map<String, Market.Info>>(emptyMap())
+    /** Every holding priced and added up — the figure under "Total balance". */
+    private var totalUsd by mutableStateOf<Double?>(null)
     /** What this wallet has earned, for the strip on the home page. */
     private var rewardSummary by mutableStateOf<Rewards.Summary?>(null)
     /** The catalogue, once the server has been asked. Empty means nothing to show. */
@@ -541,7 +545,29 @@ class MainActivity : ComponentActivity() {
             val h = withContext(Dispatchers.IO) { Tokens.holdings(this@MainActivity, addr) }
             // Null means the chain could not be reached — keep what is on screen rather than
             // replacing a real list with an empty one.
-            if (connected == addr && h != null) holdings = h
+            if (connected == addr && h != null) {
+                // Ask the market about everything held, in one call, before drawing any of it.
+                // SOL is asked about as wrapped SOL, which is how it is priced.
+                val info = Market.of(h.map { it.mint ?: Market.WSOL })
+                if (connected != addr) return@launch
+                market = info
+                // Summed once, here, where both the balances and the prices are in hand.
+                val priced = h.mapNotNull { t ->
+                    info[t.mint ?: Market.WSOL]?.usdPrice?.let { u ->
+                        java.math.BigDecimal.valueOf(t.units, t.decimals).toDouble() * u
+                    }
+                }
+                totalUsd = if (priced.isEmpty()) null else priced.sum()
+                holdings = h.filter { t ->
+                    // SOL always. Everything else has to be a token Jupiter recognises —
+                    // which is what keeps airdropped rubbish out of a list of money.
+                    //
+                    // An empty map means the lookup failed rather than that nothing is
+                    // verified, so nothing is hidden on a dropped connection: an empty token
+                    // list would look exactly like a wallet that had been emptied.
+                    t.isSol || info.isEmpty() || info[t.mint]?.verified == true
+                }
+            }
         }
         lifecycleScope.launch {
             // Also read here, not only when the Earn tab opens: the bell has to be able to
@@ -1064,6 +1090,7 @@ class MainActivity : ComponentActivity() {
 
                         Tag("2")
                         BalanceCard(
+                            totalUsd = totalUsd,
                             wallet = walletList.firstOrNull { it.address == connected },
                             others = walletList.filter { it.address != connected },
                             balance = balance,
@@ -1130,7 +1157,7 @@ class MainActivity : ComponentActivity() {
                             Spacer(Modifier.height(18.dp))
                             Tag("2d")
                             val rate by produceState<Double?>(initialValue = null) { value = Prices.solUsd() }
-                            TokenBadges(holdings, rate) { mint ->
+                            TokenBadges(holdings, rate, market) { mint ->
                                 clipboard.setText(AnnotatedString(mint))
                                 Haptics.tick(this@MainActivity)
                                 push("— copied $mint")
@@ -1720,6 +1747,8 @@ private fun WalletRow(
  */
 @Composable
 private fun BalanceCard(
+    /** Everything held, priced and summed. Null when nothing could be priced. */
+    totalUsd: Double?,
     wallet: Linked?,
     others: List<Linked>,
     balance: Chain.Balance?,
@@ -1812,10 +1841,13 @@ private fun BalanceCard(
             // In dollars, because "total balance" is a question about money and SOL is not an
             // answer to it for most people.
             //
-            // Real SOL at the real rate: this figure is what it says it is.
-            // amount that is actually paid is still counted in SOL or in the token itself.
-            // When the price cannot be fetched the SOL figure is shown instead, rather than a
-            // dollar sign in front of a number nobody checked.
+            // EVERYTHING priced, not just SOL. It used to be the SOL figure alone, which meant
+            // a wallet holding 456 SKR reported only the nine dollars of SOL beside it and
+            // called that the total. Any amount actually paid is still counted in SOL or in
+            // the token itself; this only decides a label.
+            //
+            // When nothing can be priced the SOL figure is shown instead, rather than a dollar
+            // sign in front of a number nobody checked.
             val sol = (balance as? Chain.Balance.Ok)?.sol
             val rate by produceState<Double?>(initialValue = null) { value = Prices.solUsd() }
             // Three runs now, not one, because each rolls on its own: the sign holds still
@@ -1825,7 +1857,7 @@ private fun BalanceCard(
             // — the row aligns to Bottom and the sign and cents are lifted by hand instead.
             // Worth it: DUFFLE_DESIGN.md asks for the amount to roll, and a figure that swaps
             // whole gives no sense that one balance BECAME another.
-            val dollars = sol?.let { s0 -> rate?.let { s0 * it } }
+            val dollars = totalUsd ?: sol?.let { s0 -> rate?.let { s0 * it } }
             val shown = when {
                 dollars != null -> Prices.money(dollars)
                 sol != null -> "%.4f".format(sol)
@@ -1959,7 +1991,12 @@ private fun BalanceCard(
  * ragged; the slots are fixed now and the content fits them.
  */
 @Composable
-private fun TokenBadges(holdings: List<Tokens.Holding>, rate: Double?, onCopy: (String) -> Unit) {
+private fun TokenBadges(
+    holdings: List<Tokens.Holding>,
+    rate: Double?,
+    market: Map<String, Market.Info>,
+    onCopy: (String) -> Unit,
+) {
     if (holdings.isEmpty()) return
     // One day of SOL, fetched once for the row rather than per card.
     val day by produceState<List<Double>?>(initialValue = null) { value = Prices.solDay() }
@@ -1975,24 +2012,20 @@ private fun TokenBadges(holdings: List<Tokens.Holding>, rate: Double?, onCopy: (
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         holdings.forEach { h ->
-            val stable = h.symbol.uppercase() in setOf("USDC", "USDT", "PYUSD", "USDP", "DAI")
-            val worth = remember(h.mint, h.units, rate) {
-                when {
-                    h.isSol -> rate?.let { h.units / 1_000_000_000.0 * it }
-                    stable -> h.shown.toDoubleOrNull()
-                    else -> null
-                }
+            // One price source for every token. The old rules priced SOL live, pinned a short
+            // list of stablecoins at a dollar and gave up on everything else — so SKR, a real
+            // token with real liquidity, read "No market price" purely for not being on a list.
+            val unit = market[h.mint ?: Market.WSOL]?.usdPrice
+                ?: if (h.isSol) rate else null
+            val worth = remember(h.mint, h.units, unit) {
+                unit?.let { java.math.BigDecimal.valueOf(h.units, h.decimals).toDouble() * it }
             }
             val series = if (h.isSol) day else null
             val move = Prices.change(series)
-            // What one of them costs. Same rule as Prices.unitUsd: SOL is priced live, a dollar
-            // stablecoin is a dollar by construction, and everything else is null — a devnet
-            // mint has no market and an invented price on a card is worse than no price.
-            val unit = when {
-                h.isSol -> rate
-                stable -> 1.0
-                else -> null
-            }
+            // What one of them costs, from the market rather than from a list somebody
+            // maintains. A mint with no market has no price, and no price is shown — an
+            // invented one beside a real balance is worse than a gap.
+
             val press = remember { MutableInteractionSource() }
 
             // A shadow, because the card body is white on a white page: without an edge the

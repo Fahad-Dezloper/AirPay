@@ -52,22 +52,11 @@ object Prices {
         null
     }
 
-    /**
-     * Dollars for one whole token, or null when there is no honest answer.
-     *
-     * SOL is priced live. Dollar stablecoins are a dollar by construction — that is the entire
-     * promise of one, and pricing them through an exchange would add noise to a constant. Every
-     * other token returns **null**, and null means the screen shows no dollar figure rather
-     * than a zero: most of what is held on devnet is a test mint with no market at all, and
-     * "$0.00" next to a balance reads as "worthless" when the truth is "unknown".
-     */
-    private val DOLLAR_PEGGED = setOf("USDC", "USDT", "PYUSD", "USDP", "DAI")
-
-    suspend fun unitUsd(h: Tokens.Holding): Double? = when {
-        h.isSol -> solUsd()
-        h.symbol.uppercase() in DOLLAR_PEGGED -> 1.0
-        else -> null
-    }
+    // unitUsd and its list of dollar-pegged symbols lived here. They priced SOL live, pinned
+    // five stablecoin symbols at a dollar and returned null for everything else — which is how
+    // SKR, a real token with real liquidity, showed "No market price". [Market] asks Jupiter
+    // for every held mint in one call instead, so a token is priced because it has a market
+    // rather than because somebody remembered to add it to a list.
 
     /**
      * A day of prices for a token, or null when there is none to be had.

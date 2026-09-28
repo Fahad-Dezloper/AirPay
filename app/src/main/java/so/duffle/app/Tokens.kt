@@ -90,6 +90,7 @@ object Tokens {
             }
         }
 
+        android.util.Log.i("Tokens", "owner=${owner.take(6)}… sol=$sol mints=${byMint.keys.map { it.take(6) }}")
         val tokens = byMint.filter { it.value.units > 0 }.map { (mint, acc) ->
             val meta = meta(context, mint)
             Holding(mint, meta.symbol, meta.name, acc.decimals, acc.units, meta.image)
