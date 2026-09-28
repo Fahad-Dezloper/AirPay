@@ -3450,12 +3450,29 @@ private fun RechargeSection(
                 color = D.Quiet, fontSize = 11.sp, letterSpacing = 1.sp, fontWeight = FontWeight.SemiBold,
             )
             if (!chosen.sellsPlans) {
-                Spacer(Modifier.height(4.dp))
-                // Said plainly rather than left to be discovered. Airtel and Vi sell only
-                // credit through this shop; the plan list people expect simply is not there.
+                Spacer(Modifier.height(6.dp))
+                // Two things said plainly rather than left to be discovered.
+                //
+                // The first is that there is no plan list here — for some operators the shop
+                // only carries the top-up integration, which is not the same as the operator
+                // not selling plans.
+                //
+                // The second is that the number on the card is what you PAY, and the talktime
+                // that lands is less. Every operator that publishes the figure shows a gap:
+                // Vi credits ₹423.73 for ₹500, which is exactly ₹500 ÷ 1.18 — the GST — and
+                // Jio credits ₹39.37 for ₹50, so it takes a fee on top. These products publish
+                // nothing at all, so the size cannot be shown without inventing it. What can
+                // be said is that it exists, which beats a screen implying it does not.
                 Text(
-                    "${chosen.name.removeSuffix(" India")} only sells credit here, not plans. " +
-                        "The amount goes onto the number as talktime.",
+                    "${chosen.name.removeSuffix(" India")} sells credit here, not plans — it " +
+                        "goes to the number's main balance.",
+                    color = D.Quiet, fontSize = 12.sp, lineHeight = 16.sp,
+                )
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "What lands as talktime is less than what you pay: tax and the operator's " +
+                        "fee come off first, and neither is published here. Credit on its own " +
+                        "does not add validity — a plan does that.",
                     color = D.Quiet, fontSize = 12.sp, lineHeight = 16.sp,
                 )
             }
