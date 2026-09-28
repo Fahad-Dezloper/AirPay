@@ -34,12 +34,25 @@ object Shop {
         val redemption: List<String>,
         /** Bitrefill's own categories: "refill", "bundles", "voip", "esim"… */
         val categories: List<String> = emptyList(),
+        /** Bitrefill's image id, e.g. "hotstar-svg". See [logoUrl]. */
+        val image: String? = null,
         /** The denominations on offer, in the product's own currency. */
         val values: List<String>,
         /** The same denominations with what each costs. See [Package]. */
         val packages: List<Package> = emptyList(),
     ) {
         val needsPhone get() = recipient == "phone_number"
+
+        /**
+         * The brand's own logo, from Bitrefill's image CDN.
+         *
+         * Padded onto a light square rather than cropped, because these are logos of wildly
+         * different shapes — a wordmark next to a roundel — and cropping them to a common box
+         * cuts the wordmarks in half.
+         */
+        val logoUrl: String? get() = image?.takeIf { it.isNotBlank() }?.let {
+            "https://www.bitrefill.com/content/cn/b_rgb:F8F8F8,c_pad,h_256,w_256/v1/$it.png"
+        }
 
         /**
          * True when this tops up a mobile number on its own network.
@@ -123,6 +136,7 @@ object Shop {
         name = j.optString("name"),
         currency = j.optString("currency", "INR"),
         recipient = j.optString("recipient", "none"),
+        image = j.optString("image").takeIf { it.isNotBlank() },
         categories = j.optJSONArray("categories").let { a ->
             (0 until (a?.length() ?: 0)).map { a!!.optString(it) }
         },

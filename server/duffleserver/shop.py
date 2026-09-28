@@ -46,7 +46,15 @@ OPERATOR_TTL = 600.0
 #: categories are shop-shaped ("apparel", "game-stores"); these are bill-shaped.
 SECTIONS = (
     ("Phone", ("refill", "bundles", "data", "esim", "voip")),
-    ("TV & streaming", ("streaming", "dth", "entertainment")),
+    # Three different things used to share one shelf called "TV & streaming": subscriptions you
+    # redeem online, satellite TV that credits a set-top box, and cinema tickets. They are not
+    # alternatives to each other — nobody deciding between Hotstar and a Dish TV recharge — and
+    # the one that needs a subscriber ID has nothing in common with the one that emails a code.
+    #
+    # Keyed on the precise category rather than "entertainment", which all three carry.
+    ("Streaming", ("streaming",)),
+    ("TV", ("dth",)),
+    ("Going out", ("experiences",)),
     ("Bills & wallets", ("digital-wallet",)),
     ("Travel", ("travel", "flights", "train", "bus", "online-travel-agencies", "gasoline")),
     ("Food", ("food", "food-delivery", "groceries", "restaurants")),

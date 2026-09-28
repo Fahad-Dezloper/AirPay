@@ -3276,7 +3276,7 @@ private fun EarnTiles(onRewards: () -> Unit, onOffers: () -> Unit, onReferrals: 
     }
 }
 
-private enum class Mark { Coins, Ticket, Rings, Signal, Screen, Receipt, Basket, Plane, Cup, Game, Dots }
+private enum class Mark { Coins, Ticket, Rings, Signal, Screen, Receipt, Basket, Plane, Cup, Game, Dots, Play }
 
 /**
  * Recharging a phone, which is a different job from buying a gift card.
@@ -3693,14 +3693,34 @@ private fun ShopSection(
             Text("Real money on Solana mainnet.",
                 color = D.Blue, fontSize = 12.5.sp, fontWeight = FontWeight.Medium)
         }
+        // A short shelf opens itself. Four subscription services behind four taps is a list
+        // pretending to be a menu; sixty-three shopping brands genuinely need collapsing.
+        val alwaysOpen = section.products.size <= 6
         section.products.forEach { p ->
-            val open = picked?.id == p.id
+            val open = alwaysOpen || picked?.id == p.id
             Column(
                 Modifier.fillMaxWidth().padding(bottom = 8.dp).clip(RoundedCornerShape(16.dp))
                     .background(D.Fill).clickable { onPick(if (open) null else p) }
                     .padding(horizontal = 14.dp, vertical = 13.dp),
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
+                    // The brand's own mark. A list of subscription services with no logos is a
+                    // list of words, and these are things people recognise by sight.
+                    p.logoUrl?.let { url ->
+                        val logo by produceState<androidx.compose.ui.graphics.ImageBitmap?>(null, url) {
+                            value = LogoCache.get(url) ?: withContext(Dispatchers.IO) { LogoCache.load(url) }
+                        }
+                        Box(
+                            Modifier.size(40.dp).clip(RoundedCornerShape(11.dp)).background(D.White),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            logo?.let {
+                                Image(it, contentDescription = null, modifier = Modifier.fillMaxSize(),
+                                    contentScale = ContentScale.Fit)
+                            }
+                        }
+                        Spacer(Modifier.width(12.dp))
+                    }
                     Column(Modifier.weight(1f)) {
                         Text(p.name.removeSuffix(" India"), color = D.Black, fontSize = 15.sp,
                             fontWeight = FontWeight.SemiBold, maxLines = 1)
@@ -3708,7 +3728,8 @@ private fun ShopSection(
                             when {
                                 p.needsPhone -> "Credited to a phone number"
                                 "online" in p.redemption -> "Code delivered to you"
-                                else -> "${p.values.size} amounts"
+                                p.values.size == 1 -> "One price"
+                                else -> "${p.values.size} prices"
                             },
                             color = D.Quiet, fontSize = 12.sp,
                         )
@@ -3721,14 +3742,33 @@ private fun ShopSection(
                     Column(Modifier.padding(top = 12.dp)) {
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp),
                             modifier = Modifier.horizontalScroll(rememberScrollState())) {
-                            p.values.forEach { v ->
-                                Text(
-                                    "${symbolFor(p.currency)}$v", color = D.White, fontSize = 14.sp,
-                                    fontWeight = FontWeight.Bold, style = Figures,
-                                    modifier = Modifier.clip(RoundedCornerShape(999.dp))
-                                        .background(D.Blue).clickable { onBuy(p, v) }
+                            val opts = p.packages.ifEmpty { p.values.map { Shop.Package(it, 0) } }
+                            opts.forEach { pack ->
+                                // The PRICE on the pill, never the description. A package whose
+                                // value is a name — "Amazon Prime Subscription 3M" — was being
+                                // printed straight after the currency symbol, so the button to
+                                // buy a ₹399 subscription read "₹Amazon Prime Subscription 3M".
+                                val price = if (pack.amount > 0) "${symbolFor(p.currency)}${pack.amount}"
+                                else "${symbolFor(p.currency)}${pack.value}"
+                                // What the price buys, when the value says more than the number
+                                // already does. 399 and 1499 are three months and twelve, and a
+                                // row of bare prices does not say which is which.
+                                val what = pack.value
+                                    .takeIf { pack.amount > 0 && it.toIntOrNull() == null }
+                                    ?.removePrefix(p.name.removeSuffix(" India"))
+                                    ?.trim()?.takeIf { it.isNotBlank() }
+                                Column(
+                                    Modifier.clip(RoundedCornerShape(if (what == null) 999.dp else 16.dp))
+                                        .background(D.Blue).clickable { onBuy(p, pack.value) }
                                         .padding(horizontal = 15.dp, vertical = 9.dp),
-                                )
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                ) {
+                                    Text(price, color = D.White, fontSize = 14.sp,
+                                        fontWeight = FontWeight.Bold, style = Figures)
+                                    what?.let {
+                                        Text(it, color = D.White.copy(alpha = .8f), fontSize = 10.5.sp)
+                                    }
+                                }
                             }
                         }
                     }
@@ -3757,12 +3797,14 @@ private fun symbolFor(currency: String) = when (currency) {
 @Composable
 private fun ShopTiles(sections: List<Shop.Section>, onOpen: (Shop.Section) -> Unit) {
     val marks = mapOf(
-        "Phone" to Mark.Signal, "TV & streaming" to Mark.Screen,
-        "Bills & wallets" to Mark.Receipt, "Travel" to Mark.Plane,
-        "Food" to Mark.Cup, "Shopping" to Mark.Basket,
+        "Phone" to Mark.Signal, "Streaming" to Mark.Play, "TV" to Mark.Screen,
+        "Going out" to Mark.Ticket, "Bills & wallets" to Mark.Receipt,
+        "Travel" to Mark.Plane, "Food" to Mark.Cup, "Shopping" to Mark.Basket,
         "Games" to Mark.Game, "More" to Mark.Dots,
     )
-    val shown = sections.filter { it.products.isNotEmpty() }.take(8)
+    // Twelve, not eight. Splitting the old TV shelf took the count past eight, and a cap that
+    // silently drops the last shelves is how a whole category disappears without a trace.
+    val shown = sections.filter { it.products.isNotEmpty() }.take(12)
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         // Four to a row, and the last row padded with empty weights rather than stretched —
         // three wide tiles beside four narrow ones is the giveaway that a grid is faked.
@@ -3888,6 +3930,20 @@ private fun MarkCanvas(mark: Mark, side: Dp) {
                         CornerRadius(w * .18f))
                     drawCircle(D.Fill, radius = w * .08f, center = Offset(w * .31f, w * .50f))
                     drawCircle(D.Fill, radius = w * .08f, center = Offset(w * .69f, w * .50f))
+                }
+                // A play triangle in a rounded frame: the thing you press, not the box it
+                // comes out of. Deliberately unlike Screen, which is the set-top box shelf
+                // sitting right beside it.
+                Mark.Play -> {
+                    drawRoundRect(blue, Offset(w * .08f, w * .18f), Size(w * .84f, w * .64f),
+                        CornerRadius(w * .2f))
+                    drawPath(
+                        Path().apply {
+                            moveTo(w * .40f, w * .34f); lineTo(w * .70f, w * .50f)
+                            lineTo(w * .40f, w * .66f); close()
+                        },
+                        D.Fill,
+                    )
                 }
                 // Three dots: everything that did not need a shape of its own.
                 Mark.Dots -> repeat(3) { i ->

@@ -1453,8 +1453,8 @@ internal fun TokenImage(t: Tokens.Holding, size: Dp, shape: Shape = CircleShape)
     }
 }
 
-/** Token logos, fetched once and kept small. Never more than 2 MB read, never bigger than 128px. */
-private object LogoCache {
+/** Remote logos — token mints and shop brands alike — fetched once and kept small. */
+internal object LogoCache {
     private val cache = android.util.LruCache<String, ImageBitmap>(48)
     private val failed = java.util.Collections.synchronizedSet(mutableSetOf<String>())
 
