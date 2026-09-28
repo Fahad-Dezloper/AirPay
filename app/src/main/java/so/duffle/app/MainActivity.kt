@@ -1079,9 +1079,21 @@ class MainActivity : ComponentActivity() {
                             )
                         }
 
-                        if (Rewards.enabled) {
+                        if (shopSections.isNotEmpty()) {
                             Spacer(Modifier.height(22.dp))
                             Tag("4")
+                            Text("Pay a bill", color = D.Black, fontSize = 17.sp,
+                                fontWeight = FontWeight.Bold, modifier = Modifier.padding(vertical = 4.dp))
+                            Spacer(Modifier.height(10.dp))
+                            ShopTiles(shopSections) { sec ->
+                                shopSection = sec
+                                shopProduct = null
+                                tab = Tab.SHOP
+                            }
+                        }
+                        if (Rewards.enabled) {
+                            Spacer(Modifier.height(22.dp))
+                            Tag("5")
                             EarnStrip(rewardSummary) { tab = Tab.REWARDS }
                             Spacer(Modifier.height(10.dp))
                             EarnTiles(
@@ -1092,18 +1104,6 @@ class MainActivity : ComponentActivity() {
                                 // nobody is counting would be the one lie on this screen.
                                 onReferrals = { shareInvite() },
                             )
-                        }
-                        if (shopSections.isNotEmpty()) {
-                            Spacer(Modifier.height(22.dp))
-                            Tag("5")
-                            Text("Pay a bill", color = D.Black, fontSize = 17.sp,
-                                fontWeight = FontWeight.Bold, modifier = Modifier.padding(vertical = 4.dp))
-                            Spacer(Modifier.height(10.dp))
-                            ShopTiles(shopSections) { sec ->
-                                shopSection = sec
-                                shopProduct = null
-                                tab = Tab.SHOP
-                            }
                         }
 
                         if (history.isNotEmpty()) {
@@ -3169,7 +3169,7 @@ private fun EarnTiles(onRewards: () -> Unit, onOffers: () -> Unit, onReferrals: 
     }
 }
 
-private enum class Mark { Coins, Ticket, Rings, Signal, Screen, Receipt, Basket }
+private enum class Mark { Coins, Ticket, Rings, Signal, Screen, Receipt, Basket, Plane, Cup, Game, Dots }
 
 /**
  * One section of the shop: what is in it, and what it costs.
@@ -3261,20 +3261,29 @@ private fun symbolFor(currency: String) = when (currency) {
 private fun ShopTiles(sections: List<Shop.Section>, onOpen: (Shop.Section) -> Unit) {
     val marks = mapOf(
         "Phone" to Mark.Signal, "TV & streaming" to Mark.Screen,
-        "Bills & wallets" to Mark.Receipt,
+        "Bills & wallets" to Mark.Receipt, "Travel" to Mark.Plane,
+        "Food" to Mark.Cup, "Shopping" to Mark.Basket,
+        "Games" to Mark.Game, "More" to Mark.Dots,
     )
-    val shown = sections.filter { it.products.isNotEmpty() }.take(4)
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        shown.forEach { sec ->
-            EarnTile(
-                label = when (sec.title) {
-                    "TV & streaming" -> "TV"
-                    "Bills & wallets" -> "Bills"
-                    else -> sec.title
-                },
-                mark = marks[sec.title] ?: Mark.Basket,
-                modifier = Modifier.weight(1f),
-            ) { onOpen(sec) }
+    val shown = sections.filter { it.products.isNotEmpty() }.take(8)
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        // Four to a row, and the last row padded with empty weights rather than stretched —
+        // three wide tiles beside four narrow ones is the giveaway that a grid is faked.
+        shown.chunked(4).forEach { row ->
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                row.forEach { sec ->
+                    EarnTile(
+                        label = when (sec.title) {
+                            "TV & streaming" -> "TV"
+                            "Bills & wallets" -> "Bills"
+                            else -> sec.title
+                        },
+                        mark = marks[sec.title] ?: Mark.Basket,
+                        modifier = Modifier.weight(1f),
+                    ) { onOpen(sec) }
+                }
+                repeat(4 - row.size) { Spacer(Modifier.weight(1f)) }
+            }
         }
     }
 }
@@ -3346,6 +3355,50 @@ private fun MarkCanvas(mark: Mark, side: Dp) {
                     val r = w * .26f
                     drawCircle(blue.copy(alpha = .35f), r, Offset(w * .34f, w * .5f), style = Stroke(w * .11f))
                     drawCircle(blue, r, Offset(w * .66f, w * .5f), style = Stroke(w * .11f))
+                }
+                // A paper plane, banking. The tail is the lighter half so the nose leads.
+                Mark.Plane -> {
+                    drawPath(
+                        Path().apply {
+                            moveTo(w * .90f, w * .14f); lineTo(w * .10f, w * .50f)
+                            lineTo(w * .44f, w * .60f); close()
+                        },
+                        blue,
+                    )
+                    drawPath(
+                        Path().apply {
+                            moveTo(w * .90f, w * .14f); lineTo(w * .44f, w * .60f)
+                            lineTo(w * .52f, w * .88f); close()
+                        },
+                        blue.copy(alpha = .45f),
+                    )
+                }
+                // A cup: a lid, and a body that tapers the way a paper one does.
+                Mark.Cup -> {
+                    drawRoundRect(blue.copy(alpha = .45f), Offset(w * .16f, w * .16f),
+                        Size(w * .68f, w * .13f), CornerRadius(w * .06f))
+                    drawPath(
+                        Path().apply {
+                            moveTo(w * .24f, w * .34f); lineTo(w * .76f, w * .34f)
+                            lineTo(w * .66f, w * .86f); lineTo(w * .34f, w * .86f); close()
+                        },
+                        blue,
+                    )
+                }
+                // A controller, seen head on: a slab with two thumb buttons punched out.
+                Mark.Game -> {
+                    drawRoundRect(blue, Offset(w * .08f, w * .30f), Size(w * .84f, w * .40f),
+                        CornerRadius(w * .18f))
+                    drawCircle(D.Fill, radius = w * .08f, center = Offset(w * .31f, w * .50f))
+                    drawCircle(D.Fill, radius = w * .08f, center = Offset(w * .69f, w * .50f))
+                }
+                // Three dots: everything that did not need a shape of its own.
+                Mark.Dots -> repeat(3) { i ->
+                    drawCircle(
+                        blue.copy(alpha = if (i == 1) 1f else .45f),
+                        radius = w * .10f,
+                        center = Offset(w * (.22f + i * .28f), w * .5f),
+                    )
                 }
             }
     }
