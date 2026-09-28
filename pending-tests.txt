@@ -1,0 +1,109 @@
+PENDING TESTS — built, compiles, unit-tested, NOT yet seen working on a phone
+==============================================================================
+
+Everything here was written and pushed but needs a human hand: a wallet approval,
+a second phone, or a tap. Listed newest first. TESTING.md holds the rig rules and
+the results of past sessions — read its "Rig reminders" before starting.
+
+Standing rule for all of it: both phones on the same build (wire v4 refuses an
+older one), Seeker unlocked (HCE declares requireDeviceUnlock), md5-check every
+install, don't screenshot mid-tap.
+
+
+1. WALLET LINKING — the signature that carries your name to a second wallet
+---------------------------------------------------------------------------
+   Commit   : 71939f0
+   Status   : 13/13 unit tests pass, including the replay attack. Never run against
+              a real wallet, because creating a link needs a human to approve it.
+
+   To run   : open a wallet that is NOT the Seeker one (tap its card in §2 → the
+              sheet). The new "SEEN AS" panel should offer "Use dezloper.skr here".
+              Press it.
+
+   Expect   : the Seeker wallet opens, shows a READABLE sentence — not a
+              transaction — beginning "AirPay wallet link v1". Approve it. The app
+              returns, the panel flips to dezloper.skr with a tick and the line
+              "Lent to this wallet by 4WZ9…D18D … Good until <date>".
+
+   Watch for:
+     - The app must come back to the wallet you STARTED on. Wallet.link() restores
+       the previous selection in a finally block; if the selected wallet changes,
+       that is the bug and the next payment would come from the wrong address.
+     - Declining must change nothing at all. Log line: "— <wallet> did not sign".
+     - signMessagesDetached is not signTransactions. If a wallet shows a
+       transaction approval screen instead of text, the wrong call is being made.
+     - Seeker Wallet is the only wallet this has to work on. Phantom and Solflare
+       may not implement signMessagesDetached at all — if one refuses, that is
+       worth knowing but is not a blocker, since the Seeker wallet is the one that
+       holds the name.
+
+   Then     : tap that linked wallet against the OnePlus. The payer should see
+              "dezloper.skr" with a tick and the words "linked wallet" underneath.
+              That is the whole point of the feature.
+
+   NOT a concern any more: payload size. The link adds ~150 bytes and a unit test
+   caps the card under 512B, but TESTING.md recorded maxTransceive=65279B measured
+   on a real tap (2026-09-20), so there is no ceiling worth worrying about.
+
+
+2. NAME RESOLUTION on a wallet that owns nothing
+-------------------------------------------------
+   Commit   : 4497731
+   Done     : the positive path is CONFIRMED on device —
+              logcat "Names: 4WZ9hk… → Domain(text=dezloper.skr)", and §2 shows
+              dezloper.skr in place of the address.
+   Still    : confirm a wallet with no name still reads cleanly (shows the short
+              address, no tick, nothing missing), and that turning wifi off gives
+              "Unreachable" rather than silently dropping a name that was showing.
+              Unreachable must NOT be cached — a name lost to a bad connection has
+              to come back on its own.
+
+
+3. THE THREE NAME TIERS on the payer's screen
+----------------------------------------------
+   Commit   : 4497731
+   Verify each renders differently enough to tell apart at a glance:
+     - verified   .skr/.sol resolved from chain → black text + blue tick
+     - claimed    a name their phone sent      → QUIET GREY, no tick
+     - anonymous  no name                      → short address
+   The dot rule: a phone sending the label "dezloper.skr" must be REFUSED by
+   TapCard.validate (unit-tested, but worth seeing once on the wire).
+
+
+4. CONTACT RENAME
+------------------
+   Commit   : 4497731
+   Tap a person's name in a thread header → dialog → type a name → Save.
+   Expect   : the People list and the thread both use your name immediately. If
+              they also own a domain, it still shows on the second line — your
+              label must not hide it.
+   Empty box clears it and falls back to their own name.
+
+
+5. THE REQUEST PANEL ("They will see")
+---------------------------------------
+   Commit   : 4497731 / 71939f0
+   Three states on the Request screen, above the amount:
+     - owns a name     → name + tick, "Yours on chain…"
+     - borrowed a name → name + tick, "Lent by your other wallet, and signed…"
+     - no name         → "your address", "Nobody will know who asked."
+   It must never BLOCK Request. Asking for money is not gated on owning a domain.
+
+
+6. OLDER ITEMS STILL OWED (carried over)
+-----------------------------------------
+   - The red declined-bubble state in a thread.
+   - The blue outgoing-request side of a thread (we-asked-them).
+   - The radio half of the armed tap sheet.
+   - One clean end-to-end payment on the current wire version, start to finish.
+     This has not been re-run since the naming work landed, and the payload
+     changed shape — it is the single most important item in this file.
+
+
+ORDER TO RUN IN
+----------------
+   Both phones on the desk, same build, one sitting:
+     1. 6's clean payment FIRST, before anything else is trusted
+     2. 1 (linking) — it is the only thing needing a wallet approval
+     3. tap the linked wallet → 1's second half, and 3 at the same time
+     4. 4 and 5 are screen-only and can be done any time
