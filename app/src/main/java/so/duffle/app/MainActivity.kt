@@ -3582,10 +3582,13 @@ private val PayBarRadius = PayBarHeight / 2 + PayBarRing
  *
  * Square inner edges made the seam look like a cut through one shape rather than the join
  * between two, and a hard corner against a soft outer one is the sort of mismatch that reads as
- * unfinished even when nobody can say why. Rounded — but well short of the capsule ends, so the
- * outer edge stays the thing that gives the bar its shape.
+ * unfinished even when nobody can say why.
+ *
+ * Small, though — just enough to take the edge off. At 24dp the halves started looking like two
+ * separate pills that had been pushed together, which undoes the thing the bar is for: one
+ * control with two ways in, not two buttons that happen to touch.
  */
-private val PayBarInner = 24.dp
+private val PayBarInner = 10.dp
 private val PayBarEnd = PayBarHeight / 2
 private val PayBarLeft = RoundedCornerShape(
     topStart = PayBarEnd, bottomStart = PayBarEnd, topEnd = PayBarInner, bottomEnd = PayBarInner,
