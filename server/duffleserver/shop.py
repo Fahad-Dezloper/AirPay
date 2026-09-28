@@ -142,7 +142,10 @@ class Shop:
             # Neither is what gets paid. Only invoice.payment.price is authoritative (see the
             # module note), so this is for choosing and the invoice is for paying.
             "packages": [
-                {"value": pk.get("value"), "amount": pk.get("amount")}
+                # `id` because the docs make package_id and value mutually exclusive and the id
+                # is the unambiguous one: a bundle's value is a sentence ("2GB/Day 5G Plan - 84
+                # Days") and two packages can share a price.
+                {"id": pk.get("id"), "value": pk.get("value"), "amount": pk.get("amount")}
                 for pk in (p.get("packages") or []) if pk.get("value")
             ],
         }
@@ -167,7 +170,8 @@ class Shop:
     # -- paying ------------------------------------------------------------------------------
 
     def invoice(self, product_id: str, value, phone_number: str | None = None,
-                payment_method: str = "usdc_solana") -> dict:
+                payment_method: str = "usdc_solana", refund_address: str | None = None,
+                package_id: str | None = None) -> dict:
         """Asks for a price, and gets back somewhere to pay it.
 
         `auto_pay` is false on purpose: it would let an account balance settle the order without
@@ -178,7 +182,12 @@ class Shop:
         """
         if not self.enabled:
             raise RuntimeError("no Bitrefill key configured")
-        item = {"product_id": product_id, "value": value, "quantity": 1}
+        # package_id and value are mutually exclusive — send the precise one when we have it.
+        item = {"product_id": product_id, "quantity": 1}
+        if package_id:
+            item["package_id"] = package_id
+        else:
+            item["value"] = value
         if phone_number:
             item["phone_number"] = phone_number
         body = {
@@ -186,6 +195,12 @@ class Shop:
             "payment_method": payment_method,
             "auto_pay": False,
         }
+        # Where money goes if the order cannot be filled. The docs list this as required for
+        # crypto payments and the API accepts an invoice without it — which is the worst
+        # combination, because the failure only shows up when a refund is actually owed and
+        # there is nowhere to send it. It is the buyer's own wallet.
+        if refund_address:
+            body["refund_address"] = refund_address
         data = self._post("/invoices", body).get("data") or {}
         pay = data.get("payment") or {}
         if not pay.get("address") or pay.get("price") is None:
@@ -235,15 +250,28 @@ class Shop:
         follows the payment by seconds, not milliseconds."""
         data = self._get(f"/invoices/{invoice_id}").get("data") or {}
         orders = data.get("orders") or []
+        out = []
+        for o in orders:
+            # The invoice's embedded order carries status and nothing to redeem — verified
+            # against a real invoice, where the object has no redemption field at all. The
+            # documented home for it is the order's own endpoint, so that is asked, but only
+            # once the order says it has been delivered: before then there is nothing there
+            # and the call is a round trip for an empty answer.
+            redemption = o.get("redemption_info") or o.get("redemptionInfo")
+            if redemption is None and o.get("id") and o.get("status") == "delivered":
+                try:
+                    full = self._get(f"/orders/{o['id']}").get("data") or {}
+                    redemption = full.get("redemption_info") or full.get("redemptionInfo")
+                except Exception as e:                       # noqa: BLE001
+                    log.info("order %s: %s", o.get("id"), e)
+            out.append({"status": o.get("status"),
+                        "delivered_time": o.get("delivered_time"),
+                        "redemption": redemption})
         return {
             "invoice_id": data.get("id"),
             "status": data.get("status"),
             "payment_status": (data.get("payment") or {}).get("status"),
-            "orders": [{"status": o.get("status"),
-                        "delivered_time": o.get("delivered_time"),
-                        # Where a code, PIN or link comes back for products that have one.
-                        "redemption": o.get("redemption_info") or o.get("redemptionInfo")}
-                       for o in orders],
+            "orders": out,
         }
 
     # -- transport ---------------------------------------------------------------------------

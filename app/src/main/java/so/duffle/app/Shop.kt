@@ -85,7 +85,7 @@ object Shop {
      * It is for **choosing**: the price anybody actually pays comes back on the invoice, in
      * USDC, and is the only number this app treats as authoritative.
      */
-    data class Package(val value: String, val amount: Int)
+    data class Package(val value: String, val amount: Int, val id: String? = null)
 
     data class Section(val title: String, val products: List<Product>)
 
@@ -150,7 +150,9 @@ object Shop {
             (0 until (a?.length() ?: 0)).mapNotNull { i ->
                 a!!.optJSONObject(i)?.let { o ->
                     o.optString("value").takeIf { it.isNotBlank() }
-                        ?.let { v -> Package(v, o.optInt("amount", 0)) }
+                        ?.let { v ->
+                            Package(v, o.optInt("amount", 0), o.optString("id").takeIf { i -> i.isNotBlank() })
+                        }
                 }
             }
         },
@@ -161,12 +163,26 @@ object Shop {
      * @param phone the number to credit, in full international form. Required by anything whose
      *   `recipient` is `phone_number` — Bitrefill rejects the invoice without it, and there is
      *   nowhere else in the flow to ask.
+     * @param refund the buyer's own wallet. Where the money goes if the order cannot be filled:
+     *   Bitrefill's docs list a refund address as required for crypto payments, and the API
+     *   accepts an invoice without one — which is the worst combination, because the gap only
+     *   surfaces when a refund is actually owed.
+     * @param packageId the exact package, when it is known. The docs make this and `value`
+     *   mutually exclusive, and it is the unambiguous half: a bundle's value is a sentence.
      */
-    suspend fun invoice(productId: String, value: String, phone: String? = null): Invoice? {
+    suspend fun invoice(
+        productId: String,
+        value: String,
+        phone: String? = null,
+        refund: String? = null,
+        packageId: String? = null,
+    ): Invoice? {
         val o = ServerClient.ask("/v1/shop/invoice", JSONObject().apply {
             put("product_id", productId)
             put("value", value)
+            packageId?.takeIf { it.isNotBlank() }?.let { put("package_id", it) }
             phone?.takeIf { it.isNotBlank() }?.let { put("phone_number", it) }
+            refund?.takeIf { it.isNotBlank() }?.let { put("refund_address", it) }
         }) ?: return null
         val address = o.optString("address").takeIf { PayRequest.isBase58Address(it) } ?: return null
         val amount = o.optLong("amount", 0L).takeIf { it > 0 } ?: return null

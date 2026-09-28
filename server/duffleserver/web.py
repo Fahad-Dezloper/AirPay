@@ -193,7 +193,9 @@ def make_handler(service, helius_auth: str | None, limiter: RateLimit | None = N
                     try:
                         return self._json(200, shop.invoice(
                             str(body.get("product_id") or ""), body.get("value"),
-                            phone_number=body.get("phone_number") or None))
+                            phone_number=body.get("phone_number") or None,
+                            refund_address=body.get("refund_address") or None,
+                            package_id=body.get("package_id") or None))
                     except Exception as e:
                         # Includes "out of stock" and "no such product", which are answers
                         # rather than faults — the app shows them as the reason it cannot buy.

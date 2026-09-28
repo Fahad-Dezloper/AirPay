@@ -366,7 +366,13 @@ class MainActivity : ComponentActivity() {
             busy = true
             try {
                 push("shop: asking for a price…")
-                val inv = Shop.invoice(product.id, value, phone)
+                // The payer's own wallet as the refund address: if the order cannot be
+                // filled, the money has somewhere to come back to.
+                val inv = Shop.invoice(
+                    product.id, value, phone,
+                    refund = payer,
+                    packageId = product.packages.firstOrNull { it.value == value }?.id,
+                )
                 if (inv == null) {
                     status = Status.Problem("Couldn't get a price", "The shop didn't answer. Try again.")
                     return@launch
