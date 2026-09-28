@@ -3505,55 +3505,111 @@ private fun RequestsTab(
  * moment somebody actually wants to pay. Scrolling to reach the point of the app is the wrong
  * shape. Home only, because on any other screen there is already something to do.
  *
- * Tap is the filled one. It is the thing AirPay does that nothing else does; a QR reader is
- * table stakes, and making them look equal would be a claim about the product that is not true.
+ * **One object, split in two**, rather than two buttons side by side. Two separate pills read as
+ * a pair of unrelated choices; a single capsule divided by a hairline reads as one control with
+ * two ways in, which is what this is — both halves start a payment, and the only difference is
+ * whether the other person is in front of you or on a screen.
+ *
+ * The layout is mirrored about that divider: each icon sits on its own OUTER edge with the
+ * labels meeting in the middle. It keeps the two marks as far apart as the bar allows, so
+ * neither is read as belonging to the wrong side, and it gives the whole thing a centre.
+ *
+ * Labels break onto two lines deliberately. One long line forces small type across a wide bar;
+ * two short ones let the type be big enough to read at a glance, which is the only way anybody
+ * reads a control they are reaching for rather than looking at.
+ *
+ * Tap is the dark half — the heavier of the two, because it is the thing AirPay does that
+ * nothing else does. A QR reader is table stakes, and making them look equal would be a claim
+ * about the product that is not true.
  */
 @Composable
 private fun PayBar(modifier: Modifier, onTap: () -> Unit, onScan: () -> Unit) {
     Column(modifier.fillMaxWidth()) {
-        // The page scrolls UNDER this, so it needs a floor. Without one the buttons sat on
-        // top of whatever happened to be behind them — the bill tiles, half of a history row —
-        // and read as two stickers dropped on the page rather than a bar it scrolls beneath.
-        // A fade rather than a hard edge, so nothing is ever abruptly cut in half.
+        // The page scrolls UNDER this, so it needs a floor. Without one the bar sat on top of
+        // whatever happened to be behind it — the bill tiles, half of a history row — and read
+        // as a sticker dropped on the page rather than something it scrolls beneath. A fade
+        // rather than a hard edge, so nothing is ever abruptly cut in half.
         Box(
             Modifier.fillMaxWidth().height(28.dp)
                 .background(Brush.verticalGradient(listOf(Color.Transparent, D.White))),
         )
         Row(Modifier.background(D.White).padding(start = 20.dp)) { Tag("7") }
-        Row(
-            Modifier.fillMaxWidth().background(D.White).padding(horizontal = 20.dp),
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
 
-            PayChoice("Pay via Tap", R.drawable.hi_nfc, filled = true, modifier = Modifier.weight(1f), onClick = onTap)
-            PayChoice("Scan any QR", R.drawable.hi_qr, filled = false, modifier = Modifier.weight(1f), onClick = onScan)
+        Box(Modifier.fillMaxWidth().background(D.White).padding(horizontal = 20.dp)) {
+            // A white ring around the capsule, under a soft shadow. On a white page the ring
+            // is invisible as a colour and does its work as a gap: it holds the dark shape off
+            // the shadow so the bar reads as lifted rather than smudged.
+            Row(
+                Modifier.fillMaxWidth().cardShadow(PayBarRadius)
+                    .clip(RoundedCornerShape(PayBarRadius)).background(D.White)
+                    .padding(PayBarRing)
+                    .clip(RoundedCornerShape(PayBarRadius - PayBarRing)),
+            ) {
+                PayChoice(
+                    first = "Pay via", second = "Tap",
+                    icon = R.drawable.hi_nfc, iconFirst = true,
+                    fill = D.Black, modifier = Modifier.weight(1f), onClick = onTap,
+                )
+                // The seam. It has to read against BOTH fills, so it is a fixed light line
+                // rather than white-on-alpha: at low alpha it disappeared into the blue half
+                // entirely and the two halves just met at a colour change.
+                Box(Modifier.width(1.5.dp).height(PayBarHeight).background(D.White.copy(alpha = .45f)))
+                PayChoice(
+                    first = "Scan", second = "any QR",
+                    icon = R.drawable.hi_scan, iconFirst = false,
+                    fill = D.Blue, modifier = Modifier.weight(1f), onClick = onScan,
+                )
+            }
         }
         // Carries the white down to the very bottom, so nothing shows in the gap beneath it.
         Box(Modifier.fillMaxWidth().height(48.dp).background(D.White))
     }
 }
 
+/** Concentric, the way every other tray and card in the app is: outer = inner + the ring. */
+private val PayBarHeight = 72.dp
+private val PayBarRing = 5.dp
+private val PayBarRadius = PayBarHeight / 2 + PayBarRing
+
+/**
+ * One half of the bar.
+ *
+ * [iconFirst] is what mirrors the two sides about the divider — it decides whether the mark
+ * leads or trails, and the label hugs the middle either way.
+ */
 @Composable
 private fun PayChoice(
-    label: String,
+    first: String,
+    second: String,
     @DrawableRes icon: Int,
-    filled: Boolean,
+    iconFirst: Boolean,
+    fill: Color,
     modifier: Modifier,
     onClick: () -> Unit,
 ) {
     val interaction = remember { MutableInteractionSource() }
-    val ink = if (filled) D.White else D.Black
     Row(
-        modifier.then(PressScale(interaction)).height(56.dp).clip(RoundedCornerShape(18.dp))
-            .background(if (filled) D.Blue else D.White)
-            .then(if (filled) Modifier else Modifier.border(1.5.dp, D.Line, RoundedCornerShape(18.dp)))
-            .clickable(interaction, indication = null, onClick = onClick),
-        horizontalArrangement = Arrangement.Center,
+        modifier.height(PayBarHeight).background(fill)
+            .clickable(interaction, indication = null, onClick = onClick)
+            .padding(horizontal = 16.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        HIcon(icon, ink, 20.dp)
-        Spacer(Modifier.width(8.dp))
-        Text(label, color = ink, fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+        // Pressing dims the half rather than scaling it. A scale would shrink one end of a
+        // shape the eye reads as whole, which looks like it broke.
+        val pressed by interaction.collectIsPressedAsState()
+        val ink by animateColorAsState(
+            if (pressed) D.White.copy(alpha = .55f) else D.White,
+            spring(Snap.dampingRatio, Snap.stiffness), label = "ink",
+        )
+        if (iconFirst) HIcon(icon, ink, 26.dp)
+        Column(Modifier.weight(1f)) {
+            Text(first, color = ink, fontSize = 17.sp, fontWeight = FontWeight.Bold,
+                fontFamily = Display, lineHeight = 19.sp, maxLines = 1)
+            Text(second, color = ink, fontSize = 17.sp, fontWeight = FontWeight.Bold,
+                fontFamily = Display, lineHeight = 19.sp, maxLines = 1)
+        }
+        if (!iconFirst) HIcon(icon, ink, 26.dp)
     }
 }
 
