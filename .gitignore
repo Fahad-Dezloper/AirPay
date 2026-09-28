@@ -15,3 +15,6 @@ app/google-services.json
 server/service-account*.json
 *firebase-adminsdk*.json
 server/.venv/
+
+# Kotlin compiler scratch — build output, not source.
+.kotlin/
