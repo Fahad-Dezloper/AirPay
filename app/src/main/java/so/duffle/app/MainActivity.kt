@@ -1777,13 +1777,17 @@ private fun BalanceCard(
 /**
  * §2d — what is actually held, token by token.
  *
- * The figure above is one number for everything; this is the breakdown behind it. Each badge
- * carries the token's own logo, its name, the mint it lives at, what the holding is worth, and
- * how much of it there is.
+ * The figure above is one number for everything; these are the parts of it.
  *
- * **A token with no known price shows no price**, not a zero. Most of what a devnet wallet
- * holds is a test mint with no market at all, and "$0.00" beside a balance reads as
- * "worthless" when the honest answer is "unknown".
+ * **Every card is the same height**, which is the whole reason this reads as a row rather than
+ * a pile: the height used to follow the content, so a token with a price was taller than one
+ * without and the row had a ragged bottom edge. The slots are fixed and the content fits them.
+ *
+ * A token with no known price shows a dash in the same slot at the same size, not a smaller
+ * apology and not a zero — most of what a devnet wallet holds is a test mint with no market,
+ * and "$0.00" beside a balance reads as "worthless" when the honest answer is "unknown".
+ *
+ * Each card is tinted from its own token, so the row is scannable by colour before it is read.
  */
 @Composable
 private fun TokenBadges(holdings: List<Tokens.Holding>, rate: Double?, onCopy: (String) -> Unit) {
@@ -1801,54 +1805,52 @@ private fun TokenBadges(holdings: List<Tokens.Holding>, rate: Double?, onCopy: (
                     else -> null
                 }
             }
+            // A stable hue per token: brand-ish where we know it, derived from the mint
+            // otherwise, so the same token is always the same colour and no two collide.
+            val hue = when {
+                h.isSol -> 155f
+                h.symbol.uppercase() in setOf("USDC", "USDT", "PYUSD", "USDP", "DAI") -> 212f
+                else -> ((h.token.hashCode() and 0x7fffffff) % 360).toFloat()
+            }
             val press = remember { MutableInteractionSource() }
+            val shape = RoundedCornerShape(16.dp)
             Column(
-                Modifier.then(PressScale(press)).width(158.dp)
-                    .clip(RoundedCornerShape(18.dp)).background(D.Fill)
+                Modifier.then(PressScale(press)).width(158.dp).height(92.dp)
+                    .clip(shape)
+                    .background(Color.hsv(hue, .10f, .99f))
+                    .border(1.dp, Color.hsv(hue, .22f, .90f), shape)
                     .clickable(press, indication = null) { onCopy(h.mint ?: "SOL") }
-                    .padding(14.dp),
+                    .padding(horizontal = 12.dp, vertical = 11.dp),
+                verticalArrangement = Arrangement.SpaceBetween,
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     TokenImage(h, 26.dp)
                     Spacer(Modifier.width(8.dp))
-                    Column(Modifier.weight(1f)) {
+                    Column {
                         Text(h.symbol, color = D.Black, fontSize = 13.sp,
                             fontWeight = FontWeight.Bold, maxLines = 1)
-                        // Only when there IS a name. A mint with no metadata falls back to its
-                        // own address for both symbol and name, and the badge ended up printing
-                        // the same truncated address three times over.
+                        // A mint with no metadata falls back to its own address for both symbol
+                        // and name, which printed the same truncated address twice over.
                         val named = h.name.isNotBlank() &&
                             !h.name.equals(h.symbol, true) && !h.name.startsWith(h.symbol)
-                        if (named) {
-                            Text(h.name, color = D.Quiet, fontSize = 10.sp, maxLines = 1)
-                        } else {
-                            Text("Unnamed token", color = D.Quiet, fontSize = 10.sp, maxLines = 1)
-                        }
+                        Text(
+                            if (named) h.name else "Unnamed token",
+                            color = D.Quiet, fontSize = 10.sp, maxLines = 1,
+                        )
                     }
                 }
 
-                Spacer(Modifier.height(10.dp))
-
-                // Worth, when there is an honest number for it.
-                Text(
-                    if (worth != null) "$${Prices.money(worth)}" else "No market price",
-                    color = if (worth != null) D.Black else D.Quiet,
-                    fontSize = if (worth != null) 18.sp else 12.sp,
-                    fontWeight = FontWeight.Bold,
-                    fontFamily = if (worth != null) Display else null,
-                    style = Figures, maxLines = 1,
-                )
-                Spacer(Modifier.height(1.dp))
-                Text("${h.shown} ${h.symbol}", color = D.Quiet, fontSize = 11.5.sp,
-                    style = Figures, maxLines = 1)
-
-                Spacer(Modifier.height(8.dp))
-                // Where it lives. SOL has no mint — it is the chain's own unit, not a token.
-                Text(
-                    if (h.isSol) "Native" else "${h.mint!!.take(4)}…${h.mint.takeLast(4)}",
-                    color = D.Quiet.copy(alpha = .8f), fontSize = 10.sp,
-                    fontFamily = FontFamily.Monospace, maxLines = 1,
-                )
+                Row(verticalAlignment = Alignment.Bottom) {
+                    // Same size whether or not there is a price, so the cards stay level.
+                    Text(
+                        if (worth != null) "$${Prices.money(worth)}" else "—",
+                        color = D.Black, fontSize = 16.sp, fontWeight = FontWeight.Bold,
+                        fontFamily = Display, style = Figures, maxLines = 1,
+                    )
+                    Spacer(Modifier.weight(1f))
+                    Text(h.shown, color = D.Quiet, fontSize = 11.sp, style = Figures,
+                        maxLines = 1, modifier = Modifier.padding(bottom = 1.dp))
+                }
             }
         }
     }
