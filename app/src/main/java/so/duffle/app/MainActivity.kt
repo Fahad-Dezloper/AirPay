@@ -9,7 +9,6 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.animation.core.rememberInfiniteTransition
@@ -1781,12 +1780,13 @@ private fun BalanceCard(
  * §2d — what is actually held, token by token.
  *
  * A dark head carrying the token's logo and a day of its price, over a white body with the
- * name, the move, the amount held and what that is worth.
+ * name, the unit price, the amount held and what that is worth.
  *
- * **The chart and the percentage are only drawn for a token that has a market.** A devnet mint
- * has no price history and therefore no line — a flat or invented sparkline beside a balance is
- * a claim about price movement nobody made. Those cards keep the head and the logo and simply
- * have nothing in the space, which is the honest shape of "not traded".
+ * **The chart and the price are only drawn for a token that has a market.** A devnet mint has
+ * no price history and therefore no line, and no price to put in the pill — a flat or invented
+ * sparkline beside a balance is a claim about price movement nobody made. Those cards keep the
+ * head and the logo and simply have nothing in the space, which is the honest shape of
+ * "not traded".
  *
  * Every card is the same size. The height used to follow the content and the row came out
  * ragged; the slots are fixed now and the content fits them.
@@ -1818,6 +1818,14 @@ private fun TokenBadges(holdings: List<Tokens.Holding>, rate: Double?, onCopy: (
             }
             val series = if (h.isSol) day else null
             val move = Prices.change(series)
+            // What one of them costs. Same rule as Prices.unitUsd: SOL is priced live, a dollar
+            // stablecoin is a dollar by construction, and everything else is null — a devnet
+            // mint has no market and an invented price on a card is worse than no price.
+            val unit = when {
+                h.isSol -> rate
+                stable -> 1.0
+                else -> null
+            }
             val press = remember { MutableInteractionSource() }
 
             // A shadow, because the card body is white on a white page: without an edge the
@@ -1828,12 +1836,16 @@ private fun TokenBadges(holdings: List<Tokens.Holding>, rate: Double?, onCopy: (
                     .clip(RoundedCornerShape(24.dp)).background(D.White)
                     .clickable(press, indication = null) { onCopy(h.mint ?: "SOL") },
               ) {
-                // Room for the logo, which stands above the head rather than inside it.
-                Spacer(Modifier.height(16.dp))
+                // The logo sits INSIDE the head, flush into its top-left corner, and the head
+                // is exactly as tall as the logo. It used to stand proud of the head with a
+                // 16dp gap above; that read as two objects stacked rather than one head.
                 Box(
-                    Modifier.fillMaxWidth().height(70.dp)
+                    Modifier.fillMaxWidth().height(58.dp)
                         .clip(RoundedCornerShape(24.dp)).background(Color(0xFF0E1013)),
                 ) {
+                    Box(Modifier.align(Alignment.TopStart)) {
+                        TokenImage(h, 58.dp, RoundedCornerShape(14.dp))
+                    }
                     if (series != null && series.size > 2) {
                         Sparkline(
                             series,
@@ -1846,35 +1858,30 @@ private fun TokenBadges(holdings: List<Tokens.Holding>, rate: Double?, onCopy: (
                 }
 
                 Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 16.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
                         val named = h.name.isNotBlank() &&
                             !h.name.equals(h.symbol, true) && !h.name.startsWith(h.symbol)
                         Text(
                             if (named) h.name else "Unnamed",
                             color = D.Quiet, fontSize = 13.sp, fontWeight = FontWeight.Medium,
-                            fontStyle = FontStyle.Italic, maxLines = 1,
-                            modifier = Modifier.weight(1f, fill = false),
+                            maxLines = 1, modifier = Modifier.weight(1f, fill = false),
                         )
-                        if (move != null) {
+                        // What one of them costs, not what it did today. The day's move is
+                        // already in the line above it, in colour; repeating it as a number
+                        // said the same thing twice and left the price nowhere on the card.
+                        if (unit != null) {
                             Spacer(Modifier.width(8.dp))
-                            val up = move >= 0
-                            Row(
-                                Modifier.clip(RoundedCornerShape(999.dp))
+                            Text(
+                                "$" + unitShown(unit),
+                                color = D.White, fontSize = 11.sp, fontWeight = FontWeight.Bold,
+                                style = Figures, maxLines = 1,
+                                modifier = Modifier.clip(RoundedCornerShape(999.dp))
                                     .background(Color(0xFF0E1013))
-                                    .padding(start = 7.dp, end = 9.dp, top = 4.dp, bottom = 4.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                HIcon(
-                                    if (up) R.drawable.hi_arrow_up_right else R.drawable.hi_arrow_down,
-                                    if (up) D.Success else D.Danger, 11.dp,
-                                )
-                                Spacer(Modifier.width(3.dp))
-                                Text(
-                                    "%s%.2f%%".format(if (up) "+" else "", move * 100),
-                                    color = if (up) D.Success else D.Danger,
-                                    fontSize = 11.sp, fontWeight = FontWeight.Bold, style = Figures,
-                                )
-                            }
+                                    .padding(horizontal = 8.dp, vertical = 2.dp),
+                            )
                         }
                     }
 
@@ -1882,30 +1889,29 @@ private fun TokenBadges(holdings: List<Tokens.Holding>, rate: Double?, onCopy: (
                     Text(
                         "${h.shown} ${h.symbol}", color = D.Black, fontSize = 22.sp,
                         fontWeight = FontWeight.ExtraBold, fontFamily = Display,
-                        fontStyle = FontStyle.Italic, style = Figures, maxLines = 1,
+                        style = Figures, maxLines = 1,
                     )
                     Spacer(Modifier.height(2.dp))
                     Text(
                         if (worth != null) "$${Prices.money(worth)}" else "No market price",
-                        color = D.Quiet, fontSize = 13.sp, fontWeight = FontWeight.Medium,
+                        color = D.Quiet, fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
                         style = Figures, maxLines = 1,
                     )
                 }
               }
-
-              // Standing proud of the head's top-left corner, the way the reference does — a
-              // rounded square, not a circle, because these are app icons and that is the shape
-              // they are drawn as everywhere else in this app.
-              Box(
-                  Modifier.align(Alignment.TopStart).padding(start = 12.dp)
-                      .size(58.dp).clip(RoundedCornerShape(18.dp)).background(Color(0xFF0E1013))
-                      .padding(4.dp),
-                  contentAlignment = Alignment.Center,
-              ) { TokenImage(h, 50.dp) }
             }
         }
     }
 }
+
+/**
+ * A unit price for the pill on a token card.
+ *
+ * Four places under a dollar, two above: "$118.58" and "$0.0042" are both readable, while two
+ * places on a sub-cent token rounds every one of them to "$0.00".
+ */
+private fun unitShown(usd: Double): String =
+    if (usd < 1.0) String.format("%,.4f", usd) else String.format("%,.2f", usd)
 
 /** A day of prices as one line, with the last point marked. Drawn, not charted — no axes. */
 @Composable

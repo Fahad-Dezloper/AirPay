@@ -121,6 +121,7 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.foundation.Image
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.layout.ContentScale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -1426,8 +1427,8 @@ private fun SelectRing(selected: Boolean, content: @Composable () -> Unit) {
 
 /** A token's logo: SOL's ships with the app; others load from their metadata; a letter otherwise. */
 @Composable
-internal fun TokenImage(t: Tokens.Holding, size: Dp) {
-    val round = Modifier.size(size).clip(CircleShape)
+internal fun TokenImage(t: Tokens.Holding, size: Dp, shape: Shape = CircleShape) {
+    val round = Modifier.size(size).clip(shape)
     if (t.isSol) {
         Image(painterResource(R.drawable.token_sol), contentDescription = null, modifier = round, contentScale = ContentScale.Crop)
         return
