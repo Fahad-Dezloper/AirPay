@@ -99,6 +99,37 @@ object Names {
     /** "dezloper.skr", or null when there is no name or no answer. For places that show one line. */
     suspend fun label(address: String): String? = (of(address) as? Name.Domain)?.text
 
+    /**
+     * The name behind an address, following a verified link when the address has none itself.
+     *
+     * A name lives on one wallet. Pay somebody's second wallet and resolving it finds nothing,
+     * even though you know exactly who they are — so a payload can carry a signature from the
+     * wallet that *does* hold the name, vouching for this one ([Vouch]).
+     *
+     * The link is checked before we get here, and the name still comes off the chain: the
+     * signature only says *which address to look up*. Nothing in the payload names anybody.
+     */
+    suspend fun of(address: String, link: Vouch.Link?): Found {
+        when (val direct = of(address)) {
+            is Name.Domain -> return Found(direct.text, borrowed = false)
+            Name.Unreachable -> return Found(null, borrowed = false)
+            Name.None -> Unit
+        }
+        // Only a link that already verified against THIS address is worth following.
+        if (link == null || link.wallet != address) return Found(null, borrowed = false)
+        val owner = of(link.owner) as? Name.Domain ?: return Found(null, borrowed = false)
+        return Found(owner.text, borrowed = true)
+    }
+
+    /**
+     * A resolved name, and whether it came from the address itself or from one vouching for it.
+     *
+     * [borrowed] is kept because the two are not the same claim and a screen should not pretend
+     * they are: "this address owns dezloper.skr" and "this address belongs to whoever owns
+     * dezloper.skr" differ, and the second is the one worth spelling out.
+     */
+    data class Found(val text: String?, val borrowed: Boolean)
+
     /** Forget an address, so the next look asks the chain again. */
     fun forget(address: String) {
         synchronized(cache) { cache.remove(address) }

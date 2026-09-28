@@ -47,6 +47,15 @@ data class PayRequest(
     val symbol: String = if (token == "SOL") "SOL" else token.take(4),
     /** The asking phone's maker, as a [Brand] key. Display only. */
     val brand: String? = null,
+    /**
+     * The wallet vouching for [recipient], when the money is going to a linked wallet rather
+     * than to the one that holds the name. See [Vouch].
+     */
+    val owner: String? = null,
+    /** Days since the epoch. Signed over, so it cannot be stretched after the fact. */
+    val linkExpiry: Long = 0,
+    /** base64, unpadded, 64 bytes of ed25519. */
+    val linkSignature: String? = null,
 ) {
     val isSol get() = token == "SOL"
     /** The SPL mint, or null for SOL. */
@@ -77,7 +86,23 @@ data class PayRequest(
             put("s", symbol)
         }
         brand?.let { put("b", it) }
+        if (owner != null && linkSignature != null) {
+            put("o", owner); put("x", linkExpiry); put("z", linkSignature)
+        }
     }.toString().toByteArray(Charsets.UTF_8)
+
+    /**
+     * The link, but only when it verifies against [recipient]. Null otherwise.
+     *
+     * The single route from a payload to a name with a tick on the confirm sheet. Note it
+     * checks the link against the address **being paid**, not against anything else in the
+     * payload: the question the payer needs answered is who owns the destination.
+     */
+    fun link(): Vouch.Link? {
+        val o = owner ?: return null
+        val sig = linkSignature ?: return null
+        return Vouch.check(o, recipient, linkExpiry, sig)
+    }
 
     /**
      * The same request as a `solana:` URL. Emitting the standard form means a plain Solana Pay
@@ -110,6 +135,8 @@ data class PayRequest(
         amount.isNotBlank() && units() == null -> "That amount can't be paid in $symbol."
         label.length > 64 -> "The request has an oversized label."
         Username.looksLikeDomain(label) -> "The request has a name shaped like a domain."
+        owner != null && !isBase58Address(owner) -> "The request has an invalid owner."
+        (owner == null) != (linkSignature == null) -> "The request carries half a wallet link."
         else -> null
     }
 
@@ -164,6 +191,9 @@ data class PayRequest(
                 symbol = o.optString("s").ifBlank { if (o.optString("t", "SOL") == "SOL") "SOL" else o.optString("t").take(4) },
                 // An unknown brand is dropped, not refused: it only decides a picture.
                 brand = o.optString("b").takeIf { Brand.isKnown(it) },
+                owner = if (o.has("o")) o.getString("o") else null,
+                linkExpiry = o.optLong("x"),
+                linkSignature = if (o.has("z")) o.getString("z") else null,
             )
         } catch (e: Exception) {
             null
@@ -195,6 +225,18 @@ data class TapCard(
     val genesis: String? = null,
     /** This phone's maker, as a [Brand] key, so the other side can show its mark. */
     val brand: String? = null,
+    /**
+     * The wallet that vouches for [address], when this is not the wallet carrying the name.
+     *
+     * With the three link fields present the other phone can work out who this is without
+     * believing anything we say: it rebuilds the signed statement, checks the signature against
+     * `owner`, and resolves `owner`'s domain from the chain. See [Vouch].
+     */
+    val owner: String? = null,
+    /** Days since the epoch. Inside the signature, so it cannot be stretched afterwards. */
+    val linkExpiry: Long = 0,
+    /** base64, unpadded, 64 bytes of ed25519. */
+    val linkSignature: String? = null,
 ) {
     fun toBytes(): ByteArray = JSONObject().apply {
         put("v", PayRequest.WIRE_VERSION)
@@ -203,7 +245,23 @@ data class TapCard(
         put("l", label)
         genesis?.let { put("g", it) }
         brand?.let { put("b", it) }
+        // All three or none: a partial link is not checkable and must not travel.
+        if (owner != null && linkSignature != null) {
+            put("o", owner); put("x", linkExpiry); put("z", linkSignature)
+        }
     }.toString().toByteArray(Charsets.UTF_8)
+
+    /**
+     * The link, but only if it actually verifies. Null whenever it does not.
+     *
+     * The only route from a payload to a tick, so there is no way to show one on an unchecked
+     * claim: the fields on this object are just numbers until this says otherwise.
+     */
+    fun link(): Vouch.Link? {
+        val o = owner ?: return null
+        val sig = linkSignature ?: return null
+        return Vouch.check(o, address, linkExpiry, sig)
+    }
 
     /** Untrusted like everything else that arrives by radio. */
     fun validate(): String? = when {
@@ -214,6 +272,11 @@ data class TapCard(
         // chain and never travel by radio, so one arriving here is a phone claiming a name it
         // did not prove — which is exactly what the tick is supposed to rule out.
         Username.looksLikeDomain(label) -> "That phone sent a name shaped like a domain."
+        owner != null && !PayRequest.isBase58Address(owner) -> "That phone sent an invalid owner."
+        // Not checked here: whether the signature is GOOD. A bad link is not a bad card — the
+        // tap is still a perfectly good introduction, it just does not carry a name. Refusing
+        // the whole payload over it would turn an unverifiable claim into a failed tap.
+        (owner == null) != (linkSignature == null) -> "That phone sent half a wallet link."
         else -> null
     }
 
@@ -228,6 +291,9 @@ data class TapCard(
                 label = o.optString("l"),
                 genesis = if (o.has("g")) o.getString("g") else null,
                 brand = o.optString("b").takeIf { Brand.isKnown(it) },
+                owner = if (o.has("o")) o.getString("o") else null,
+                linkExpiry = o.optLong("x"),
+                linkSignature = if (o.has("z")) o.getString("z") else null,
             ).takeIf { it.validate() == null }
         } catch (e: Exception) {
             null

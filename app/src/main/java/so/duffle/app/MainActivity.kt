@@ -177,6 +177,10 @@ class MainActivity : ComponentActivity() {
      * a name arriving from mainnet a second after launch appears without a reload.
      */
     private var myDomain by mutableStateOf<String?>(null)
+    /** True when [myDomain] came from another wallet vouching for this one, not from this one. */
+    private var myDomainBorrowed by mutableStateOf(false)
+    /** True while a wallet is away getting a link signed, so the button can say so. */
+    private var linking by mutableStateOf(false)
     private var renaming by mutableStateOf(false)
 
     /** UI mirrors of the two on-disk lists. Disk is the truth; these are re-read after writes. */
@@ -435,23 +439,35 @@ class MainActivity : ComponentActivity() {
         rewardSummary = null
         val addr = connected ?: run { myDomain = null; return }
 
-        // Whose name this wallet carries. Cleared first, and seeded from the last answer for
-        // *this* address only — switching wallets must not leave the previous one's name on
-        // screen for the second it takes mainnet to reply.
+        // Whose name this wallet carries, borrowing one if it has none of its own. Seeded from
+        // the last answer for *this* address — switching wallets must not leave the previous
+        // one's name on screen for the second it takes mainnet to reply.
         myDomain = Identity.domain(this, addr)
+        myDomainBorrowed = false
+        if (myDomain == null) {
+            myDomain = Vouch.of(this, addr)?.let { Identity.domain(this, it.owner) }
+            myDomainBorrowed = myDomain != null
+        }
+
+        // Every linked wallet, not just the current one. Which wallet owns a name is what
+        // decides who can vouch for the rest, and that question is asked from screens the
+        // selected wallet has nothing to do with.
         lifecycleScope.launch {
-            when (val name = Names.of(addr)) {
-                is Names.Name.Domain -> if (connected == addr) {
-                    myDomain = name.text
-                    Identity.rememberDomain(this@MainActivity, addr, name.text)
+            for (w in walletList) {
+                when (val name = Names.of(w.address)) {
+                    is Names.Name.Domain -> Identity.rememberDomain(this@MainActivity, w.address, name.text)
+                    Names.Name.None -> Identity.rememberDomain(this@MainActivity, w.address, null)
+                    // Keep whatever was cached. A bad connection is not evidence that somebody
+                    // stopped owning their name.
+                    Names.Name.Unreachable -> Unit
                 }
-                Names.Name.None -> if (connected == addr) {
-                    myDomain = null
-                    Identity.rememberDomain(this@MainActivity, addr, null)
-                }
-                // Unreachable: keep whatever was cached. A bad connection is not evidence that
-                // somebody stopped owning their name.
-                Names.Name.Unreachable -> Unit
+            }
+            if (connected == addr) {
+                val own = Identity.domain(this@MainActivity, addr)
+                val lent = own ?: Vouch.of(this@MainActivity, addr)
+                    ?.let { Identity.domain(this@MainActivity, it.owner) }
+                myDomain = lent
+                myDomainBorrowed = own == null && lent != null
             }
         }
 
@@ -1030,7 +1046,7 @@ class MainActivity : ComponentActivity() {
                                 modifier = Modifier.fillMaxWidth(),
                             )
                             Spacer(Modifier.height(12.dp))
-                            HowYouLook(myDomain, myName) { renaming = true }
+                            HowYouLook(myDomain, myDomainBorrowed, myName) { renaming = true }
                             Spacer(Modifier.height(12.dp))
                         }
 
@@ -1139,6 +1155,29 @@ class MainActivity : ComponentActivity() {
                 walletDetails?.let { w ->
                     WalletSheet(
                         w = w,
+                        linking = linking,
+                        onLink = {
+                            val owner = Identity.named(
+                                this@MainActivity,
+                                wallet.linked.all().map { it.address }.filter { it != w.address },
+                            )?.first
+                            if (owner == null) {
+                                push("— no wallet here owns a name to lend")
+                            } else lifecycleScope.launch {
+                                linking = true
+                                val named = wallet.linked.all().first { it.address == owner }
+                                val link = wallet.link(named, w.address)
+                                linking = false
+                                if (link == null) {
+                                    push("— ${named.name} did not sign; nothing changed")
+                                } else {
+                                    push("+ ${w.short} now shows ${Identity.domain(this@MainActivity, owner)}")
+                                    // The armed request still carries the old payload.
+                                    TapHostApduService.pending.value = null
+                                    applyMode(amount)
+                                }
+                            }
+                        },
                         onClose = { walletDetails = null },
                         onRemove = {
                             walletDetails = null
@@ -1233,6 +1272,10 @@ class MainActivity : ComponentActivity() {
         if (known == null) {
             inbox.add(req)
             refreshLists()
+            // Kept only if the signature actually verifies — req.link() returns null otherwise —
+            // and re-verified every time it is read back, so a stored link is never taken on
+            // trust just because we were the ones who wrote it.
+            req.link()?.let { Vouch.remember(this, it.owner, it.wallet, it.expiresDay, it.signature) }
             val isNew = contacts.record(req.recipient, req.label, false, brand = req.brand)
             contactCount = contacts.count()
             push(if (isNew) "+ new contact ${req.label}" else "— known contact ${req.label}")
@@ -1428,11 +1471,13 @@ class MainActivity : ComponentActivity() {
             return
         }
         val live = TapHostApduService.pending.value
+        val link = Vouch.of(this, addr)
         // Keep the same reference across a pause/resume. This runs again on every onResume,
         // and minting a fresh reference each time meant a notification — or the screen simply
         // sleeping — silently swapped the key under a request already on screen.
         if (live != null &&
-            live.recipient == addr && live.amount == amount && live.genesis == myGenesis
+            live.recipient == addr && live.amount == amount && live.genesis == myGenesis &&
+            live.owner == link?.owner
         ) return
 
         TapHostApduService.pending.value = PayRequest(
@@ -1443,6 +1488,11 @@ class MainActivity : ComponentActivity() {
             reference = PayRequest.newReference(),
             genesis = myGenesis,
             brand = Brand.mine(),
+            // If this wallet borrowed its name from another, the proof rides along, so the
+            // payer's confirm sheet can say who they are paying instead of showing hex.
+            owner = link?.owner,
+            linkExpiry = link?.expiresDay ?: 0,
+            linkSignature = link?.signature,
         )
     }
 
@@ -2079,7 +2129,13 @@ private fun checksFor(context: Context, w: Linked): List<Check> {
  * rare, so it gets the entrance; everything on it is still interruptible.
  */
 @Composable
-private fun WalletSheet(w: Linked, onRemove: () -> Unit, onClose: () -> Unit) {
+private fun WalletSheet(
+    w: Linked,
+    linking: Boolean,
+    onLink: () -> Unit,
+    onRemove: () -> Unit,
+    onClose: () -> Unit,
+) {
     val context = LocalContext.current
     val clip = LocalClipboardManager.current
     var confirming by remember { mutableStateOf(false) }
@@ -2148,6 +2204,9 @@ private fun WalletSheet(w: Linked, onRemove: () -> Unit, onClose: () -> Unit) {
                 }
             }
         }
+
+        Spacer(Modifier.height(12.dp))
+        WalletIdentity(w, linking, onLink)
 
         Spacer(Modifier.height(12.dp))
         // The strongest thing on this sheet, and the one line that is not a check — because it
@@ -2366,6 +2425,14 @@ private data class Called(
     /** The on-chain name, when there is one. The only field that earns a tick. */
     val domain: String?,
     val kind: Kind,
+    /**
+     * True when the name came from a *different* wallet vouching for this one ([Vouch]).
+     *
+     * Still a fact — the signature was checked and the name still came off the chain — but a
+     * different one: "this address belongs to whoever owns dezloper.skr" rather than "this
+     * address owns dezloper.skr". Worth saying out loud where money moves.
+     */
+    val borrowed: Boolean = false,
 ) {
     enum class Kind { Yours, Verified, Claimed, Anonymous }
 
@@ -2382,18 +2449,21 @@ private data class Called(
  */
 @Composable
 private fun rememberCalled(contact: Contact): Called {
-    val domain by produceState<String?>(initialValue = null, contact.address) {
-        value = Names.label(contact.address)
+    val context = LocalContext.current
+    val found by produceState(initialValue = Names.Found(null, false), contact.address) {
+        // The link is re-verified on the way out of storage, so a tampered prefs file buys
+        // nothing: an unverifiable link reads back as no link at all.
+        value = Names.of(contact.address, Vouch.of(context, contact.address))
     }
-    val found = domain
-    return remember(found, contact.yours, contact.label, contact.address) {
+    val domain = found.text
+    return remember(domain, found.borrowed, contact.yours, contact.label, contact.address) {
         val claimed = contact.claimed()
         val yours = contact.yours
         when {
-            !yours.isNullOrBlank() -> Called(yours, found, Called.Kind.Yours)
-            found != null -> Called(found, found, Called.Kind.Verified)
-            !claimed.isNullOrBlank() -> Called(claimed, null, Called.Kind.Claimed)
-            else -> Called(contact.short, null, Called.Kind.Anonymous)
+            !yours.isNullOrBlank() -> Called(yours, domain, Called.Kind.Yours, found.borrowed)
+            domain != null -> Called(domain, domain, Called.Kind.Verified, found.borrowed)
+            !claimed.isNullOrBlank() -> Called(claimed, null, Called.Kind.Claimed, false)
+            else -> Called(contact.short, null, Called.Kind.Anonymous, false)
         }
     }
 }
@@ -2610,6 +2680,11 @@ private fun Thread(
                         Text(" · ", color = D.Quiet, fontSize = 11.sp)
                     }
                     Text(who.short, color = D.Quiet, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                    // Said out loud, because it is a different claim: the name belongs to a
+                    // wallet that vouched for this one, not to this address.
+                    if (called.borrowed) {
+                        Text(" · linked wallet", color = D.Quiet, fontSize = 11.sp)
+                    }
                     if (who.seeker) {
                         Text(" · Seeker", color = D.Blue, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
                     }
@@ -4027,6 +4102,108 @@ private val RowStyle = Modifier.fillMaxWidth().padding(vertical = 4.dp)
     .padding(horizontal = 14.dp, vertical = 12.dp)
 
 /**
+ * The name this wallet carries, and how it got one.
+ *
+ * A `.skr` belongs to the address that holds it, so a second wallet is a stranger by default —
+ * you receive money into it and the payer sees hex. The fix is a signature from the wallet that
+ * *does* hold the name, naming this one ([Vouch]). One approval, and it holds for months.
+ *
+ * Four states, and the wording of each is the point:
+ *
+ *  * **Owns it** — the name is on this address. Nothing to do.
+ *  * **Borrowed** — a verified link, drawn as a fact but a *different* fact, with the wallet it
+ *    came from named and the date it lapses shown rather than hidden.
+ *  * **Can be linked** — you own a name elsewhere, so this offers to carry it over.
+ *  * **Nothing to borrow** — no wallet here has a name, so there is nothing to offer and the
+ *    panel says what would change that instead of dangling a button that cannot work.
+ */
+@Composable
+private fun WalletIdentity(w: Linked, linking: Boolean, onLink: () -> Unit) {
+    val context = LocalContext.current
+    val mine = Identity.domain(context, w.address)
+    val link = remember(w.address, linking) { Vouch.of(context, w.address) }
+    val owner = remember(w.address, linking) {
+        // The wallet that could vouch — any linked wallet with a name that is not this one.
+        Identity.named(context, Wallets(context).all().map { it.address }.filter { it != w.address })
+    }
+
+    Column(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(Tray.INNER))
+            .background(if (mine != null || link != null) D.Blue.copy(alpha = .07f) else D.Fill)
+            .padding(14.dp),
+    ) {
+        Text("SEEN AS", color = D.Quiet, fontSize = 10.sp, letterSpacing = 1.2.sp,
+            fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.height(6.dp))
+
+        when {
+            mine != null -> {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(mine, color = D.Black, fontSize = 17.sp, fontWeight = FontWeight.Bold,
+                        fontFamily = Display, maxLines = 1)
+                    Spacer(Modifier.width(5.dp))
+                    HIcon(R.drawable.hi_verified, D.Blue, 15.dp)
+                }
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "This wallet owns the name, so everyone you tap sees it. It can also lend " +
+                        "it to your other wallets.",
+                    color = D.Quiet, fontSize = 11.5.sp, lineHeight = 16.sp,
+                )
+            }
+
+            link != null -> {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        Identity.domain(context, link.owner) ?: link.owner.take(6) + "…",
+                        color = D.Black, fontSize = 17.sp, fontWeight = FontWeight.Bold,
+                        fontFamily = Display, maxLines = 1,
+                    )
+                    Spacer(Modifier.width(5.dp))
+                    HIcon(R.drawable.hi_verified, D.Blue, 15.dp)
+                }
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Lent to this wallet by ${link.owner.take(4)}…${link.owner.takeLast(4)}, " +
+                        "and signed — the other phone checks it rather than taking our word. " +
+                        "Good until ${link.expiresOn}.",
+                    color = D.Quiet, fontSize = 11.5.sp, lineHeight = 16.sp,
+                )
+            }
+
+            owner != null -> {
+                Text(w.short, color = D.Quiet, fontSize = 15.sp, fontFamily = FontFamily.Monospace)
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Just an address right now. ${owner.second} can vouch for it, so people " +
+                        "you tap from this wallet see your name instead. One approval in that " +
+                        "wallet, nothing spent.",
+                    color = D.Quiet, fontSize = 11.5.sp, lineHeight = 16.sp,
+                )
+                Spacer(Modifier.height(12.dp))
+                PrimaryButton(
+                    if (linking) "Waiting for ${owner.second}…" else "Use ${owner.second} here",
+                    enabled = !linking,
+                    onClick = onLink,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+
+            else -> {
+                Text(w.short, color = D.Quiet, fontSize = 15.sp, fontFamily = FontFamily.Monospace)
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Just an address. None of your wallets owns a .skr or .sol yet — every " +
+                        "Seeker comes with a .skr, and any wallet that has one can lend it to " +
+                        "the rest.",
+                    color = D.Quiet, fontSize = 11.5.sp, lineHeight = 16.sp,
+                )
+            }
+        }
+    }
+}
+
+/**
  * How you are about to appear to whoever pays this request.
  *
  * Placed here rather than in onboarding on purpose: asking to be paid is the moment you most
@@ -4039,7 +4216,7 @@ private val RowStyle = Modifier.fillMaxWidth().padding(vertical = 4.dp)
  * the *payer's* screen, where an unverified name is drawn as the claim it is.
  */
 @Composable
-private fun HowYouLook(domain: String?, username: String, onEdit: () -> Unit) {
+private fun HowYouLook(domain: String?, borrowed: Boolean, username: String, onEdit: () -> Unit) {
     val verified = domain != null
     Row(
         Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
@@ -4065,6 +4242,9 @@ private fun HowYouLook(domain: String?, username: String, onEdit: () -> Unit) {
             Spacer(Modifier.height(2.dp))
             Text(
                 when {
+                    // A borrowed name is just as checkable and is not the same claim, so it
+                    // says where it came from instead of implying this wallet owns it.
+                    verified && borrowed -> "Lent by your other wallet, and signed — their phone checks it."
                     verified -> "Yours on chain — their phone checks it, you can't be copied."
                     username.isNotBlank() -> "No tick: they only have your word for this name."
                     else -> "Nobody will know who asked. Tap to pick a name."

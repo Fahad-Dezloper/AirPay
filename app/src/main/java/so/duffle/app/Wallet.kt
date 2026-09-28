@@ -284,6 +284,67 @@ class Wallet(private val activity: ComponentActivity) {
         data object NeedsReconnect : SendOutcome
     }
 
+    /**
+     * Carries your name onto another wallet, by asking the named one to vouch for it.
+     *
+     * Switches the adapter to `owner`, gets one signature, and switches back — **always**, even
+     * when the signature fails, because leaving the app pointed at a wallet the user did not
+     * choose would make the next payment come from the wrong address.
+     *
+     * One approval, on the owner's wallet. The person sees a readable sentence naming the
+     * wallet being vouched for, not a transaction.
+     */
+    suspend fun link(owner: Linked, wallet: String): Vouch.Link? {
+        if (owner.address == wallet) return null
+        val previous = linked.selected()
+        return try {
+            use(owner)
+            val expiry = Vouch.expiryFor()
+            val signature = signMessage(owner.address, Vouch.message(owner.address, wallet, expiry))
+                ?: return null
+            Vouch.remember(activity, owner.address, wallet, expiry, Vouch.encode(signature))
+        } catch (e: Exception) {
+            null
+        } finally {
+            previous?.let { use(it) }
+        }
+    }
+
+    /**
+     * Asks a wallet to sign a short statement that is **not** a transaction.
+     *
+     * Used once per wallet you link, to produce the signature in [Vouch] that carries your name
+     * onto a second address. `signMessagesDetached` is the right call rather than
+     * `signTransactions`: it returns a bare ed25519 signature over exactly the bytes handed in,
+     * which is what verification on the other phone needs, and it shows the person a readable
+     * sentence instead of a transaction they would have to take on faith.
+     *
+     * The wallet has to be the **currently connected** one, because MWA signs with the session
+     * it has. Linking therefore means connecting the named wallet, signing, and connecting back
+     * — which is why the flow asks for the Seeker wallet by name.
+     *
+     * @return the 64-byte signature, or null if the wallet declined or could not be reached.
+     */
+    suspend fun signMessage(address: String, message: ByteArray): ByteArray? = try {
+        val addressBytes = Base58.decode(address)
+        when (val r = adapter.transact(sender) {
+            signMessagesDetached(arrayOf(message), arrayOf(addressBytes))
+        }) {
+            is TransactionResult.Success -> {
+                r.authResult.authToken?.let { adapter.authToken = it; remember(address, it) }
+                // One message in, so one signed message out — and the signature belonging to
+                // the address we asked for, rather than whichever the wallet listed first.
+                val signed = r.payload.messages.firstOrNull()
+                val index = signed?.addresses?.indexOfFirst { it.contentEquals(addressBytes) } ?: -1
+                signed?.signatures?.getOrNull(if (index >= 0) index else 0)
+                    ?.takeIf { it.size == 64 }
+            }
+            else -> null
+        }
+    } catch (e: Exception) {
+        null
+    }
+
     companion object {
         /**
          * Identity shown in the wallet's approval sheet. Must be a real https URI — wallets

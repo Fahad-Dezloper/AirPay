@@ -19,7 +19,18 @@ object Identity {
         val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         // The cached mint only counts for the wallet it was looked up for.
         val genesis = p.getString("genesis", null)?.takeIf { p.getString("genesis_for", null) == address }
-        return TapCard(address, label(context), genesis, Brand.mine()).takeIf { it.validate() == null }
+        // A link only exists for a wallet that borrowed its name from another, so the common
+        // case — tapping from the wallet that owns the name — adds nothing to the payload.
+        val link = Vouch.of(context, address)
+        return TapCard(
+            address = address,
+            label = label(context),
+            genesis = genesis,
+            brand = Brand.mine(),
+            owner = link?.owner,
+            linkExpiry = link?.expiresDay ?: 0,
+            linkSignature = link?.signature,
+        ).takeIf { it.validate() == null }
     }
 
     fun rememberGenesis(context: Context, address: String, mint: String?) {
@@ -59,17 +70,27 @@ object Identity {
      * mainnet. Only ever written after [Names] gives a definite answer, and tied to the wallet
      * it was looked up for, so switching wallets cannot inherit the previous one's name.
      */
-    fun domain(context: Context, address: String): String? {
-        val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        return p.getString("domain", null)?.takeIf { p.getString("domain_for", null) == address }
-    }
+    fun domain(context: Context, address: String): String? =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString("domain_$address", null)
 
     fun rememberDomain(context: Context, address: String, domain: String?) {
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
-            .putString("domain_for", address)
-            .putString("domain", domain)
-            .apply()
+        val e = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+        if (domain == null) e.remove("domain_$address") else e.putString("domain_$address", domain)
+        e.apply()
     }
+
+    /**
+     * Which of these wallets carries a name, and what it is.
+     *
+     * The answer to "who am I" for the whole app. Your identity lives on one address — the
+     * Seeker wallet holding the `.skr` — and every other wallet borrows it through a signature
+     * ([Vouch]), so this is the wallet that does the vouching.
+     *
+     * Only consults what a previous lookup already established. It is called while building a
+     * tap payload, and a tap has about 100ms.
+     */
+    fun named(context: Context, addresses: List<String>): Pair<String, String>? =
+        addresses.firstNotNullOfOrNull { a -> domain(context, a)?.let { a to it } }
 }
 
 /**
