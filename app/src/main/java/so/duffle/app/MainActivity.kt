@@ -3535,12 +3535,19 @@ private fun PayBar(modifier: Modifier, onTap: () -> Unit, onScan: () -> Unit) {
         )
         Row(Modifier.background(D.White).padding(start = 20.dp)) { Tag("7") }
 
-        Box(Modifier.fillMaxWidth().background(D.White).padding(horizontal = 20.dp)) {
+        Box(
+            Modifier.fillMaxWidth().background(D.White).padding(horizontal = 20.dp),
+            contentAlignment = Alignment.Center,
+        ) {
             // A white ring around the capsule, under a soft shadow. On a white page the ring
             // is invisible as a colour and does its work as a gap: it holds the dark shape off
             // the shadow so the bar reads as lifted rather than smudged.
+            //
+            // Width comes from the content, not the page. Stretched edge to edge the two halves
+            // were mostly empty and the labels ended up far from the seam that joins them —
+            // which is the one detail making this read as a single control.
             Row(
-                Modifier.fillMaxWidth().cardShadow(PayBarRadius)
+                Modifier.cardShadow(PayBarRadius)
                     .clip(RoundedCornerShape(PayBarRadius)).background(D.White)
                     .padding(PayBarRing)
                     .clip(RoundedCornerShape(PayBarRadius - PayBarRing)),
@@ -3548,7 +3555,7 @@ private fun PayBar(modifier: Modifier, onTap: () -> Unit, onScan: () -> Unit) {
                 PayChoice(
                     first = "Pay via", second = "Tap",
                     icon = R.drawable.hi_nfc, iconFirst = true,
-                    fill = D.Black, modifier = Modifier.weight(1f), onClick = onTap,
+                    fill = D.Black, onClick = onTap,
                 )
                 // The seam. It has to read against BOTH fills, so it is a fixed light line
                 // rather than white-on-alpha: at low alpha it disappeared into the blue half
@@ -3557,7 +3564,7 @@ private fun PayBar(modifier: Modifier, onTap: () -> Unit, onScan: () -> Unit) {
                 PayChoice(
                     first = "Scan", second = "any QR",
                     icon = R.drawable.hi_scan, iconFirst = false,
-                    fill = D.Blue, modifier = Modifier.weight(1f), onClick = onScan,
+                    fill = D.Blue, onClick = onScan,
                 )
             }
         }
@@ -3584,12 +3591,11 @@ private fun PayChoice(
     @DrawableRes icon: Int,
     iconFirst: Boolean,
     fill: Color,
-    modifier: Modifier,
     onClick: () -> Unit,
 ) {
     val interaction = remember { MutableInteractionSource() }
     Row(
-        modifier.height(PayBarHeight).background(fill)
+        Modifier.height(PayBarHeight).background(fill)
             .clickable(interaction, indication = null, onClick = onClick)
             .padding(horizontal = 16.dp),
         horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -3603,7 +3609,7 @@ private fun PayChoice(
             spring(Snap.dampingRatio, Snap.stiffness), label = "ink",
         )
         if (iconFirst) HIcon(icon, ink, 26.dp)
-        Column(Modifier.weight(1f)) {
+        Column {
             Text(first, color = ink, fontSize = 17.sp, fontWeight = FontWeight.Bold,
                 fontFamily = Display, lineHeight = 19.sp, maxLines = 1)
             Text(second, color = ink, fontSize = 17.sp, fontWeight = FontWeight.Bold,
