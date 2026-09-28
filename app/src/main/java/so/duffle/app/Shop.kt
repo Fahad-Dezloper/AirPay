@@ -31,11 +31,47 @@ object Shop {
         val recipient: String,
         /** How it arrives: "online", "phone", or empty for a direct top-up. */
         val redemption: List<String>,
+        /** Bitrefill's own categories: "refill", "bundles", "voip", "esim"… */
+        val categories: List<String> = emptyList(),
         /** The denominations on offer, in the product's own currency. */
         val values: List<String>,
+        /** The same denominations with what each costs. See [Package]. */
+        val packages: List<Package> = emptyList(),
     ) {
         val needsPhone get() = recipient == "phone_number"
+
+        /**
+         * True when this tops up a mobile number on its own network.
+         *
+         * Not the same as [needsPhone]. Viber credit and an eSIM both want a phone number and
+         * neither is a recharge — Viber buys calling credit inside an app, an eSIM is a second
+         * line. Listing them beside Jio and Airtel under "Network" invites somebody to pick the
+         * wrong one and pay real money for it.
+         */
+        val isMobileRecharge get() = needsPhone &&
+            categories.any { it == "refill" || it == "bundles" || it == "data" } &&
+            categories.none { it == "voip" || it == "esim" }
+
+        /**
+         * True when this product sells **plans** rather than amounts of credit.
+         *
+         * The difference decides the whole screen. A top-up product's value IS the money —
+         * "50" means fifty rupees — so it draws as a row of amounts. A bundle product's value
+         * is a description — "2GB/Day 5G Plan - 84 Days" — and its price lives in
+         * [Package.amount]. Drawing the second like the first is how the shop ended up
+         * offering "₹30GB – 30 Day Data Pack".
+         */
+        val sellsPlans get() = packages.any { it.value.toIntOrNull() == null && it.amount > 0 }
     }
+
+    /**
+     * One thing you can buy from a product, and what it costs.
+     *
+     * [amount] is in the product's own currency — 219 really is the ₹219 a Jio 30GB pack costs.
+     * It is for **choosing**: the price anybody actually pays comes back on the invoice, in
+     * USDC, and is the only number this app treats as authoritative.
+     */
+    data class Package(val value: String, val amount: Int)
 
     data class Section(val title: String, val products: List<Product>)
 
@@ -86,19 +122,36 @@ object Shop {
         name = j.optString("name"),
         currency = j.optString("currency", "INR"),
         recipient = j.optString("recipient", "none"),
+        categories = j.optJSONArray("categories").let { a ->
+            (0 until (a?.length() ?: 0)).map { a!!.optString(it) }
+        },
         redemption = j.optJSONArray("redemption").let { a ->
             (0 until (a?.length() ?: 0)).map { a!!.optString(it) }
         },
         values = j.optJSONArray("values").let { a ->
             (0 until (a?.length() ?: 0)).map { a!!.optString(it) }
         },
+        packages = j.optJSONArray("packages").let { a ->
+            (0 until (a?.length() ?: 0)).mapNotNull { i ->
+                a!!.optJSONObject(i)?.let { o ->
+                    o.optString("value").takeIf { it.isNotBlank() }
+                        ?.let { v -> Package(v, o.optInt("amount", 0)) }
+                }
+            }
+        },
     )
 
     /** Asks for a price. Nothing is bought and nothing is owed until the transfer is signed. */
-    suspend fun invoice(productId: String, value: String): Invoice? {
+    /**
+     * @param phone the number to credit, in full international form. Required by anything whose
+     *   `recipient` is `phone_number` — Bitrefill rejects the invoice without it, and there is
+     *   nowhere else in the flow to ask.
+     */
+    suspend fun invoice(productId: String, value: String, phone: String? = null): Invoice? {
         val o = ServerClient.ask("/v1/shop/invoice", JSONObject().apply {
             put("product_id", productId)
             put("value", value)
+            phone?.takeIf { it.isNotBlank() }?.let { put("phone_number", it) }
         }) ?: return null
         val address = o.optString("address").takeIf { PayRequest.isBase58Address(it) } ?: return null
         val amount = o.optLong("amount", 0L).takeIf { it > 0 } ?: return null

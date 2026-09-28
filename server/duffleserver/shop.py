@@ -113,6 +113,21 @@ class Shop:
             "recipient": p.get("recipient_type") or "none",
             "redemption": p.get("redemption_methods") or [],
             "values": [pk.get("value") for pk in (p.get("packages") or []) if pk.get("value")],
+            # The same packages carrying what they cost, because a screen that asks somebody to
+            # CHOOSE needs it: "2GB/Day 5G Plan - 84 Days" is not something anyone can pick
+            # without a price beside it.
+            #
+            # `amount` is the face value in the product's own currency and is the number to show
+            # — 219 is the 219 rupees a Jio 30GB pack really costs. `price` is Bitrefill's
+            # internal unit and is NOT money anybody recognises: it runs about 1205 to the USDC,
+            # tracks a rate that moves, and is deliberately not sent to the app.
+            #
+            # Neither is what gets paid. Only invoice.payment.price is authoritative (see the
+            # module note), so this is for choosing and the invoice is for paying.
+            "packages": [
+                {"value": pk.get("value"), "amount": pk.get("amount")}
+                for pk in (p.get("packages") or []) if pk.get("value")
+            ],
         }
 
     def sections(self) -> list[dict]:

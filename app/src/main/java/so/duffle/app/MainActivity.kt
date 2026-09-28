@@ -167,6 +167,10 @@ class MainActivity : ComponentActivity() {
     /** The section being browsed, and the product opened inside it. */
     private var shopSection by mutableStateOf<Shop.Section?>(null)
     private var shopProduct by mutableStateOf<Shop.Product?>(null)
+    /** The recharge screen's three answers: which number, which network, and what the SIMs say. */
+    private var rechargeNumber by mutableStateOf("")
+    private var rechargeOperator by mutableStateOf<Shop.Product?>(null)
+    private var sims by mutableStateOf<List<Sims.Sim>>(emptyList())
     /** What the other phone shows when you tap them. A model number is not a name. */
     private var myName by mutableStateOf("")
     /**
@@ -288,24 +292,50 @@ class MainActivity : ComponentActivity() {
      * drawn: a price in USDC for goods priced in rupees is a quote against a moving rate, and
      * an old one is the difference between paying and being refused.
      */
-    private fun buy(product: Shop.Product, value: String, category: String) {
+    /**
+     * Asking to see the SIMs.
+     *
+     * Only ever launched from the "Use my SIM" line on the recharge screen, where what it buys
+     * is on screen next to it. A decline is not an error and nothing is retried: the carrier
+     * name is still readable without it, and the number can always be typed.
+     */
+    private val askForSims = registerForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { readSims() }
+
+    /** Re-reads the SIMs, and picks the network off the first one that names a known carrier. */
+    private fun readSims() {
+        sims = Sims.all(this)
+        if (rechargeOperator != null) return
+        val phone = shopSections.firstOrNull { it.products.any { p -> p.isMobileRecharge } } ?: return
+        val operators = phone.products.filter { it.isMobileRecharge }
+        for (sim in sims) {
+            Sims.productFor(sim.carrier, operators)?.let {
+                rechargeOperator = it
+                if (rechargeNumber.isBlank() && sim.number.isNotBlank()) rechargeNumber = sim.number
+                return
+            }
+        }
+    }
+
+    private fun buy(product: Shop.Product, value: String, category: String, phone: String? = null) {
         val payer = connected
         if (payer == null) {
             status = Status.Problem("Connect a wallet first", "The shop pays from your wallet.")
             return
         }
-        if (product.needsPhone) {
-            // The number is the product's own requirement, and Bitrefill says so plainly.
-            // Collecting it properly is the next piece; refusing honestly beats a 400.
+        // Still refused, but only when there is genuinely no number — the recharge screen
+        // collects one, and anything reaching here without it would 400 at Bitrefill.
+        if (product.needsPhone && phone.isNullOrBlank()) {
             status = Status.Problem("Needs a phone number",
-                "${product.name.removeSuffix(" India")} credits a number directly — that's not wired up yet.")
+                "${product.name.removeSuffix(" India")} credits a number directly. Enter one first.")
             return
         }
         lifecycleScope.launch {
             busy = true
             try {
                 push("shop: asking for a price…")
-                val inv = Shop.invoice(product.id, value)
+                val inv = Shop.invoice(product.id, value, phone)
                 if (inv == null) {
                     status = Status.Problem("Couldn't get a price", "The shop didn't answer. Try again.")
                     return@launch
@@ -662,7 +692,7 @@ class MainActivity : ComponentActivity() {
                 // first call after a restart pages through Bitrefill), which is exactly when
                 // someone opens the app and finds the section missing.
                 LaunchedEffect(resumeTick) {
-                    if (shopSections.isEmpty()) Shop.sections()?.let { shopSections = it }
+                    if (shopSections.isEmpty()) Shop.sections()?.let { shopSections = it; readSims() }
                 }
 
                 // Anything written to us while the app was closed. The live stream below only
@@ -916,12 +946,29 @@ class MainActivity : ComponentActivity() {
 
                         if (tab == Tab.SHOP) {
                             shopSection?.let { sec ->
-                                ShopSection(
-                                    section = sec,
-                                    picked = shopProduct,
-                                    onPick = { shopProduct = it },
-                                    onBuy = { p, v -> buy(p, v, sec.title) },
-                                )
+                                // Phone gets its own screen. The generic one lists products
+                                // and then denominations, which is right for a gift card and
+                                // wrong for a recharge: the number and the network have to be
+                                // settled before a plan list means anything.
+                                if (sec.products.any { it.isMobileRecharge }) {
+                                    RechargeSection(
+                                        section = sec,
+                                        number = rechargeNumber,
+                                        onNumber = { rechargeNumber = it },
+                                        operator = rechargeOperator,
+                                        onOperator = { rechargeOperator = it },
+                                        sims = sims,
+                                        onUseSims = { askForSims.launch(Sims.PERMISSION) },
+                                        onBuy = { p, v, phone -> buy(p, v, sec.title, phone) },
+                                    )
+                                } else {
+                                    ShopSection(
+                                        section = sec,
+                                        picked = shopProduct,
+                                        onPick = { shopProduct = it },
+                                        onBuy = { p, v -> buy(p, v, sec.title) },
+                                    )
+                                }
                             }
                             return@Column
                         }
@@ -3170,6 +3217,201 @@ private fun EarnTiles(onRewards: () -> Unit, onOffers: () -> Unit, onReferrals: 
 }
 
 private enum class Mark { Coins, Ticket, Rings, Signal, Screen, Receipt, Basket, Plane, Cup, Game, Dots }
+
+/**
+ * Recharging a phone, which is a different job from buying a gift card.
+ *
+ * The generic shop screen lists products and then their denominations, which works when the
+ * denominations are money. A mobile plan is not money: "2GB/Day 5G Plan - 84 Days" is a thing
+ * you choose on its merits, and the price is a consequence. Drawn through the generic screen it
+ * came out as a pill reading "₹2GB/Day 5G Plan - 84 Days", fifty times.
+ *
+ * So this asks the three questions in the order anybody actually answers them:
+ *
+ *  1. **Which number.** Prefilled from the SIM where the phone will say, because recharging
+ *     your own number is the common case and the device already knows it.
+ *  2. **Which network.** Chosen from the SIM rather than from the number — India has had
+ *     portability since 2011, so a prefix says who *issued* a number, not who runs it. Getting
+ *     this wrong sends money to the wrong network and cannot be undone, so it is always
+ *     visible and always changeable.
+ *  3. **Which plan.** With its real price, cheapest first.
+ *
+ * **What this cannot do, and does not pretend to:** show the plan the number is currently on,
+ * or what it costs to keep. Bitrefill sells recharges; it has no subscriber lookup, and nothing
+ * else in reach does either. A "current plan" panel here would be invented, so there isn't one.
+ */
+@Composable
+private fun RechargeSection(
+    section: Shop.Section,
+    number: String,
+    onNumber: (String) -> Unit,
+    operator: Shop.Product?,
+    onOperator: (Shop.Product) -> Unit,
+    sims: List<Sims.Sim>,
+    onUseSims: () -> Unit,
+    onBuy: (Shop.Product, String, String) -> Unit,
+) {
+    // Only the products that actually credit a number. The Phone section also carries eSIMs
+    // and Viber credit, which are not recharges and would only be in the way here.
+    val operators = remember(section) { section.products.filter { it.isMobileRecharge } }
+    val e164 = Sims.e164(number)
+
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+        MainnetNote()
+
+        Text("Mobile number", color = D.Quiet, fontSize = 11.sp, letterSpacing = 1.sp,
+            fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.height(8.dp))
+        OutlinedTextField(
+            value = number,
+            onValueChange = { v -> onNumber(v.filter { it.isDigit() }.take(12)) },
+            singleLine = true,
+            placeholder = { Text("10 digits", color = D.Quiet) },
+            prefix = { Text("+91 ", color = D.Quiet) },
+            isError = number.isNotBlank() && e164 == null,
+            supportingText = {
+                Text(
+                    if (number.isNotBlank() && e164 == null) "That is not a 10-digit number."
+                    else "The recharge is credited to this number.",
+                    color = if (number.isNotBlank() && e164 == null) D.Danger else D.Quiet,
+                )
+            },
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+            modifier = Modifier.fillMaxWidth(),
+        )
+
+        // The SIMs, when the phone will name them. Tapping one fills the number where it is
+        // known and always picks the network, which is the half that matters.
+        if (sims.isEmpty()) {
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "Use my SIM",
+                color = D.Blue, fontSize = 13.sp, fontWeight = FontWeight.Bold,
+                modifier = Modifier.clip(RoundedCornerShape(10.dp)).clickable(onClick = onUseSims)
+                    .padding(horizontal = 8.dp, vertical = 6.dp),
+            )
+        } else {
+            Spacer(Modifier.height(10.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.horizontalScroll(rememberScrollState())) {
+                sims.forEach { sim ->
+                    val product = Sims.productFor(sim.carrier, operators)
+                    Column(
+                        Modifier.clip(RoundedCornerShape(14.dp)).background(D.Fill)
+                            .clickable {
+                                if (sim.number.isNotBlank()) onNumber(sim.number)
+                                product?.let(onOperator)
+                            }
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                    ) {
+                        Text(sim.carrier, color = D.Black, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                        Text(
+                            // Never invent a number. Most Indian SIMs do not carry one, and a
+                            // blank line saying so beats a plausible wrong one.
+                            sim.number.ifBlank { "SIM ${sim.slot + 1} · tap to use this network" },
+                            color = D.Quiet, fontSize = 11.sp, style = Figures,
+                        )
+                    }
+                }
+            }
+        }
+
+        Spacer(Modifier.height(20.dp))
+        Text("Network", color = D.Quiet, fontSize = 11.sp, letterSpacing = 1.sp,
+            fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.height(8.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.horizontalScroll(rememberScrollState())) {
+            operators.forEach { p ->
+                val on = operator?.id == p.id
+                Text(
+                    p.name.removeSuffix(" India").removeSuffix(" Bundles"),
+                    color = if (on) D.White else D.Black,
+                    fontSize = 13.sp, fontWeight = FontWeight.Bold,
+                    modifier = Modifier.clip(RoundedCornerShape(999.dp))
+                        .background(if (on) D.Blue else D.Fill)
+                        .clickable { onOperator(p) }
+                        .padding(horizontal = 14.dp, vertical = 9.dp),
+                )
+            }
+        }
+
+        val chosen = operator
+        if (chosen == null) {
+            Spacer(Modifier.height(20.dp))
+            Text("Pick a network to see what it sells.", color = D.Quiet, fontSize = 13.sp)
+        } else {
+            Spacer(Modifier.height(20.dp))
+            val plans = remember(chosen.id) {
+                chosen.packages.ifEmpty { chosen.values.map { Shop.Package(it, it.toIntOrNull() ?: 0) } }
+                    .sortedBy { it.amount }
+            }
+            Text(
+                if (chosen.sellsPlans) "Plans" else "Top-up",
+                color = D.Quiet, fontSize = 11.sp, letterSpacing = 1.sp, fontWeight = FontWeight.SemiBold,
+            )
+            if (!chosen.sellsPlans) {
+                Spacer(Modifier.height(4.dp))
+                // Said plainly rather than left to be discovered. Airtel and Vi sell only
+                // credit through this shop; the plan list people expect simply is not there.
+                Text(
+                    "${chosen.name.removeSuffix(" India")} only sells credit here, not plans. " +
+                        "The amount goes onto the number as talktime.",
+                    color = D.Quiet, fontSize = 12.sp, lineHeight = 16.sp,
+                )
+            }
+            Spacer(Modifier.height(10.dp))
+
+            val ready = e164 != null
+            plans.forEach { pack ->
+                Row(
+                    Modifier.fillMaxWidth().padding(bottom = 8.dp).clip(RoundedCornerShape(16.dp))
+                        .background(D.Fill)
+                        .clickable(enabled = ready) { onBuy(chosen, pack.value, e164!!) }
+                        .padding(horizontal = 14.dp, vertical = 13.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            if (pack.amount > 0) "${symbolFor(chosen.currency)}${pack.amount}"
+                            else "${symbolFor(chosen.currency)}${pack.value}",
+                            color = if (ready) D.Black else D.Quiet,
+                            fontSize = 17.sp, fontWeight = FontWeight.Bold,
+                            fontFamily = Display, style = Figures,
+                        )
+                        // A top-up's value is the price, so repeating it under itself would
+                        // say nothing. A plan's value is what you get for the price.
+                        if (chosen.sellsPlans) {
+                            Spacer(Modifier.height(2.dp))
+                            Text(pack.value, color = D.Quiet, fontSize = 12.5.sp, lineHeight = 17.sp)
+                        }
+                    }
+                    Spacer(Modifier.width(10.dp))
+                    HIcon(R.drawable.hi_arrow_up_right, if (ready) D.Blue else D.Quiet, 17.dp)
+                }
+            }
+            if (!ready) {
+                Text("Enter a number to recharge.", color = D.Quiet, fontSize = 12.sp)
+            }
+        }
+        Spacer(Modifier.height(24.dp))
+    }
+}
+
+/** The one line that has to be on every shop screen: this is the real-money corner of the app. */
+@Composable
+private fun MainnetNote() {
+    Row(
+        Modifier.fillMaxWidth().padding(bottom = 14.dp).clip(RoundedCornerShape(14.dp))
+            .background(D.Blue.copy(alpha = .08f)).padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        HIcon(R.drawable.hi_info, D.Blue, 17.dp)
+        Spacer(Modifier.width(8.dp))
+        Text("Paid with real USDC on mainnet — taps stay on devnet.",
+            color = D.Blue, fontSize = 12.5.sp, fontWeight = FontWeight.Medium)
+    }
+}
 
 /**
  * One section of the shop: what is in it, and what it costs.

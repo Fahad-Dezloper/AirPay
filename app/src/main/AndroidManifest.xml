@@ -8,6 +8,17 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!--
+      Reads which SIMs are in the phone, so a recharge can start from "which of these"
+      rather than a blank box — and above all so the NETWORK is picked by the device
+      instead of guessed, since sending a recharge to the wrong one cannot be undone.
+
+      Optional in every sense: it is requested from the recharge screen at the moment
+      somebody taps "Use my SIM", never at launch, and the screen works without it. The
+      carrier name alone needs no permission; this is what adds the second SIM and,
+      where the SIM carries one, the number.
+    -->
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
     <!-- NFC is required to pay; HCE only to be paid. Not required, so the app still
          installs on a phone that can only read. -->
     <uses-feature android:name="android.hardware.nfc" android:required="false" />
