@@ -22,8 +22,8 @@ import java.net.URL
 object Prices {
 
     private const val TAG = "Prices"
-    private const val ENDPOINT =
-        "https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd"
+    private const val HOST = "https://api.coingecko.com/api/v3"
+    private const val ENDPOINT = "$HOST/simple/price?ids=solana&vs_currencies=usd"
     private const val TTL_MS = 5 * 60_000L
 
     private var usd: Double? = null
@@ -69,6 +69,52 @@ object Prices {
         h.isSol -> solUsd()
         h.symbol.uppercase() in DOLLAR_PEGGED -> 1.0
         else -> null
+    }
+
+    /**
+     * A day of prices for a token, or null when there is none to be had.
+     *
+     * **Only SOL has one.** A devnet mint has no market, no history and therefore no line to
+     * draw — and a flat or invented sparkline beside a balance is a claim about price movement
+     * that nobody made. Cards without history say so by not drawing one.
+     *
+     * Roughly five-minute samples over 24h, thinned to what a 90dp-wide chart can show.
+     */
+    private var series: Pair<Long, List<Double>>? = null
+
+    suspend fun solDay(): List<Double>? {
+        series?.takeIf { System.currentTimeMillis() - it.first < TTL_MS }?.let { return it.second }
+        val fresh = withContext(Dispatchers.IO) { fetchDay() } ?: return series?.second
+        series = System.currentTimeMillis() to fresh
+        return fresh
+    }
+
+    private fun fetchDay(): List<Double>? = try {
+        val c = (URL("$HOST/coins/solana/market_chart?vs_currency=usd&days=1")
+            .openConnection() as HttpURLConnection).apply {
+            connectTimeout = 8_000; readTimeout = 8_000
+            setRequestProperty("Accept", "application/json")
+        }
+        if (c.responseCode != 200) null else {
+            val arr = JSONObject(c.inputStream.bufferedReader().use { it.readText() })
+                .getJSONArray("prices")
+            // Thinned: a hundred points on a 90dp line is a hundred points nobody can see.
+            val step = maxOf(1, arr.length() / 48)
+            (0 until arr.length() step step)
+                .map { arr.getJSONArray(it).getDouble(1) }
+                .takeIf { it.size >= 4 }
+        }
+    } catch (e: Exception) {
+        Log.i(TAG, "no history: ${e.message}")
+        null
+    }
+
+    /** How much a series moved end to end, as a fraction. Null when there is nothing to compare. */
+    fun change(series: List<Double>?): Double? {
+        val s = series ?: return null
+        val first = s.firstOrNull() ?: return null
+        val last = s.lastOrNull() ?: return null
+        return if (first <= 0.0) null else (last - first) / first
     }
 
     /** "1,234.56" — grouped, two places, which is how money is read. */

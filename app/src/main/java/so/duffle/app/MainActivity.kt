@@ -9,6 +9,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.infiniteRepeatable
@@ -1777,82 +1779,151 @@ private fun BalanceCard(
 /**
  * §2d — what is actually held, token by token.
  *
- * The figure above is one number for everything; these are the parts of it.
+ * A dark head carrying the token's logo and a day of its price, over a white body with the
+ * name, the move, the amount held and what that is worth.
  *
- * **Every card is the same height**, which is the whole reason this reads as a row rather than
- * a pile: the height used to follow the content, so a token with a price was taller than one
- * without and the row had a ragged bottom edge. The slots are fixed and the content fits them.
+ * **The chart and the percentage are only drawn for a token that has a market.** A devnet mint
+ * has no price history and therefore no line — a flat or invented sparkline beside a balance is
+ * a claim about price movement nobody made. Those cards keep the head and the logo and simply
+ * have nothing in the space, which is the honest shape of "not traded".
  *
- * A token with no known price shows a dash in the same slot at the same size, not a smaller
- * apology and not a zero — most of what a devnet wallet holds is a test mint with no market,
- * and "$0.00" beside a balance reads as "worthless" when the honest answer is "unknown".
- *
- * Each card is tinted from its own token, so the row is scannable by colour before it is read.
+ * Every card is the same size. The height used to follow the content and the row came out
+ * ragged; the slots are fixed now and the content fits them.
  */
 @Composable
 private fun TokenBadges(holdings: List<Tokens.Holding>, rate: Double?, onCopy: (String) -> Unit) {
     if (holdings.isEmpty()) return
+    // One day of SOL, fetched once for the row rather than per card.
+    val day by produceState<List<Double>?>(initialValue = null) { value = Prices.solDay() }
+
     Row(
         Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         holdings.forEach { h ->
+            val stable = h.symbol.uppercase() in setOf("USDC", "USDT", "PYUSD", "USDP", "DAI")
             val worth = remember(h.mint, h.units, rate) {
                 when {
                     h.isSol -> rate?.let { h.units / 1_000_000_000.0 * it }
-                    h.symbol.uppercase() in setOf("USDC", "USDT", "PYUSD", "USDP", "DAI") ->
-                        h.shown.toDoubleOrNull()
+                    stable -> h.shown.toDoubleOrNull()
                     else -> null
                 }
             }
-            // A stable hue per token: brand-ish where we know it, derived from the mint
-            // otherwise, so the same token is always the same colour and no two collide.
-            val hue = when {
-                h.isSol -> 155f
-                h.symbol.uppercase() in setOf("USDC", "USDT", "PYUSD", "USDP", "DAI") -> 212f
-                else -> ((h.token.hashCode() and 0x7fffffff) % 360).toFloat()
-            }
+            val series = if (h.isSol) day else null
+            val move = Prices.change(series)
             val press = remember { MutableInteractionSource() }
-            val shape = RoundedCornerShape(16.dp)
-            Column(
-                Modifier.then(PressScale(press)).width(158.dp).height(92.dp)
-                    .clip(shape)
-                    .background(Color.hsv(hue, .10f, .99f))
-                    .border(1.dp, Color.hsv(hue, .22f, .90f), shape)
-                    .clickable(press, indication = null) { onCopy(h.mint ?: "SOL") }
-                    .padding(horizontal = 12.dp, vertical = 11.dp),
-                verticalArrangement = Arrangement.SpaceBetween,
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    TokenImage(h, 26.dp)
-                    Spacer(Modifier.width(8.dp))
-                    Column {
-                        Text(h.symbol, color = D.Black, fontSize = 13.sp,
-                            fontWeight = FontWeight.Bold, maxLines = 1)
-                        // A mint with no metadata falls back to its own address for both symbol
-                        // and name, which printed the same truncated address twice over.
-                        val named = h.name.isNotBlank() &&
-                            !h.name.equals(h.symbol, true) && !h.name.startsWith(h.symbol)
-                        Text(
-                            if (named) h.name else "Unnamed token",
-                            color = D.Quiet, fontSize = 10.sp, maxLines = 1,
+
+            // A shadow, because the card body is white on a white page: without an edge the
+            // head read as a dark block with loose text under it rather than one object.
+            Box(Modifier.then(PressScale(press)).width(186.dp).cardShadow(22.dp)) {
+              Column(
+                Modifier.fillMaxWidth()
+                    .clip(RoundedCornerShape(22.dp)).background(D.White)
+                    .clickable(press, indication = null) { onCopy(h.mint ?: "SOL") },
+              ) {
+                // The head: the day's line, with the logo straddling its lower edge.
+                Box(
+                    Modifier.fillMaxWidth().height(74.dp)
+                        .clip(RoundedCornerShape(22.dp)).background(Color(0xFF14161B)),
+                ) {
+                    if (series != null && series.size > 2) {
+                        Sparkline(
+                            series,
+                            up = (move ?: 0.0) >= 0,
+                            modifier = Modifier.align(Alignment.CenterEnd)
+                                .padding(start = 72.dp, end = 14.dp, top = 14.dp, bottom = 14.dp)
+                                .fillMaxSize(),
                         )
                     }
                 }
 
-                Row(verticalAlignment = Alignment.Bottom) {
-                    // Same size whether or not there is a price, so the cards stay level.
+                Column(Modifier.padding(start = 14.dp, end = 14.dp, top = 26.dp, bottom = 14.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        val named = h.name.isNotBlank() &&
+                            !h.name.equals(h.symbol, true) && !h.name.startsWith(h.symbol)
+                        Text(
+                            if (named) h.name else "Unnamed token",
+                            color = D.Quiet, fontSize = 12.sp, fontWeight = FontWeight.Medium,
+                            maxLines = 1, modifier = Modifier.weight(1f, fill = false),
+                        )
+                        // Only when there is a move to report.
+                        if (move != null) {
+                            Spacer(Modifier.width(8.dp))
+                            val up = move >= 0
+                            Row(
+                                Modifier.clip(RoundedCornerShape(999.dp))
+                                    .background(Color(0xFF14161B))
+                                    .padding(horizontal = 8.dp, vertical = 3.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                HIcon(
+                                    if (up) R.drawable.hi_arrow_up_right else R.drawable.hi_arrow_down,
+                                    if (up) D.Success else D.Danger, 11.dp,
+                                )
+                                Spacer(Modifier.width(3.dp))
+                                Text(
+                                    "%s%.2f%%".format(if (up) "+" else "", move * 100),
+                                    color = if (up) D.Success else D.Danger,
+                                    fontSize = 10.sp, fontWeight = FontWeight.Bold, style = Figures,
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(Modifier.height(6.dp))
                     Text(
-                        if (worth != null) "$${Prices.money(worth)}" else "—",
-                        color = D.Black, fontSize = 16.sp, fontWeight = FontWeight.Bold,
-                        fontFamily = Display, style = Figures, maxLines = 1,
+                        "${h.shown} ${h.symbol}", color = D.Black, fontSize = 21.sp,
+                        fontWeight = FontWeight.ExtraBold, fontFamily = Display,
+                        fontStyle = FontStyle.Italic, style = Figures, maxLines = 1,
                     )
-                    Spacer(Modifier.weight(1f))
-                    Text(h.shown, color = D.Quiet, fontSize = 11.sp, style = Figures,
-                        maxLines = 1, modifier = Modifier.padding(bottom = 1.dp))
+                    Spacer(Modifier.height(1.dp))
+                    Text(
+                        if (worth != null) "$${Prices.money(worth)}" else "No market price",
+                        color = D.Quiet, fontSize = 12.sp, fontStyle = FontStyle.Italic,
+                        style = Figures, maxLines = 1,
+                    )
                 }
+              }
+
+              // Drawn over both halves rather than inside the head, so it can sit ON the seam
+              // — which is what makes the two halves read as one card instead of stacked ones.
+              Box(
+                  Modifier.align(Alignment.TopStart)
+                      .offset(x = 14.dp, y = 50.dp)
+                      .size(44.dp).clip(CircleShape).background(D.White)
+                      .padding(3.dp),
+                  contentAlignment = Alignment.Center,
+              ) { TokenImage(h, 38.dp) }
             }
         }
+    }
+}
+
+/** A day of prices as one line, with the last point marked. Drawn, not charted — no axes. */
+@Composable
+private fun Sparkline(series: List<Double>, up: Boolean, modifier: Modifier) {
+    val stroke = if (up) D.Success else D.Danger
+    Canvas(modifier) {
+        val lo = series.min()
+        val hi = series.max()
+        val span = (hi - lo).takeIf { it > 0.0 } ?: 1.0
+        val dx = size.width / (series.size - 1)
+        fun y(v: Double) = (size.height * (1f - ((v - lo) / span).toFloat())).coerceIn(0f, size.height)
+
+        val path = Path().apply {
+            moveTo(0f, y(series[0]))
+            series.forEachIndexed { i, v -> if (i > 0) lineTo(i * dx, y(v)) }
+        }
+        // A wash under the line, so the head reads as a chart rather than a scribble.
+        val under = Path().apply {
+            addPath(path)
+            lineTo(size.width, size.height)
+            lineTo(0f, size.height)
+            close()
+        }
+        drawPath(under, Brush.verticalGradient(listOf(stroke.copy(alpha = .28f), Color.Transparent)))
+        drawPath(path, stroke, style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round))
+        drawCircle(stroke, radius = 3.dp.toPx(), center = Offset(size.width, y(series.last())))
     }
 }
 
