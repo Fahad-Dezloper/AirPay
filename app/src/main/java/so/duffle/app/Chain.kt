@@ -15,11 +15,18 @@ import java.net.URL
  * network", so every call returns a typed result and the UI decides what to say. sol4k's
  * `Connection` and `PublicKey` both throw freely, so they are fenced off inside this file.
  *
- * Devnet for now — the flow is proven with worthless money before it moves real money.
+ * **Mainnet. Every transfer here is real money.**
+ *
+ * It ran on devnet while the mechanism was being proved, and the split that went with it —
+ * a `mainnet` flag threaded through every call, true only for the shop — is gone. Two clusters
+ * reachable from one build is a bug waiting to be written: a payment built against one and
+ * submitted to the other fails in a way that reads like a network problem, and a balance read
+ * from the wrong one is simply a wrong number on screen. There is one cluster now and no flag
+ * to get wrong.
  */
 object Chain {
 
-    private const val PUBLIC_RPC = "https://api.devnet.solana.com"
+    private const val PUBLIC_RPC = "https://api.mainnet-beta.solana.com"
 
     const val LAMPORTS_PER_SOL = 1_000_000_000.0
 
@@ -130,9 +137,9 @@ object Chain {
     /** What the chain says a mint is. Null when unreachable or not a mint at all. */
     data class Mint(val program: String, val decimals: Int)
 
-    fun mintInfo(mint: String, mainnet: Boolean = false): Mint? {
+    fun mintInfo(mint: String): Mint? {
         if (!PayRequest.isBase58Address(mint)) return null
-        val res = post("""{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["$mint",{"encoding":"jsonParsed"}]}""", mainnet)
+        val res = post("""{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["$mint",{"encoding":"jsonParsed"}]}""")
             ?: return null
         if (rpcError(res) != null) return null
         return try {
@@ -154,8 +161,8 @@ object Chain {
     }
 
     /** Whether an account exists yet. Null when unreachable. */
-    fun exists(account: String, mainnet: Boolean = false): Boolean? {
-        val res = post("""{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["$account",{"encoding":"base64","dataSlice":{"offset":0,"length":0}}]}""", mainnet)
+    fun exists(account: String): Boolean? {
+        val res = post("""{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["$account",{"encoding":"base64","dataSlice":{"offset":0,"length":0}}]}""")
             ?: return null
         if (rpcError(res) != null) return null
         return try { !org.json.JSONObject(res).getJSONObject("result").isNull("value") } catch (e: Exception) { null }
@@ -184,7 +191,6 @@ object Chain {
         programOverride: String? = null,
         recipientAccountExists: Boolean? = null,
         /** The shop pays in real USDC; everything else is devnet. See [post]. */
-        mainnet: Boolean = false,
     ): Built {
         if (!PayRequest.isBase58Address(payer)) return Built.Bad("Your wallet address looks wrong.")
         if (!PayRequest.isBase58Address(recipient)) return Built.Bad("That destination address is not valid.")
@@ -194,7 +200,7 @@ object Chain {
 
         val live = blockhashOverride == null
         val program = programOverride ?: run {
-            val info = mintInfo(mint, mainnet) ?: return Built.Offline("could not read $symbol from Solana")
+            val info = mintInfo(mint) ?: return Built.Offline("could not read $symbol from Solana")
             // The request's idea of the decimals must match the chain's, or "0.5" means something
             // different to each phone. transferChecked would refuse it anyway; saying so here is
             // kinder than a wallet error.
@@ -211,7 +217,7 @@ object Chain {
             val destination = PublicKey(tokenAccount(recipient, mint, program))
 
             val needsAccount = recipientAccountExists?.not() ?: if (live) {
-                exists(destination.toBase58(), mainnet)?.not() ?: return Built.Offline("could not reach Solana")
+                exists(destination.toBase58())?.not() ?: return Built.Offline("could not reach Solana")
             } else false
 
             if (live) {
@@ -228,7 +234,7 @@ object Chain {
                 }
             }
 
-            val blockhash = blockhashOverride ?: latestBlockhash(mainnet) ?: return Built.Offline("could not reach Solana")
+            val blockhash = blockhashOverride ?: latestBlockhash() ?: return Built.Offline("could not reach Solana")
 
             val createAccount = BaseInstruction(
                 data = byteArrayOf(1), // CreateIdempotent
@@ -292,10 +298,9 @@ object Chain {
 
     /** The blockhash a transaction is built against, fetched when the payer presses Pay. */
     /** The blockhash a transaction is built against, fetched when the payer presses Pay. */
-    fun latestBlockhash(mainnet: Boolean = false): String? {
+    fun latestBlockhash(): String? {
         val res = post(
             """{"jsonrpc":"2.0","id":1,"method":"getLatestBlockhash","params":[{"commitment":"confirmed"}]}""",
-            mainnet,
         ) ?: return null
         if (rpcError(res) != null) return null
         return Regex("\"blockhash\"\\s*:\\s*\"([1-9A-HJ-NP-Za-km-z]{32,44})\"")
@@ -476,12 +481,11 @@ object Chain {
      * Cost of the change: the wallet can no longer re-sign an expired blockhash on our behalf.
      * Worth it — an expired blockhash is recoverable by tapping again; a silent failure is not.
      */
-    fun submit(signedTx: ByteArray, mainnet: Boolean = false): Submitted {
+    fun submit(signedTx: ByteArray): Submitted {
         val b64 = android.util.Base64.encodeToString(signedTx, android.util.Base64.NO_WRAP)
         val res = post(
             """{"jsonrpc":"2.0","id":1,"method":"sendTransaction",
                 "params":["$b64",{"encoding":"base64","preflightCommitment":"confirmed"}]}""",
-            mainnet,
         ) ?: return Submitted.Offline
 
         Regex("\"result\"\\s*:\\s*\"([1-9A-HJ-NP-Za-km-z]{60,})\"").find(res)
@@ -566,16 +570,8 @@ object Chain {
     fun reachable(): Boolean =
         post("""{"jsonrpc":"2.0","id":1,"method":"getHealth"}""") != null
 
-    /**
-     * Where to look a transaction up. `mainnet` for a shop purchase — those are the one thing
-     * this app settles in real USDC, and a devnet explorer link would simply say "not found".
-     */
-    fun explorerUrl(signature: String, mainnet: Boolean = false) =
-        if (mainnet) "https://explorer.solana.com/tx/$signature"
-        else "https://explorer.solana.com/tx/$signature?cluster=devnet"
-
-    /** A raw JSON-RPC call through the same endpoints as everything else here. */
-    fun rpc(json: String): String? = post(json)
+    /** Where to look a transaction up. One cluster, so no cluster parameter. */
+    fun explorerUrl(signature: String) = "https://explorer.solana.com/tx/$signature"
 
     /** Set when the node refused us for asking too often, so callers can say so honestly. */
     @Volatile var rateLimited = false
@@ -590,14 +586,10 @@ object Chain {
      * confirm money that had already landed. The server holds a provider key; the phone does
      * not, and should not ship one. The fallback keeps the app working with no server at all.
      */
-    /**
-     * @param mainnet true only for the shop. Bitrefill settles in real USDC, so buying a phone
-     *   recharge is the one thing in this app that happens on the cluster where money is real.
-     *   Everything else — every tap, every request — stays on devnet, and the default keeps it
-     *   that way without touching a single existing call site.
-     */
-    private fun post(json: String, mainnet: Boolean = false): String? {
-        if (mainnet) return ServerClient.mainnetRpcUrl?.let { postTo(it, json) }
+    /** A raw call, for the few places that build their own request. */
+    fun rpc(json: String): String? = post(json)
+
+    private fun post(json: String): String? {
         // A server that just failed is skipped for a while. Otherwise every read waits out a
         // failed connection first — the token list took seven seconds with the server down.
         val serverUp = ServerClient.enabled && System.currentTimeMillis() > serverDownUntil

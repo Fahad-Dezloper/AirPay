@@ -374,7 +374,6 @@ class MainActivity : ComponentActivity() {
                         payer = payer, recipient = inv.address, mint = Shop.USDC_MAINNET,
                         units = inv.amount, decimals = Shop.USDC_DECIMALS,
                         reference = PayRequest.newReference(), symbol = "USDC",
-                        mainnet = true,
                     )
                 }
                 when (built) {
@@ -398,7 +397,7 @@ class MainActivity : ComponentActivity() {
                                         "The quote died while your wallet was open. Nothing was sent.")
                                     return@launch
                                 }
-                                when (val sent = withContext(Dispatchers.IO) { Chain.submit(signed.tx, mainnet = true) }) {
+                                when (val sent = withContext(Dispatchers.IO) { Chain.submit(signed.tx) }) {
                                     is Chain.Submitted.Ok -> {
                                         push("✓ shop: paid ${inv.shown} — ${sent.signature.take(12)}…")
                                         status = Status.Sent(sent.signature)
@@ -468,7 +467,7 @@ class MainActivity : ComponentActivity() {
         val sig = t.signature ?: return
         runCatching {
             startActivity(Intent(Intent.ACTION_VIEW,
-                android.net.Uri.parse(Chain.explorerUrl(sig, mainnet = t.kind == History.Kind.SHOP))))
+                android.net.Uri.parse(Chain.explorerUrl(sig))))
         }.onFailure { push("couldn't open the explorer") }
     }
 
@@ -1114,7 +1113,7 @@ class MainActivity : ComponentActivity() {
                                 // Filter at the keystroke so an unparseable value never reaches
                                 // the wire in the first place.
                                 onValueChange = { v -> if (v.length <= 12 && v.all { it.isDigit() || it == '.' }) amount = v },
-                                label = { Text("Amount (SOL, devnet)") },
+                                label = { Text("Amount (SOL)") },
                                 singleLine = true,
                                 isError = amountProblem != null,
                                 supportingText = amountProblem?.let { { Text(it, color = D.Danger) } },
@@ -1813,8 +1812,7 @@ private fun BalanceCard(
             // In dollars, because "total balance" is a question about money and SOL is not an
             // answer to it for most people.
             //
-            // **This is devnet SOL priced at the mainnet rate**, so the figure is notional —
-            // what the balance would be worth. It decides a label and nothing else; every
+            // Real SOL at the real rate: this figure is what it says it is.
             // amount that is actually paid is still counted in SOL or in the token itself.
             // When the price cannot be fetched the SOL figure is shown instead, rather than a
             // dollar sign in front of a number nobody checked.
@@ -3615,7 +3613,7 @@ private fun MainnetNote() {
     ) {
         HIcon(R.drawable.hi_info, D.Blue, 17.dp)
         Spacer(Modifier.width(8.dp))
-        Text("Paid with real USDC on mainnet — taps stay on devnet.",
+        Text("Real money on Solana mainnet.",
             color = D.Blue, fontSize = 12.5.sp, fontWeight = FontWeight.Medium)
     }
 }
@@ -3642,7 +3640,7 @@ private fun ShopSection(
         ) {
             HIcon(R.drawable.hi_info, D.Blue, 17.dp)
             Spacer(Modifier.width(8.dp))
-            Text("Paid with real USDC on mainnet — taps stay on devnet.",
+            Text("Real money on Solana mainnet.",
                 color = D.Blue, fontSize = 12.5.sp, fontWeight = FontWeight.Medium)
         }
         section.products.forEach { p ->

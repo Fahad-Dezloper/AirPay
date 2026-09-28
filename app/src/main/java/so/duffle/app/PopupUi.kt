@@ -770,7 +770,7 @@ private fun ConfirmBody(
             Value(peer.label.ifBlank { "Unknown phone" })
         }
         DetailRow("Address") { Value("${peer.address.take(6)}…${peer.address.takeLast(6)}") }
-        DetailRow("Network") { Value("Solana devnet") }
+        DetailRow("Network") { Value("Solana mainnet") }
         DetailRow("Network fee") { Value("~${Chain.fmtUnits(fee, 9)} SOL") }
         if (needsAccount == true) {
             DetailRow("New account") { Value("~${Chain.fmtUnits(setupLamports, 9)} SOL") }
@@ -937,7 +937,7 @@ private fun AddressRow(address: String) {
         Spacer(Modifier.width(6.dp))
         RoundIcon(R.drawable.hi_link_out, "View on explorer") {
             Haptics.select(context)
-            runCatching { uri.openUri("https://explorer.solana.com/address/$address?cluster=devnet") }
+            runCatching { uri.openUri("https://explorer.solana.com/address/$address") }
         }
     }
 }

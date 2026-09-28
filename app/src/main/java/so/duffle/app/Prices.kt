@@ -10,11 +10,9 @@ import java.net.URL
 /**
  * What a SOL is worth in dollars.
  *
- * **The balance is devnet SOL and devnet SOL is worth nothing.** This is the mainnet price
- * applied to a testnet balance, which makes the figure on the home screen notional — the number
- * that balance *would* be worth. That is the right call for a screen whose job is to show what
- * the product looks like, and the wrong one to carry into anything that spends money. Nothing
- * else in this app reads this: it decides a label, never an amount.
+ * The balance is mainnet SOL now, so this figure is no longer notional — it is what the money
+ * on screen is actually worth. It still only ever decides a label: every amount that moves is
+ * computed in lamports and never from this.
  *
  * Cached for five minutes in memory. A price that moves while somebody is looking at a home
  * screen is noise, and the only thing worse than a stale price here is a flickering one.

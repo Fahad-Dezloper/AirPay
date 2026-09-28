@@ -49,8 +49,10 @@ class Wallet(private val activity: ComponentActivity) {
             "AirPay",
         )
     ).apply {
-        // Devnet until the flow is proven end to end. Mainnet is a one-line change.
-        blockchain = Solana.Devnet
+        // Mainnet. The wallet has to be told, because it decides the cluster it signs for —
+        // and a wallet sitting on the other one fails a payment in a way that reads like a
+        // network fault rather than a mismatch.
+        blockchain = Solana.Mainnet
         token?.let { authToken = it }
     }
 

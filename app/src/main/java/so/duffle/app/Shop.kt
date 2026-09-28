@@ -11,9 +11,10 @@ import org.json.JSONObject
  * Solana address and an amount in base units, so **paying for a recharge is the payment path
  * this app already has**, pointed somewhere other than a person.
  *
- * **This is the one thing AirPay does on mainnet.** Bitrefill settles in real USDC; a devnet
- * transfer to that address would be a payment into nothing and a subscription that never
- * arrives. Every tap stays on devnet. The screen has to say which is which, every time.
+ * Bitrefill settles in real USDC — and so does everything else here now, because the whole app
+ * moved to mainnet and the shop is no longer the exception it was built as. The warning on the
+ * screen stays: money leaving for goods is worth saying out loud even when the tap beside it is
+ * equally real.
  */
 object Shop {
 
