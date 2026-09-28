@@ -192,6 +192,9 @@ class MainActivity : ComponentActivity() {
     /** True while a wallet is away getting a link signed, so the button can say so. */
     private var linking by mutableStateOf(false)
     private var renaming by mutableStateOf(false)
+    /** Where gift-card codes are also emailed, if anywhere. Optional, kept on this phone. */
+    private var myEmail by mutableStateOf<String?>(null)
+    private var editingEmail by mutableStateOf(false)
 
     /** UI mirrors of the two on-disk lists. Disk is the truth; these are re-read after writes. */
     private val notes = mutableStateListOf<Messages.Note>()
@@ -372,6 +375,9 @@ class MainActivity : ComponentActivity() {
                     product.id, value, phone,
                     refund = payer,
                     packageId = product.packages.firstOrNull { it.value == value }?.id,
+                    // Optional. Without it Bitrefill notifies the account that owns the API
+                    // key rather than the person who paid.
+                    email = Identity.email(this@MainActivity),
                 )
                 if (inv == null) {
                     status = Status.Problem("Couldn't get a price", "The shop didn't answer. Try again.")
@@ -624,6 +630,7 @@ class MainActivity : ComponentActivity() {
         inbox = Inbox(this)
         watch = Watch(this)
         myName = Identity.label(this)
+        myEmail = Identity.email(this)
         refreshLists()
         refreshWallets()
         Push.init(this)
@@ -804,6 +811,13 @@ class MainActivity : ComponentActivity() {
                                     watch.markRejected(ev.reference, ev.label); refreshLists()
                                     push("— ${ev.label.ifBlank { "They" }} declined ${ev.reference.take(8)}…")
                                     Haptics.failure(this@MainActivity)
+                                }
+                                is ServerClient.Shopped -> {
+                                    // Re-asks rather than believing the event. One path to a
+                                    // settled order whether the news came by push or polling,
+                                    // and the server is not the authority on Bitrefill anyway.
+                                    push("shop: ${ev.status}")
+                                    catchUpOrders()
                                 }
                                 is ServerClient.Messaged -> {
                                     if (messages.add(Messages.Note(ev.from, ev.body, ev.at, mine = false, id = ev.id))) {
@@ -1032,6 +1046,8 @@ class MainActivity : ComponentActivity() {
                                         section = sec,
                                         picked = shopProduct,
                                         onPick = { shopProduct = it },
+                                        email = myEmail,
+                                        onEmail = { editingEmail = true },
                                         onBuy = { p, v -> buy(p, v, sec.title) },
                                     )
                                 }
@@ -1302,6 +1318,18 @@ class MainActivity : ComponentActivity() {
                             refreshWallets()
                             applyMode(amount)
                             push("— removed ${w.name} ${w.short}")
+                        },
+                    )
+                }
+
+                if (editingEmail) {
+                    EmailDialog(
+                        current = myEmail.orEmpty(),
+                        onDismiss = { editingEmail = false },
+                        onSave = { e ->
+                            Identity.setEmail(this@MainActivity, e)
+                            myEmail = Identity.email(this@MainActivity)
+                            editingEmail = false
                         },
                     )
                 }
@@ -3665,6 +3693,85 @@ private fun Labelled(label: String, value: String, modifier: Modifier = Modifier
     }
 }
 
+/**
+ * Where codes go, asked once and only where it matters.
+ *
+ * Shown on shelves that deliver a code rather than crediting a number — a phone recharge has
+ * nowhere to email. Optional throughout: the code is shown in the app either way, and nobody
+ * should have to hand over an address to spend their own money. This is the copy that survives
+ * a reinstall, a lost phone, or not looking at the screen in the ten seconds after buying.
+ */
+@Composable
+private fun EmailRow(email: String?, onEdit: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().padding(bottom = 14.dp).clip(RoundedCornerShape(14.dp))
+            .background(D.Fill).clickable(onClick = onEdit)
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                if (email == null) "Codes are shown here only" else "Codes also emailed to",
+                color = D.Quiet, fontSize = 11.sp, fontWeight = FontWeight.SemiBold,
+            )
+            Spacer(Modifier.height(2.dp))
+            Text(
+                email ?: "Add an email for a copy",
+                color = if (email == null) D.Blue else D.Black,
+                fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Spacer(Modifier.width(8.dp))
+        Text(if (email == null) "Add" else "Change", color = D.Blue, fontSize = 12.sp,
+            fontWeight = FontWeight.Bold)
+    }
+}
+
+/** Collecting it. Blank clears, because "no email" has to stay reachable once one is set. */
+@Composable
+private fun EmailDialog(current: String, onDismiss: () -> Unit, onSave: (String) -> Unit) {
+    var text by rememberSaveable { mutableStateOf(current) }
+    val bad = text.isNotBlank() && !Identity.looksLikeEmail(text)
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = D.White,
+        title = { Text("Email for codes", color = D.Black) },
+        text = {
+            Column {
+                Text(
+                    "Gift-card codes are shown in this app when they arrive. An email is a " +
+                        "second copy, in case you close the app before reading one.",
+                    color = D.Quiet, fontSize = 13.sp, lineHeight = 18.sp,
+                )
+                Spacer(Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = it.trim() },
+                    singleLine = true,
+                    isError = bad,
+                    placeholder = { Text("you@example.com", color = D.Quiet) },
+                    supportingText = {
+                        Text(
+                            if (bad) "That does not look like an email address."
+                            else "Kept on this phone. Leave it empty for no email.",
+                            color = if (bad) D.Danger else D.Quiet,
+                        )
+                    },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onSave(text) }, enabled = !bad) {
+                Text("Save", color = D.Blue, fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel", color = D.Quiet) } },
+    )
+}
+
 /** The one line that has to be on every shop screen: this is the real-money corner of the app. */
 @Composable
 private fun MainnetNote() {
@@ -3692,6 +3799,8 @@ private fun ShopSection(
     section: Shop.Section,
     picked: Shop.Product?,
     onPick: (Shop.Product?) -> Unit,
+    email: String?,
+    onEmail: () -> Unit,
     onBuy: (Shop.Product, String) -> Unit,
 ) {
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
@@ -3708,6 +3817,11 @@ private fun ShopSection(
         // A short shelf opens itself. Four subscription services behind four taps is a list
         // pretending to be a menu; sixty-three shopping brands genuinely need collapsing.
         val alwaysOpen = section.products.size <= 6
+        // Only where a code is the thing being bought. A DTH recharge credits a set-top box
+        // and has nothing to email.
+        if (section.products.any { "online" in it.redemption }) {
+            EmailRow(email, onEmail)
+        }
         section.products.forEach { p ->
             val open = alwaysOpen || picked?.id == p.id
             Column(

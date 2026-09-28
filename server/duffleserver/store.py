@@ -111,6 +111,17 @@ class Store:
                     sent_at   REAL NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS by_recipient ON messages(recipient, sent_at);
+                -- Shop purchases, so a webhook has somewhere to land and somebody to tell.
+                -- The app keeps its own copy; this exists because Bitrefill calls US, not the
+                -- phone, and the phone is usually closed by then.
+                CREATE TABLE IF NOT EXISTS purchases (
+                    invoice_id TEXT PRIMARY KEY,
+                    buyer      TEXT,
+                    status     TEXT,
+                    code       TEXT,
+                    updated_at REAL
+                );
+
                 CREATE TABLE IF NOT EXISTS devices (
                     recipient  TEXT NOT NULL,
                     token      TEXT NOT NULL,
@@ -272,6 +283,42 @@ class Store:
     def open_count(self) -> int:
         with self._lock:
             return self._db.execute("SELECT COUNT(*) FROM requests WHERE status='open'").fetchone()[0]
+
+    # -- shop purchases ---------------------------------------------------------------------
+
+    def remember_purchase(self, invoice_id: str, buyer: str | None) -> None:
+        """Notes who bought what, at invoice time, so a later webhook knows who to tell."""
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO purchases(invoice_id,buyer,status,updated_at) VALUES (?,?,?,?) "
+                "ON CONFLICT(invoice_id) DO UPDATE SET buyer=COALESCE(excluded.buyer,buyer)",
+                (invoice_id, buyer, "created", time.time()),
+            )
+            self._db.commit()
+
+    def settle_purchase(self, invoice_id: str, status: str, code: str | None) -> tuple[str | None, bool]:
+        """Records what became of a purchase. Returns (buyer, changed).
+
+        `changed` is false when this is a repeat — Bitrefill retries webhooks and expects the
+        handler to be idempotent, and a buyer should not be notified twice for one delivery.
+
+        A code is never overwritten once stored.
+        """
+        with self._lock:
+            row = self._db.execute(
+                "SELECT buyer,status,code FROM purchases WHERE invoice_id=?", (invoice_id,)
+            ).fetchone()
+            buyer = row[0] if row else None
+            was_status, was_code = (row[1], row[2]) if row else (None, None)
+            changed = status != was_status or (code and not was_code)
+            self._db.execute(
+                "INSERT INTO purchases(invoice_id,buyer,status,code,updated_at) VALUES (?,?,?,?,?) "
+                "ON CONFLICT(invoice_id) DO UPDATE SET status=excluded.status, "
+                "code=COALESCE(purchases.code, excluded.code), updated_at=excluded.updated_at",
+                (invoice_id, buyer, status, code, time.time()),
+            )
+            self._db.commit()
+            return buyer, bool(changed)
 
     # -- devices ----------------------------------------------------------------------------
 

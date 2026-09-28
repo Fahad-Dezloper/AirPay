@@ -171,7 +171,8 @@ class Shop:
 
     def invoice(self, product_id: str, value, phone_number: str | None = None,
                 payment_method: str = "usdc_solana", refund_address: str | None = None,
-                package_id: str | None = None) -> dict:
+                package_id: str | None = None, email: str | None = None,
+                webhook_url: str | None = None) -> dict:
         """Asks for a price, and gets back somewhere to pay it.
 
         `auto_pay` is false on purpose: it would let an account balance settle the order without
@@ -201,6 +202,14 @@ class Shop:
         # there is nowhere to send it. It is the buyer's own wallet.
         if refund_address:
             body["refund_address"] = refund_address
+        # Who to tell. Without this Bitrefill notifies the account that owns the API key, which
+        # is not the person who paid.
+        if email:
+            body["email"] = email
+        # Where to be told. Bitrefill POSTs the finished invoice here instead of us polling for
+        # a minute and then giving up.
+        if webhook_url:
+            body["webhook_url"] = webhook_url
         data = self._post("/invoices", body).get("data") or {}
         pay = data.get("payment") or {}
         if not pay.get("address") or pay.get("price") is None:

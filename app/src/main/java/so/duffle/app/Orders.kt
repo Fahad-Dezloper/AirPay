@@ -56,8 +56,13 @@ class Orders(context: Context) {
         val status: String,
         val at: Long,
     ) {
-        val delivered get() = status == "delivered"
-        val failed get() = status == "failed" || status == "expired"
+        // Bitrefill's vocabulary, taken from the docs and a real invoice rather than guessed.
+        // An INVOICE is "not_delivered" until it reaches one of complete / denied /
+        // payment_error; an ORDER inside it is "created" until "delivered". Both words reach
+        // here, so both are honoured — and the old check for "delivered" alone would have sat
+        // on "complete" forever, polling a purchase that had already arrived.
+        val delivered get() = status == "complete" || status == "delivered"
+        val failed get() = status in setOf("denied", "payment_error", "failed", "expired")
         /** Still owed to us. The only state worth putting in front of someone. */
         val waiting get() = !delivered && !failed
     }

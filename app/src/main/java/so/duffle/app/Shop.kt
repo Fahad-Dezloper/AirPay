@@ -176,6 +176,7 @@ object Shop {
         phone: String? = null,
         refund: String? = null,
         packageId: String? = null,
+        email: String? = null,
     ): Invoice? {
         val o = ServerClient.ask("/v1/shop/invoice", JSONObject().apply {
             put("product_id", productId)
@@ -183,6 +184,7 @@ object Shop {
             packageId?.takeIf { it.isNotBlank() }?.let { put("package_id", it) }
             phone?.takeIf { it.isNotBlank() }?.let { put("phone_number", it) }
             refund?.takeIf { it.isNotBlank() }?.let { put("refund_address", it) }
+            email?.takeIf { it.isNotBlank() }?.let { put("email", it) }
         }) ?: return null
         val address = o.optString("address").takeIf { PayRequest.isBase58Address(it) } ?: return null
         val amount = o.optLong("amount", 0L).takeIf { it > 0 } ?: return null
@@ -238,7 +240,9 @@ object Shop {
      * one thing the purchase was for.
      */
     data class Delivery(val status: String, val code: String?) {
-        val delivered get() = status == "delivered"
+        /** See [Orders.Order.delivered] — the invoice says "complete", the order "delivered". */
+        val delivered get() = status == "complete" || status == "delivered"
+        val failed get() = status in setOf("denied", "payment_error", "failed", "expired")
     }
 
     suspend fun order(invoiceId: String): Delivery? {

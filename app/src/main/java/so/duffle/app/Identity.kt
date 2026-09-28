@@ -64,6 +64,42 @@ object Identity {
     }
 
     /**
+     * Where gift-card codes should be sent, if anywhere.
+     *
+     * Bitrefill notifies whoever the invoice names. With no email on it that is the account
+     * holding the API key — which is us, not the person who paid. The code is shown in the app
+     * either way; this is the copy that survives a reinstall, a lost phone, or simply not
+     * looking at the screen in the ten seconds after buying.
+     *
+     * Optional on purpose, and stored only on this phone. Nobody should have to hand over an
+     * address to spend their own money.
+     */
+    fun email(context: Context): String? =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString("email", null)
+            ?.takeIf { it.isNotBlank() }
+
+    fun setEmail(context: Context, email: String) {
+        val clean = email.trim().takeIf { looksLikeEmail(it) }
+        val e = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+        if (clean == null) e.remove("email") else e.putString("email", clean)
+        e.apply()
+    }
+
+    /**
+     * Shape only, and deliberately loose.
+     *
+     * The address is handed to Bitrefill, which will do its own validation; the job here is to
+     * catch a typo before somebody pays, not to adjudicate what an address may contain. Clever
+     * regexes reject real addresses.
+     */
+    fun looksLikeEmail(s: String): Boolean {
+        val t = s.trim()
+        val at = t.indexOf('@')
+        return at > 0 && at == t.lastIndexOf('@') && t.length > at + 3 &&
+            '.' in t.substring(at) && !t.any { it.isWhitespace() }
+    }
+
+    /**
      * The domain this wallet owns, remembered from the last successful lookup.
      *
      * Cached because the HCE service and the home screen both want it and neither can wait for

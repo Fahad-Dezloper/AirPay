@@ -4,6 +4,7 @@ are paid, and ring the payee. Everything network-facing is injected so tests run
 """
 from __future__ import annotations
 
+import json
 import logging
 import calendar
 import re
@@ -614,6 +615,39 @@ class Service:
     #: How often the look-back runs. Nothing it finds is urgent — the reward it might reverse
     #: is locked for a week — so this stays well away from the payment sweep.
     PATROL_EVERY = 10 * 60.0
+
+    def settle_shop(self, shop, invoice_id: str) -> None:
+        """What to do when Bitrefill says a purchase finished.
+
+        Called from the webhook, which is unsigned — so nothing here reads the POST body. The
+        invoice is fetched with our own key and that answer is the only one trusted.
+
+        Idempotent, because Bitrefill retries: a repeat settles to the same row, reports no
+        change, and nobody is told twice about one delivery.
+        """
+        try:
+            out = shop.order(invoice_id)
+        except Exception as e:                                   # noqa: BLE001
+            log.info("shop webhook %s: %s", invoice_id, e)
+            return
+        status = out.get("status") or ""
+        code = next((o.get("redemption") for o in out.get("orders") or []
+                     if o.get("redemption")), None)
+        if isinstance(code, (dict, list)):
+            code = json.dumps(code)
+        buyer, changed = self.store.settle_purchase(invoice_id, status, code)
+        if not changed or not buyer:
+            return
+        # Same road as every other notification: the live stream when the app is open, push
+        # when it is not — which is the usual case here, since delivery lands after the buyer
+        # has put the phone away.
+        self._deliver(buyer, {
+            "type": "shop",
+            "invoice": invoice_id,
+            "status": status,
+            "code": code,
+            "at": time.time(),
+        })
 
     def run_watcher(self, stop: threading.Event, every: float = 1.0) -> None:
         while not stop.is_set():

@@ -6,6 +6,7 @@ import json
 import logging
 import queue
 import re
+import os
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -191,11 +192,20 @@ def make_handler(service, helius_auth: str | None, limiter: RateLimit | None = N
                         return self._json(404, {"error": "unknown reference"})
                 if path == "/v1/shop/invoice":
                     try:
-                        return self._json(200, shop.invoice(
+                        public = os.environ.get("PUBLIC_URL")
+                        out = shop.invoice(
                             str(body.get("product_id") or ""), body.get("value"),
                             phone_number=body.get("phone_number") or None,
                             refund_address=body.get("refund_address") or None,
-                            package_id=body.get("package_id") or None))
+                            package_id=body.get("package_id") or None,
+                            email=body.get("email") or None,
+                            webhook_url=(public.rstrip("/") + "/v1/shop/webhook") if public else None)
+                        # Who bought it, so the webhook has somebody to tell. The refund address
+                        # is the buyer's own wallet, which is also how push is addressed.
+                        if out.get("invoice_id"):
+                            service.store.remember_purchase(
+                                out["invoice_id"], body.get("refund_address") or None)
+                        return self._json(200, out)
                     except Exception as e:
                         # Includes "out of stock" and "no such product", which are answers
                         # rather than faults — the app shows them as the reason it cannot buy.
@@ -207,6 +217,20 @@ def make_handler(service, helius_auth: str | None, limiter: RateLimit | None = N
                         # A lookup that cannot be made is not a failure worth blocking on: the
                         # app falls back to asking which network, which is what it did before.
                         return self._json(200, {"operator_found": False, "error": str(e)[:120]})
+                if path == "/v1/shop/webhook":
+                    # Bitrefill signs nothing, so the body is a NUDGE and never data: the only
+                    # thing taken from it is an invoice id, and the truth is then fetched with
+                    # our own API key. A forged POST achieves a wasted round trip and nothing
+                    # else — it cannot invent a delivery or a code.
+                    #
+                    # Answer immediately: the docs ask for 2xx inside five seconds and the
+                    # fetch-and-notify takes longer than that.
+                    invoice_id = str((body.get("data") or body).get("id") or "")
+                    if invoice_id:
+                        threading.Thread(
+                            target=service.settle_shop, args=(shop, invoice_id),
+                            name="shop-webhook", daemon=True).start()
+                    return self._json(200, {"ok": True})
                 if path == "/v1/shop/order":
                     try:
                         return self._json(200, shop.order(str(body.get("invoice_id") or "")))

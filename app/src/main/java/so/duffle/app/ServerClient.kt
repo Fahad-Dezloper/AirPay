@@ -51,6 +51,14 @@ object ServerClient {
     data class Deferred(val reference: String, val label: String, val amount: String) : Event
     /** A line of text from someone who has tapped this phone. See [Messages]. */
     data class Messaged(val from: String, val label: String, val body: String, val at: Long, val id: Long) : Event
+    /**
+     * A shop purchase finished, told to us by the server after Bitrefill called it.
+     *
+     * Carries the code, but the app re-asks rather than trusting it: the same catch-up that
+     * runs on every launch is the one path, so there is a single way an order becomes settled
+     * whether the news arrived by push or by polling.
+     */
+    data class Shopped(val invoice: String, val status: String) : Event
 
     /**
      * Tells the server to watch a request. Idempotent — both phones call it, the payee when
@@ -251,6 +259,11 @@ object ServerClient {
             TapCard(o.getString("address"), o.optString("label"), o.optString("genesis").takeIf { it.isNotBlank() },
                 o.optString("brand").takeIf { Brand.isKnown(it) })
                 .takeIf { it.validate() == null }?.let { Tapped(it) }
+        } catch (e: Exception) { null }
+        "shop" -> try {
+            val o = JSONObject(json)
+            o.getString("invoice").takeIf { it.isNotBlank() }
+                ?.let { Shopped(it, o.optString("status")) }
         } catch (e: Exception) { null }
         else -> null
     }
