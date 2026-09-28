@@ -929,7 +929,7 @@ class MainActivity : ComponentActivity() {
                             return@Column
                         }
 
-                        Tag("2", checking)
+                        Tag("2")
                         BalanceCard(
                             wallet = walletList.firstOrNull { it.address == connected },
                             others = walletList.filter { it.address != connected },
@@ -993,7 +993,7 @@ class MainActivity : ComponentActivity() {
                         // §2d — the breakdown behind the one figure above.
                         if (holdings.isNotEmpty()) {
                             Spacer(Modifier.height(18.dp))
-                            Tag("2d", checking)
+                            Tag("2d")
                             val rate by produceState<Double?>(initialValue = null) { value = Prices.solUsd() }
                             TokenBadges(holdings, rate) { mint ->
                                 clipboard.setText(AnnotatedString(mint))
@@ -1004,7 +1004,7 @@ class MainActivity : ComponentActivity() {
 
                         if (contactCount > 0) {
                             Spacer(Modifier.height(24.dp))
-                            Tag("3", checking)
+                            Tag("3")
                             People(
                                 list = contacts.all(),
                                 waiting = { addr ->
@@ -1021,7 +1021,7 @@ class MainActivity : ComponentActivity() {
 
                         if (Rewards.enabled) {
                             Spacer(Modifier.height(22.dp))
-                            Tag("4", checking)
+                            Tag("4")
                             EarnStrip(rewardSummary) { tab = Tab.REWARDS }
                             Spacer(Modifier.height(10.dp))
                             EarnTiles(
@@ -1035,7 +1035,7 @@ class MainActivity : ComponentActivity() {
                         }
                         if (shopSections.isNotEmpty()) {
                             Spacer(Modifier.height(22.dp))
-                            Tag("5", checking)
+                            Tag("5")
                             Text("Pay a bill", color = D.Black, fontSize = 17.sp,
                                 fontWeight = FontWeight.Bold, modifier = Modifier.padding(vertical = 4.dp))
                             Spacer(Modifier.height(10.dp))
@@ -1048,7 +1048,7 @@ class MainActivity : ComponentActivity() {
 
                         if (history.isNotEmpty()) {
                             Spacer(Modifier.height(22.dp))
-                            Tag("6", checking)
+                            Tag("6")
                             HistoryStrip(
                                 list = history,
                                 onViewAll = {
@@ -2629,7 +2629,7 @@ private fun Header(
     onProfile: () -> Unit,
 ) {
     Column {
-        Tag("1", checking)
+        Tag("1")
         Row(verticalAlignment = Alignment.CenterVertically) {
             // Their initial rather than a generic silhouette: this app already draws every
             // OTHER person as a letter in a circle, and drawing yourself the same way says
@@ -3193,11 +3193,11 @@ private fun PayBar(modifier: Modifier, onTap: () -> Unit, onScan: () -> Unit) {
             Modifier.fillMaxWidth().height(28.dp)
                 .background(Brush.verticalGradient(listOf(Color.Transparent, D.White))),
         )
+        Row(Modifier.background(D.White).padding(start = 20.dp)) { Tag("7") }
         Row(
             Modifier.fillMaxWidth().background(D.White).padding(horizontal = 20.dp),
             horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            // §7 — see SECTIONS.md. Shown with the rest of them.
 
             PayChoice("Pay via Tap", R.drawable.hi_nfc, filled = true, modifier = Modifier.weight(1f), onClick = onTap)
             PayChoice("Scan any QR", R.drawable.hi_qr, filled = false, modifier = Modifier.weight(1f), onClick = onScan)
@@ -3744,13 +3744,18 @@ private fun refusalText(why: String): String = when (why) {
 }
 
 /**
- * A section's number, shown on the device so a change can be asked for by number instead of
- * described. Debug switch only — it rides on `checking`, the same long-press that shows
- * diagnostics, and never appears otherwise. The map is in SECTIONS.md.
+ * A section's number, from SECTIONS.md, so a change can be asked for by number instead of
+ * described.
+ *
+ * **Always on in a debug build**, and never present in a release — BuildConfig.DEBUG is a
+ * compile-time constant, so R8 strips these calls entirely rather than shipping a branch that
+ * is never taken. It used to ride on `checking`, the long-press that shows the exchange log,
+ * which meant the numbers were invisible unless you remembered a gesture — and a label you
+ * have to summon is a label you will assume was deleted.
  */
 @Composable
-private fun Tag(n: String, on: Boolean) {
-    if (!on) return
+private fun Tag(n: String) {
+    if (!BuildConfig.DEBUG) return
     Text(
         "§$n", color = D.White, fontSize = 10.sp, fontWeight = FontWeight.Bold, style = Figures,
         modifier = Modifier.padding(top = 2.dp)
