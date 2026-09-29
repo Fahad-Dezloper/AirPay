@@ -233,7 +233,21 @@ class Shop:
         # a minute and then giving up.
         if webhook_url:
             body["webhook_url"] = webhook_url
-        data = self._post("/invoices", body).get("data") or {}
+        try:
+            data = self._post("/invoices", body).get("data") or {}
+        except RuntimeError as e:
+            # A webhook is a convenience. Bitrefill validates the URL — it appears to probe it —
+            # and refuses the WHOLE invoice with `webhook_url doesn't seem to be valid` when it
+            # cannot be reached. A quick tunnel changes hostname whenever it reconnects, so a
+            # stale PUBLIC_URL stopped every purchase in the app until this was found.
+            #
+            # Nothing optional is allowed to block a sale. Drop it and buy anyway; the polling
+            # that predates the webhook still settles the order.
+            if "webhook_url" not in str(e) or "webhook_url" not in body:
+                raise
+            log.info("webhook_url refused (%s) — buying without it", str(e)[-80:])
+            body.pop("webhook_url")
+            data = self._post("/invoices", body).get("data") or {}
         pay = data.get("payment") or {}
         if not pay.get("address") or pay.get("price") is None:
             raise RuntimeError("that invoice came back without somewhere to pay it")
