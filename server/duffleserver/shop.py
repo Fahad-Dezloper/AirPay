@@ -19,8 +19,10 @@ failures if you do not know them:
 """
 from __future__ import annotations
 
+import html
 import json
 import logging
+import re
 import threading
 import time
 import urllib.error
@@ -28,6 +30,29 @@ import urllib.parse
 import urllib.request
 
 log = logging.getLogger("duffle.shop")
+
+
+def clean_text(raw: str | None) -> str | None:
+    """Bitrefill's copy as plain text.
+
+    Eighty-nine of the catalogue's hundred and fifty-eight products carry HTML in their
+    description — `<p>`, `<strong>`, inline `style` attributes, `&amp;` — because it is written
+    for a web page. Rendered verbatim on a phone it reads as markup, which is what somebody saw.
+
+    Deliberately not a parser. It turns the tags that mean "new line" into new lines, drops the
+    rest, unescapes the entities and collapses the whitespace that formatting the source left
+    behind. Anything more would be pretending to understand documents we do not control.
+    """
+    if not raw:
+        return None
+    t = re.sub(r"(?i)<\s*br\s*/?>|</\s*(p|div|li|tr|h[1-6])\s*>", "\n", raw)
+    t = re.sub(r"(?i)<\s*li[^>]*>", "\u2022 ", t)
+    t = re.sub(r"<[^>]+>", "", t)
+    t = html.unescape(t)
+    t = t.replace("\u00a0", " ").replace("\t", " ")
+    t = re.sub(r"[ \u2000-\u200b]+", " ", t)
+    t = re.sub(r"\n\s*\n\s*\n+", "\n\n", t)
+    return "\n".join(line.strip() for line in t.split("\n")).strip() or None
 
 API = "https://api.bitrefill.com/v2"
 
@@ -119,7 +144,11 @@ class Shop:
                 break
             out += rows
             start += len(rows)
-        return [self._trim(p) for p in out if p.get("in_stock")]
+        # Raw, not trimmed. The full description and terms are ~286 KB across the catalogue —
+        # far too much to send to a phone that is drawing a grid of tiles, and exactly what is
+        # wanted the moment somebody opens one product. Keeping them here means [details] costs
+        # no extra call to Bitrefill.
+        return [p for p in out if p.get("in_stock")]
 
     @staticmethod
     def _trim(p: dict) -> dict:
@@ -133,15 +162,9 @@ class Shop:
             # What the buyer has to supply: a phone number, an account, or nothing at all.
             "recipient": p.get("recipient_type") or "none",
             "redemption": p.get("redemption_methods") or [],
-            # Where the code is actually used, in the brand's own words. Dropping these meant
-            # the app could say "Code delivered to you" and nothing about what to do with it —
-            # BookMyShow's own terms say a voucher works only in their app and NOT at the
-            # cinema counter, which is exactly the thing somebody needs to know beforehand.
-            #
-            # Trimmed: full terms across 156 products would triple the catalogue for text
-            # nobody reads past the first sentences.
-            "terms": (p.get("termsAndConditions") or "")[:400].strip() or None,
-            "about": (p.get("description") or "")[:240].strip() or None,
+            # The full description and terms are NOT here. They are fetched per product when
+            # somebody opens one — see [details]. Sending them with the catalogue meant cutting
+            # them to 400 characters, which ended sentences mid-word.
             "values": [pk.get("value") for pk in (p.get("packages") or []) if pk.get("value")],
             # The same packages carrying what they cost, because a screen that asks somebody to
             # CHOOSE needs it: "2GB/Day 5G Plan - 84 Days" is not something anyone can pick
@@ -166,9 +189,25 @@ class Shop:
     #: The Cinema shelf, by id. See the SECTIONS note.
     CINEMA = ("pvr-cinemas-india", "bookmyshow-voucher-india")
 
+    def details(self, product_id: str) -> dict:
+        """The full text for one product, from the cache the catalogue was built from.
+
+        Served separately because it is only wanted once somebody has chosen something, and
+        because sending it with the catalogue would multiply the response by an order of
+        magnitude for text nobody reads while scrolling tiles.
+        """
+        for p in self.products():
+            if p.get("id") == product_id:
+                return {
+                    "id": product_id,
+                    "about": clean_text(p.get("description")),
+                    "terms": clean_text(p.get("termsAndConditions")),
+                }
+        return {"id": product_id}
+
     def sections(self) -> list[dict]:
         """The catalogue grouped the way someone shops for it, not the way a shop files it."""
-        items = self.products()
+        items = [self._trim(p) for p in self.products()]
         seen: set[str] = set()
         out = []
         cinema = [p for p in items if p["id"] in self.CINEMA]

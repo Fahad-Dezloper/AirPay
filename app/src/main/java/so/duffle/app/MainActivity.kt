@@ -3983,15 +3983,24 @@ private fun ShopSection(
                     }
                     HIcon(if (open) R.drawable.hi_arrow_down else R.drawable.hi_arrow_up_right, D.Quiet, 17.dp)
                 }
-                // What to do with the code, in the brand's own words. Only on an opened row:
-                // it is a paragraph, and it matters at the moment of choosing rather than
-                // while scrolling past.
-                if (open && (p.terms != null || p.about != null)) {
-                    Spacer(Modifier.height(10.dp))
-                    Text(
-                        (p.terms ?: p.about)!!,
-                        color = D.Quiet, fontSize = 11.5.sp, lineHeight = 16.sp,
-                    )
+                // What this is and what to do with the code, in the brand's own words.
+                //
+                // Fetched only when the row is open. The text runs to a couple of thousand
+                // characters per product and matters at the moment of choosing, not while
+                // scrolling past — and it is shown in full, because a voucher's terms cut off
+                // mid-sentence is exactly the half somebody needed.
+                if (open) {
+                    val info by produceState<Shop.Details?>(null, p.id) { value = Shop.details(p.id) }
+                    info?.takeIf { !it.empty }?.let { d ->
+                        Spacer(Modifier.height(10.dp))
+                        d.about?.let {
+                            Text(it, color = D.Quiet, fontSize = 11.5.sp, lineHeight = 16.sp)
+                        }
+                        d.terms?.let {
+                            if (d.about != null) Spacer(Modifier.height(8.dp))
+                            Text(it, color = D.Quiet, fontSize = 11.5.sp, lineHeight = 16.sp)
+                        }
+                    }
                 }
                 // The denominations only appear for the row that was opened, because 156
                 // products with every price showing is a list nobody reads.

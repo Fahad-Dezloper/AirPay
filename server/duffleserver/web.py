@@ -217,6 +217,11 @@ def make_handler(service, helius_auth: str | None, limiter: RateLimit | None = N
                         # A lookup that cannot be made is not a failure worth blocking on: the
                         # app falls back to asking which network, which is what it did before.
                         return self._json(200, {"operator_found": False, "error": str(e)[:120]})
+                if path == "/v1/shop/product":
+                    try:
+                        return self._json(200, shop.details(str(body.get("product_id") or "")))
+                    except Exception as e:
+                        return self._json(200, {"error": str(e)[:120]})
                 if path == "/v1/shop/webhook":
                     # Bitrefill signs nothing, so the body is a NUDGE and never data: the only
                     # thing taken from it is an invoice id, and the truth is then fetched with

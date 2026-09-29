@@ -36,15 +36,7 @@ object Shop {
         val categories: List<String> = emptyList(),
         /** Bitrefill's image id, e.g. "hotstar-svg". See [logoUrl]. */
         val image: String? = null,
-        /**
-         * Where the code is used, in the brand's own words.
-         *
-         * The app can say a code is coming and say nothing about what to do with it, which is
-         * how somebody ends up at a cinema counter holding a BookMyShow voucher that their own
-         * terms say only works in the app.
-         */
-        val terms: String? = null,
-        val about: String? = null,
+
         /** The denominations on offer, in the product's own currency. */
         val values: List<String>,
         /** The same denominations with what each costs. See [Package]. */
@@ -146,8 +138,6 @@ object Shop {
         currency = j.optString("currency", "INR"),
         recipient = j.optString("recipient", "none"),
         image = j.optString("image").takeIf { it.isNotBlank() },
-        terms = j.optString("terms").takeIf { it.isNotBlank() },
-        about = j.optString("about").takeIf { it.isNotBlank() },
         categories = j.optJSONArray("categories").let { a ->
             (0 until (a?.length() ?: 0)).map { a!!.optString(it) }
         },
@@ -234,6 +224,36 @@ object Shop {
         if (!o.optBoolean("operator_found", false)) return Operator.Unknown
         val j = o.optJSONObject("product") ?: return Operator.Unknown
         return Operator.Found(product(j))
+    }
+
+    /**
+     * The full description and terms for one product.
+     *
+     * Fetched when somebody opens a product rather than shipped with the catalogue: across a
+     * hundred and fifty-eight products this text runs to about 286 KB, which is not worth
+     * sending to draw a grid of tiles. Cutting it down to fit was the other option and it ended
+     * sentences mid-word — losing exactly the half of a voucher's terms somebody needed.
+     *
+     * Already plain text on arrival. Eighty-nine of the catalogue's products write their copy
+     * as HTML for a web page, and the server strips it.
+     */
+    data class Details(val about: String?, val terms: String?) {
+        val empty get() = about == null && terms == null
+    }
+
+    private val detailCache = mutableMapOf<String, Details>()
+
+    suspend fun details(productId: String): Details? {
+        synchronized(detailCache) { detailCache[productId] }?.let { return it }
+        val o = ServerClient.ask("/v1/shop/product", JSONObject().apply {
+            put("product_id", productId)
+        }, timeoutMs = 15_000) ?: return null
+        val d = Details(
+            about = o.optString("about").takeIf { it.isNotBlank() },
+            terms = o.optString("terms").takeIf { it.isNotBlank() },
+        )
+        synchronized(detailCache) { detailCache[productId] = d }
+        return d
     }
 
     /**
