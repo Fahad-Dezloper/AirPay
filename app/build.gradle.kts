@@ -87,6 +87,8 @@ dependencies {
     implementation("androidx.camera:camera-camera2:1.6.0")
     implementation("androidx.camera:camera-view:1.6.0")
     implementation("com.google.mlkit:barcode-scanning:17.3.0")
+    // ML Kit reads QR codes but cannot write one, and the receive sheet has to draw ours.
+    implementation("com.google.zxing:core:3.5.3")
     testImplementation("junit:junit:4.13.2")
     // Android stubs org.json in unit tests, so JSONObject.put() throws "not mocked".
     // The real implementation makes the wire-format tests run on the JVM.
