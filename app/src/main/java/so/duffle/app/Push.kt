@@ -120,8 +120,8 @@ object Push {
     fun showRejected(context: Context, who: String) {
         notify(
             context, CHANNEL_TAPS, "Taps", tapId("rejected$who"),
-            title = "$who declined your request",
-            text = "Nothing was paid.",
+            title = "Payment declined",
+            text = "$who declined · nothing was paid",
             open = Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
             publicText = "A request was declined",
         )

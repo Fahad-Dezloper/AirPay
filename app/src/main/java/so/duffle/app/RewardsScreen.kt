@@ -223,10 +223,10 @@ private fun RewardsHero(s: Rewards.Summary, isSeeker: Boolean) {
         }
         Column(Modifier.padding(20.dp)) {
             Row(verticalAlignment = Alignment.Bottom) {
-                Text("${s.total}", color = D.Blue, fontSize = 40.sp, fontWeight = FontWeight.Bold,
+                Text("${s.total}", color = D.BlueInk, fontSize = 40.sp, fontWeight = FontWeight.Bold,
                     style = Figures)
                 Spacer(Modifier.width(6.dp))
-                Text("SKR", color = D.Blue, fontSize = 16.sp, fontWeight = FontWeight.SemiBold,
+                Text("SKR", color = D.BlueInk, fontSize = 16.sp, fontWeight = FontWeight.SemiBold,
                     modifier = Modifier.padding(bottom = 6.dp))
             }
             Text("Total rewards", color = D.Black, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
@@ -353,10 +353,10 @@ private fun RevealedFace(row: Rewards.Row, reversed: Boolean) {
     ) {
         Text(
             if (reversed) "−${row.skr}" else "+${row.skr}",
-            color = if (reversed) D.Quiet else D.Blue,
+            color = if (reversed) D.Quiet else D.BlueInk,
             fontSize = 26.sp, fontWeight = FontWeight.Bold, style = Figures,
         )
-        Text("SKR", color = if (reversed) D.Quiet else D.Blue, fontSize = 12.sp,
+        Text("SKR", color = if (reversed) D.Quiet else D.BlueInk, fontSize = 12.sp,
             fontWeight = FontWeight.SemiBold)
         Spacer(Modifier.height(6.dp))
         Text(Rewards.nameOf(row.kind), color = D.Black, fontSize = 12.sp,
@@ -370,7 +370,7 @@ private fun RevealedFace(row: Rewards.Row, reversed: Boolean) {
                 row.state == "locked" -> "locked"
                 else -> "yours"
             },
-            color = if (reversed) D.Danger else D.Quiet, fontSize = 11.sp,
+            color = if (reversed) D.DangerInk else D.Quiet, fontSize = 11.sp,
         )
     }
 }
@@ -413,7 +413,7 @@ private fun WeekProgress(s: Rewards.Summary) {
         Row {
             Text("Left in this week's pool", color = D.Quiet, fontSize = 12.sp, modifier = Modifier.weight(1f))
             Text(if (s.poolLeft > 0) "${s.poolLeft} SKR" else "empty — nothing earns until it refills",
-                color = if (s.poolLeft > 0) D.Black else D.Danger, fontSize = 12.sp, style = Figures)
+                color = if (s.poolLeft > 0) D.Black else D.DangerInk, fontSize = 12.sp, style = Figures)
         }
     }
 }
@@ -441,7 +441,7 @@ private fun EarnDoor(title: String, detail: String, onOpen: () -> Unit) {
             Text(title, color = D.Black, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
             Text(detail, color = D.Quiet, fontSize = 12.sp)
         }
-        Text("Open", color = D.Blue, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+        Text("Open", color = D.BlueInk, fontSize = 14.sp, fontWeight = FontWeight.Bold)
     }
 }
 
@@ -470,7 +470,7 @@ private fun InviteCard(onInvite: () -> Unit) {
             Text("Invite a friend", color = D.Black, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
             Text("They tap, you both earn", color = D.Quiet, fontSize = 12.sp)
         }
-        Text("Invite", color = D.Blue, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+        Text("Invite", color = D.BlueInk, fontSize = 14.sp, fontWeight = FontWeight.Bold)
     }
 }
 

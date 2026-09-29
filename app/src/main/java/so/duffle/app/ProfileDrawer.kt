@@ -201,7 +201,7 @@ internal fun ProfileDrawer(
                         )
                         if (isSeeker) {
                             Spacer(Modifier.width(6.dp))
-                            HIcon(R.drawable.hi_verified, D.Blue, 16.dp)
+                            HIcon(R.drawable.hi_verified, D.BlueInk, 16.dp)
                         }
                     }
                     Spacer(Modifier.height(1.dp))
@@ -286,7 +286,7 @@ internal fun ProfileDrawer(
                         Text("${address.take(10)}…${address.takeLast(6)}", color = D.Black,
                             fontSize = 13.sp, fontWeight = FontWeight.SemiBold, style = Figures)
                     }
-                    Text("Copy", color = D.Blue, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    Text("Copy", color = D.BlueInk, fontSize = 13.sp, fontWeight = FontWeight.Bold)
                 }
 
                 Spacer(Modifier.height(10.dp))
@@ -342,7 +342,7 @@ private fun Nudge(title: String, detail: String, onAct: () -> Unit) {
             Text(title, color = D.Black, fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold)
             Text(detail, color = D.Quiet, fontSize = 11.5.sp)
         }
-        Text("Set", color = D.Blue, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+        Text("Set", color = D.BlueInk, fontSize = 13.sp, fontWeight = FontWeight.Bold)
     }
 }
 

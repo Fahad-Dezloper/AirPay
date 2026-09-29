@@ -221,7 +221,7 @@ private fun HowToReferPill(onOpen: () -> Unit) {
                 strokeWidth = size.minDimension * .10f, cap = StrokeCap.Round)
         }
         Spacer(Modifier.width(8.dp))
-        Text("How to refer", color = D.Blue, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+        Text("How to refer", color = D.BlueInk, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
     }
 }
 
@@ -274,7 +274,7 @@ private fun ReferHero(s: Referrals.Summary, onShare: () -> Unit) {
                     .background(Color.White).clickable(interaction, indication = null, onClick = onShare)
                     .padding(horizontal = 20.dp, vertical = 12.dp),
             ) {
-                Text("Share your code  →", color = D.Blue, fontSize = 15.sp,
+                Text("Share your code  →", color = D.BlueInk, fontSize = 15.sp,
                     fontWeight = FontWeight.Bold)
             }
             Spacer(Modifier.height(12.dp))
@@ -324,7 +324,7 @@ private fun Progress(s: Referrals.Summary) {
             "${s.earned}" to "SKR earned",
         ).forEachIndexed { i, (n, label) ->
             Column(Modifier.weight(1f)) {
-                Text(n, color = if (i == 2) D.Blue else D.Black, fontSize = 20.sp,
+                Text(n, color = if (i == 2) D.BlueInk else D.Black, fontSize = 20.sp,
                     fontWeight = FontWeight.Bold, style = Figures)
                 Text(label, color = D.Quiet, fontSize = 12.sp)
             }
@@ -344,7 +344,7 @@ private fun InvitedRow(p: Referrals.Person, reward: Int) {
                 if (p.paid) D.Blue.copy(alpha = .14f) else D.Line, CircleShape),
             contentAlignment = Alignment.Center,
         ) {
-            Text(p.address.take(1), color = if (p.paid) D.Blue else D.Quiet, fontSize = 15.sp,
+            Text(p.address.take(1), color = if (p.paid) D.BlueInk else D.Quiet, fontSize = 15.sp,
                 fontWeight = FontWeight.Bold)
         }
         Spacer(Modifier.width(12.dp))
@@ -359,7 +359,7 @@ private fun InvitedRow(p: Referrals.Person, reward: Int) {
                 color = D.Quiet, fontSize = 12.sp,
             )
         }
-        Text(if (p.paid) "+$reward" else "—", color = if (p.paid) D.Blue else D.Quiet,
+        Text(if (p.paid) "+$reward" else "—", color = if (p.paid) D.BlueInk else D.Quiet,
             fontSize = 14.sp, fontWeight = FontWeight.Bold, style = Figures)
     }
 }
@@ -405,7 +405,7 @@ private fun HaveACode(
                 Text("Have a code?", color = D.Black, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
                 Text("Enter it before your first payment", color = D.Quiet, fontSize = 12.sp)
             }
-            Text(if (open) "▴" else "▾", color = D.Blue, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+            Text(if (open) "▴" else "▾", color = D.BlueInk, fontSize = 14.sp, fontWeight = FontWeight.Bold)
         }
         AnimatedVisibility(open) {
             Column(Modifier.padding(top = 12.dp)) {
@@ -427,7 +427,7 @@ private fun HaveACode(
                 )
                 problem?.let {
                     Spacer(Modifier.height(6.dp))
-                    Text(it, color = D.Danger, fontSize = 12.sp)
+                    Text(it, color = D.DangerInk, fontSize = 12.sp)
                 }
                 Spacer(Modifier.height(10.dp))
                 PrimaryButton("Use this code", onClaim, enabled = code.length == 8 && !claiming,

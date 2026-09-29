@@ -299,7 +299,7 @@ private fun OfferMark(app: String, dim: Boolean) {
             if (dim) D.Line else D.Blue.copy(alpha = .12f), CircleShape),
         contentAlignment = Alignment.Center,
     ) {
-        Text(app.take(1).uppercase(), color = if (dim) D.Quiet else D.Blue, fontSize = 17.sp,
+        Text(app.take(1).uppercase(), color = if (dim) D.Quiet else D.BlueInk, fontSize = 17.sp,
             fontWeight = FontWeight.Bold)
     }
 }
@@ -344,7 +344,7 @@ internal fun OfferSheet(
                     color = D.Quiet, fontSize = 12.sp,
                 )
             }
-            Text("${offer.reward} SKR", color = D.Blue, fontSize = 18.sp,
+            Text("${offer.reward} SKR", color = D.BlueInk, fontSize = 18.sp,
                 fontWeight = FontWeight.Bold, style = Figures)
         }
         Spacer(Modifier.height(16.dp))
@@ -358,7 +358,7 @@ internal fun OfferSheet(
         Spacer(Modifier.height(16.dp))
         when {
             offer.state == "paid" ->
-                Text("✓ Earned ${offer.earned} SKR", color = D.Blue, fontSize = 14.sp,
+                Text("✓ Earned ${offer.earned} SKR", color = D.BlueInk, fontSize = 14.sp,
                     fontWeight = FontWeight.SemiBold)
             offer.state == "expired" ->
                 Text("The window closed. Claim it again to restart the clock.",
@@ -372,7 +372,7 @@ internal fun OfferSheet(
                     color = D.Quiet, fontSize = 13.sp)
             else -> {
                 problem?.let {
-                    Text(it, color = D.Danger, fontSize = 12.5.sp)
+                    Text(it, color = D.DangerInk, fontSize = 12.5.sp)
                     Spacer(Modifier.height(8.dp))
                 }
                 PrimaryButton("Claim this offer", onClaim, enabled = !claiming, loading = claiming)

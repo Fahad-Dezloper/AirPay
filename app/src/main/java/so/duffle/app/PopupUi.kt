@@ -450,7 +450,7 @@ private fun PeerHeader(
                     modifier = Modifier.weight(1f, fill = false))
                 if (seeker) {
                     Spacer(Modifier.width(5.dp))
-                    HIcon(R.drawable.hi_verified, D.Blue, 20.dp)
+                    HIcon(R.drawable.hi_verified, D.BlueInk, 20.dp)
                 }
             }
             Text("${peer.address.take(6)}…${peer.address.takeLast(6)}", color = D.Quiet, fontSize = 14.sp, maxLines = 1)
@@ -648,7 +648,7 @@ private fun Entry(
         AmountDisplay(asked, null, peer.request.symbol, centred = true)
         RewardLine(reward)
         Spacer(Modifier.height(24.dp))
-        PrimaryButton(working ?: "Pay $asked ${peer.request.symbol}", onReview,
+        PrimaryButton(working ?: "Pay", onReview,
             Modifier.fillMaxWidth().shared("primary", bounds = true), loading = working != null)
         // Two different answers: "Later" keeps it in Requests and tells them nothing; "Decline"
         // is a no, and their phone is told so they stop waiting.
@@ -695,11 +695,11 @@ private fun Entry(
     }
     Spacer(Modifier.height(16.dp))
     PrimaryButton(
-        working ?: if (valid) "Pay $amount ${chosen.symbol}" else "Pay",
+        working ?: "Pay",
         onReview, Modifier.fillMaxWidth().shared("primary", bounds = true), enabled = valid && enough, loading = working != null,
     )
     AnimatedVisibility(visible = working == null) {
-        TextLink("Request instead", { onRequest(amount, chosen) }, enabled = valid, modifier = Modifier.shared("secondary", bounds = true))
+        TextLink("Ask instead", { onRequest(amount, chosen) }, enabled = valid, modifier = Modifier.shared("secondary", bounds = true))
     }
 }
 
@@ -810,11 +810,11 @@ private fun RewardLine(reward: Rewards.Preview?) {
                 .padding(horizontal = 12.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            HIcon(if (earns) R.drawable.hi_gift else R.drawable.hi_info, if (earns) D.Blue else D.Quiet, 18.dp)
+            HIcon(if (earns) R.drawable.hi_gift else R.drawable.hi_info, if (earns) D.BlueInk else D.Quiet, 18.dp)
             Spacer(Modifier.width(8.dp))
             Text(
                 if (earns) "Earns ${reward?.skr} SKR" else why.orEmpty(),
-                color = if (earns) D.Blue else D.Quiet,
+                color = if (earns) D.BlueInk else D.Quiet,
                 fontSize = 14.sp, fontWeight = if (earns) FontWeight.SemiBold else FontWeight.Medium,
             )
         }
@@ -866,12 +866,12 @@ private fun AboutThem(
                 is Genesis.Check.Held -> {
                     Value("Verified Seeker")
                     Spacer(Modifier.width(5.dp))
-                    HIcon(R.drawable.hi_verified, D.Blue, 18.dp)
+                    HIcon(R.drawable.hi_verified, D.BlueInk, 18.dp)
                 }
                 Genesis.Check.Unreachable -> Value("Couldn't check")
                 // The one warning here: the phone claimed a Genesis token its wallet doesn't hold.
                 Genesis.Check.None -> if (peer.genesis != null) {
-                    Text("Claimed, not held", color = D.Danger, fontSize = 15.sp, fontWeight = FontWeight.Medium)
+                    Text("Claimed, not held", color = D.DangerInk, fontSize = 15.sp, fontWeight = FontWeight.Medium)
                 } else Value("Not a Seeker")
             }
         }
@@ -896,7 +896,7 @@ private fun AboutThem(
             when {
                 w == null -> Value("Checking…")
                 w.count < 0 -> Value("Couldn't check")
-                w.count == 0 -> Text("Brand new", color = D.Danger, fontSize = 15.sp, fontWeight = FontWeight.Medium)
+                w.count == 0 -> Text("Brand new", color = D.DangerInk, fontSize = 15.sp, fontWeight = FontWeight.Medium)
                 // Only the first thousand transactions are read, so a busier wallet is "before" that date.
                 else -> Value(w.firstMillis?.let { (if (w.count >= 1000) "Before " else "Since ") + fmt.format(java.util.Date(it)) } ?: "In use")
             }
@@ -1047,7 +1047,7 @@ private fun AmountDisplay(
             }
         }
         // Only speaks up when there's something to say, in a slot that never changes the sheet's height.
-        Text(note ?: "", color = if (warn) D.Danger else D.Quiet, fontSize = 13.sp, modifier = Modifier.height(16.dp))
+        Text(note ?: "", color = if (warn) D.DangerInk else D.Quiet, fontSize = 13.sp, modifier = Modifier.height(16.dp))
     }
 }
 
@@ -1109,7 +1109,7 @@ private class KeyPressNode(private val source: InteractionSource) : Modifier.Nod
 @Composable
 private fun ConnectBody(working: String?, onConnect: () -> Unit) {
     Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-        IconDisc(R.drawable.hi_wallet, D.Blue, D.Blue.copy(alpha = .1f))
+        IconDisc(R.drawable.hi_wallet, D.BlueInk, D.Blue.copy(alpha = .1f))
         Spacer(Modifier.height(14.dp))
         Text("Connect a wallet to pay or request", color = D.Black, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center)
         Spacer(Modifier.height(4.dp))
@@ -1137,9 +1137,9 @@ private fun WaitingBody(label: String, amount: String, symbol: String, note: Str
                     .padding(horizontal = 12.dp, vertical = 7.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                HIcon(R.drawable.hi_clock, D.Blue, 15.dp)
+                HIcon(R.drawable.hi_clock, D.BlueInk, 15.dp)
                 Spacer(Modifier.width(6.dp))
-                Text(note.orEmpty(), color = D.Blue, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                Text(note.orEmpty(), color = D.BlueInk, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
             }
         }
         Text(
@@ -1216,9 +1216,9 @@ private fun ResultBody(
     Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
         val mod = Modifier.graphicsLayer { scaleX = pop.value; scaleY = pop.value }
         when (kind) {
-            Result.Success -> IconDisc(R.drawable.hi_tick, D.White, D.Success, mod, size = 72.dp, icon = 38.dp)
+            Result.Success -> IconDisc(R.drawable.hi_tick, D.White, D.SuccessInk, mod, size = 72.dp, icon = 38.dp)
             Result.Calm -> IconDisc(R.drawable.hi_info, D.Black, D.Fill, mod, size = 72.dp, icon = 34.dp)
-            Result.Failed -> IconDisc(R.drawable.hi_alert, D.Danger, D.Danger.copy(alpha = .1f), mod, size = 72.dp, icon = 34.dp)
+            Result.Failed -> IconDisc(R.drawable.hi_alert, D.DangerInk, D.Danger.copy(alpha = .1f), mod, size = 72.dp, icon = 34.dp)
         }
         Spacer(Modifier.height(16.dp))
         Text(title, color = D.Black, fontSize = 22.sp, fontWeight = FontWeight.Bold)
@@ -1230,9 +1230,9 @@ private fun ResultBody(
                 Modifier.clip(RoundedCornerShape(10.dp)).clickable { onExplorer(signature) }.padding(horizontal = 10.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text("View on explorer", color = D.Blue, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                Text("View on explorer", color = D.BlueInk, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.width(4.dp))
-                HIcon(R.drawable.hi_arrow_up_right, D.Blue, 16.dp)
+                HIcon(R.drawable.hi_arrow_up_right, D.BlueInk, 16.dp)
             }
         }
         // Arrives seconds after the ✓, because the server only decides once the payment is on
@@ -1244,9 +1244,9 @@ private fun ResultBody(
                     .padding(horizontal = 14.dp, vertical = 9.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                HIcon(R.drawable.hi_gift, D.Blue, 18.dp)
+                HIcon(R.drawable.hi_gift, D.BlueInk, 18.dp)
                 Spacer(Modifier.width(7.dp))
-                Text("You earned ${earned?.skr ?: 0} SKR", color = D.Blue, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                Text("You earned ${earned?.skr ?: 0} SKR", color = D.BlueInk, fontSize = 15.sp, fontWeight = FontWeight.Bold)
             }
         }
 

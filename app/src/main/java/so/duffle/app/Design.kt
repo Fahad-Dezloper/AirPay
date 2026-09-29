@@ -47,6 +47,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -68,6 +69,10 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.ExperimentalTextApi
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.style.LineHeightStyle
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
@@ -96,20 +101,152 @@ internal val Arrive = spring<Float>(dampingRatio = 0.75f, stiffness = 158f)
 /** For anything that answers a finger: no overshoot, just quick. */
 internal val Snap = spring<Float>(dampingRatio = 1f, stiffness = 439f)
 
-/** Bricolage Grotesque for names and amounts; Figtree for everything else. Both variable fonts. */
-@OptIn(ExperimentalTextApi::class)
-private fun bricolage(w: Int) = Font(R.font.bricolage, FontWeight(w),
-    variationSettings = FontVariation.Settings(FontVariation.weight(w), FontVariation.Setting("opsz", 96f)))
+// ------------------------------------------------------------------------- type
+//
+// Four faces, each with one job. See ui/PORT.md §2 and ui/PROJECT.md §3.
+//
+//   Inter       everything that is words — body, headings, labels
+//   Geist       money, and only money
+//   Geist Mono  addresses, signatures, codes — things read character by character
+//   Bricolage   the "AirPay" wordmark, and currency symbols
+//
+// Figtree is retired; `figtree.ttf` can go once nothing references it.
 
 @OptIn(ExperimentalTextApi::class)
-private fun figtree(w: Int) = Font(R.font.figtree, FontWeight(w),
-    variationSettings = FontVariation.Settings(FontVariation.weight(w)))
+private fun variable(res: Int, w: Int, opsz: Float? = null) = Font(res, FontWeight(w),
+    variationSettings = FontVariation.Settings(
+        *listOfNotNull(
+            FontVariation.weight(w),
+            opsz?.let { FontVariation.Setting("opsz", it) },
+        ).toTypedArray(),
+    ))
 
-internal val Display = FontFamily(bricolage(700), bricolage(800))
-internal val Ui = FontFamily(figtree(400), figtree(500), figtree(600), figtree(700))
+private fun faces(res: Int, opsz: Float? = null, weights: List<Int> = listOf(400, 500, 600, 700, 800)) =
+    FontFamily(weights.map { variable(res, it, opsz) })
 
-/** Every amount uses tabular figures, so digits don't shift sideways as they change. */
+/**
+ * The wordmark only.
+ *
+ * Bricolage is a display face: it is doing a logo's job here, not a typeface's, and the plan is
+ * to replace the wordmark with a vector and drop the font.
+ */
+internal val Display = faces(R.font.bricolage, opsz = 96f, weights = listOf(700, 800))
+
+/** Everything that is words. Inter carries an `opsz` axis; 16 is its text optical size. */
+internal val Ui = faces(R.font.inter, opsz = 16f)
+
+/** Money, and only money. */
+internal val Figure = faces(R.font.geist)
+
+/** Addresses, signatures, gift-card codes — anything read one character at a time. */
+internal val Mono = faces(R.font.geist_mono, weights = listOf(400, 500))
+
+/**
+ * Currency symbols, and nothing else.
+ *
+ * A 24 KB subset of Bricolage holding only `$ ¢ £ ¥ € ₹ ₽ ₿ …`. On the web it simply sits first
+ * in the font stack and answers for those characters. Compose picks a font by **weight, not by
+ * which characters it contains**, so there is no stack to sit in — [currencyStyled] applies it
+ * per character instead.
+ */
+internal val CurrencyFace = faces(R.font.bricolage_currency, opsz = 96f, weights = listOf(400, 700, 800))
+
+/** The characters [currencyStyled] hands to Bricolage. */
+private val CURRENCY = "$¢£¥€₹₽₿₩₪₫₱₦₴₸₺₼₾﷼".toSet()
+
+/**
+ * An amount with its currency symbol set in Bricolage and the digits left alone.
+ *
+ * The Android-level answer is `Typeface.CustomFallbackBuilder`, which needs a `Context` and so
+ * cannot build a top-level `FontFamily`. This is the fallback ui/PORT.md §2 names, and it is
+ * enough: currency symbols only ever appear inside an amount.
+ */
+internal fun currencyStyled(text: String): AnnotatedString = buildAnnotatedString {
+    append(text)
+    text.forEachIndexed { i, c ->
+        if (c in CURRENCY) addStyle(SpanStyle(fontFamily = CurrencyFace), i, i + 1)
+    }
+}
+
+/**
+ * The type scale. Seven steps, and nothing between them.
+ *
+ * `lineHeightStyle` matches CSS leading — half the extra space above, half below, nothing
+ * trimmed — so a line box here is the same height as the same line in the sandbox.
+ */
+internal object Type {
+    private fun step(
+        family: FontFamily, size: Int, line: Int, weight: Int,
+        tracking: Float = 0f, tnum: Boolean = false,
+    ) = TextStyle(
+        fontFamily = family, fontSize = size.sp, lineHeight = line.sp,
+        fontWeight = FontWeight(weight), letterSpacing = tracking.sp,
+        fontFeatureSettings = if (tnum) "tnum" else null,
+        lineHeightStyle = LineHeightStyle(LineHeightStyle.Alignment.Center, LineHeightStyle.Trim.None),
+    )
+
+    /** Tags, badges, uppercase labels. */
+    val micro = step(Ui, 11, 14, 700, tracking = 1.5f)
+    /** Secondary lines, times, addresses. */
+    val caption = step(Ui, 13, 18, 400)
+    /** Row titles, sentences, inputs. */
+    val body = step(Ui, 15, 20, 500)
+    /** Section headings **and every button label** — white on blue needs 19sp bold. */
+    val heading = step(Ui, 19, 24, 700, tracking = -0.2f)
+    /** Screen and sheet titles, the success line. */
+    val title = step(Ui, 24, 28, 700, tracking = -0.4f)
+    /** The amount on a sheet, the rewards total. */
+    val amount = step(Figure, 40, 44, 700, tracking = -1f, tnum = true)
+    /** The balance and the keypad amount. **A maximum** — nothing is larger. */
+    val display = step(Figure, 60, 64, 800, tracking = -2f, tnum = true)
+    /** Addresses, signatures, codes. */
+    val mono = step(Mono, 13, 18, 500)
+}
+
+/**
+ * Tabular figures, so digits do not shift sideways as they change.
+ *
+ * Superseded by [Type.amount] and [Type.display], which also carry the right face and size.
+ * Kept because ~80 call sites still use it, and they move screen by screen.
+ */
 internal val Figures = TextStyle(fontFamily = Ui, fontFeatureSettings = "tnum")
+
+// ------------------------------------------------------------------------- space
+
+/**
+ * Space, by the job it does.
+ *
+ * With the containers gone, space is the only thing that groups content — so the roles are
+ * named rather than numbered. Heading-to-content is 12 against a 40 section gap, a ratio of
+ * 3.3, which is what makes grouping read without drawing a box around it.
+ */
+internal object Space {
+    /** A line and the line that qualifies it. */
+    val tight = 4.dp
+    /** An icon or avatar and its text; chips in a row. */
+    val inline = 12.dp
+    /** Top and bottom of a list row. One line is then 52dp, clear of the 48dp touch minimum. */
+    val row = 16.dp
+    /** A section heading and its first item. */
+    val lead = 12.dp
+    /** One section and the next. */
+    val section = 40.dp
+    /** The page's left and right. */
+    val gutter = 20.dp
+}
+
+/**
+ * How thick a mark's stroke is drawn, on the 24-unit grid.
+ *
+ * **The stroke follows the text, not the icon.** 1.5px on screen beside a caption, 2px above
+ * that — so an icon next to 13sp text has the same weight as the text, and the pair reads as
+ * one thing. Inside a status disc it is 2.75 on the grid, because that icon is carrying the
+ * meaning a colour-blind person reads and has to hold at a glance.
+ *
+ * Ported from `markStroke()` in ui/components/ui/Marks.tsx.
+ */
+internal fun markStroke(size: Dp, disc: Boolean = false): Float =
+    if (disc) 2.75f else (if (size <= 16.dp) 1.5f else 2f) * 24f / size.value
 
 @Composable
 internal fun HIcon(@DrawableRes id: Int, tint: Color, size: Dp = 24.dp, modifier: Modifier = Modifier) =
@@ -143,7 +280,7 @@ internal fun PrimaryButton(
     val bg by animateColorAsState(if (live) D.Blue else D.Blue.copy(alpha = .35f), label = "bg")
     val fg = D.White
     Box(
-        modifier.then(PressScale(interaction)).height(60.dp).clip(RoundedCornerShape(18.dp)).background(bg)
+        modifier.then(PressScale(interaction)).heightIn(min = 60.dp).clip(RoundedCornerShape(18.dp)).background(bg)
             .clickable(interaction, indication = null, enabled = enabled && !loading, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
@@ -157,12 +294,15 @@ internal fun PrimaryButton(
             },
             label = "label",
         ) { (text, spinning) ->
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                Modifier.padding(horizontal = 20.dp, vertical = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 if (spinning) {
                     CircularProgressIndicator(color = fg, strokeWidth = 2.dp, modifier = Modifier.size(16.dp))
                     Spacer(Modifier.width(10.dp))
                 }
-                Text(text, color = fg, fontSize = 18.sp, fontWeight = FontWeight.Bold, style = Figures)
+                Text(text, color = fg, style = Type.heading.copy(color = fg, fontFeatureSettings = "tnum"))
             }
         }
     }
@@ -172,7 +312,7 @@ internal fun PrimaryButton(
 internal fun SecondaryButton(label: String, onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true) {
     val interaction = remember { MutableInteractionSource() }
     Box(
-        modifier.then(PressScale(interaction)).height(52.dp).clip(RoundedCornerShape(16.dp)).background(D.Fill)
+        modifier.then(PressScale(interaction)).heightIn(min = 52.dp).clip(RoundedCornerShape(16.dp)).background(D.Fill)
             .clickable(interaction, indication = null, enabled = enabled, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
@@ -183,7 +323,7 @@ internal fun SecondaryButton(label: String, onClick: () -> Unit, modifier: Modif
 @Composable
 internal fun TextLink(label: String, onClick: () -> Unit, enabled: Boolean = true, modifier: Modifier = Modifier) {
     Box(
-        Modifier.padding(top = 6.dp).then(modifier).fillMaxWidth().height(48.dp).clip(RoundedCornerShape(14.dp))
+        Modifier.padding(top = 6.dp).then(modifier).fillMaxWidth().heightIn(min = 48.dp).clip(RoundedCornerShape(14.dp))
             .clickable(enabled = enabled, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) { Text(label, color = if (enabled) D.Black else D.Quiet, fontSize = 16.sp, fontWeight = FontWeight.Bold) }

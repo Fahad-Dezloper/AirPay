@@ -93,8 +93,8 @@ object Alerts {
             when {
                 e.paid -> out += Alert(Kind.RECEIVED, "$who paid you $money",
                     "Confirmed on-chain", e.paidAt ?: e.createdAt, e.peer)
-                e.rejected -> out += Alert(Kind.DECLINED, "${e.rejectedBy} declined your request",
-                    "$money — nothing was paid", e.createdAt, e.peer)
+                e.rejected -> out += Alert(Kind.DECLINED, "Payment declined",
+                    "${e.rejectedBy} declined · nothing was paid", e.createdAt, e.peer)
                 e.pending -> out += Alert(Kind.LATER, "${e.deferredBy} will pay later",
                     "$money — still watching for it", e.createdAt, e.peer)
             }

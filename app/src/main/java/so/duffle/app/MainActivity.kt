@@ -1,5 +1,9 @@
 package so.duffle.app
 
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.rememberTextMeasurer
 import android.Manifest
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -1245,7 +1249,7 @@ class MainActivity : ComponentActivity() {
                                 label = { Text("Amount (SOL)") },
                                 singleLine = true,
                                 isError = amountProblem != null,
-                                supportingText = amountProblem?.let { { Text(it, color = D.Danger) } },
+                                supportingText = amountProblem?.let { { Text(it, color = D.DangerInk) } },
                                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                                 modifier = Modifier.fillMaxWidth(),
                             )
@@ -1864,7 +1868,7 @@ private fun Banner(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(Modifier.weight(1f)) {
-            Text(title, color = tone, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+            Text(title, color = tone.ink, fontSize = 15.sp, fontWeight = FontWeight.Bold)
             if (detail.isNotBlank()) {
                 Spacer(Modifier.height(2.dp))
                 Text(detail, color = D.Quiet, fontSize = if (mono) 10.sp else 13.sp,
@@ -1891,12 +1895,12 @@ private fun WalletRow(
             .padding(horizontal = 14.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        HIcon(R.drawable.hi_wallet, if (address == null) D.Danger else D.Quiet, 18.dp)
+        HIcon(R.drawable.hi_wallet, if (address == null) D.DangerInk else D.Quiet, 18.dp)
         Spacer(Modifier.width(10.dp))
         Column(Modifier.weight(1f)) {
             Text(
                 address?.let { "${it.take(6)}…${it.takeLast(4)}" } ?: "No wallet connected",
-                color = if (address == null) D.Danger else D.Black,
+                color = if (address == null) D.DangerInk else D.Black,
                 fontSize = 14.sp, fontWeight = FontWeight.SemiBold, style = Figures,
             )
         }
@@ -2079,7 +2083,7 @@ private fun BalanceCard(
             // be the payee in a tap from the home screen. The machinery is left intact —
             // `mode`, applyMode(), the amount field — so putting a way back in is one line
             // wherever it belongs. Asking is still reachable through a person: their thread's
-            // "Pay or request", and "Request instead" on the tap sheet.
+            // "Pay or ask", and "Ask instead" on the tap sheet.
 
         }
 
@@ -2443,7 +2447,7 @@ private fun WalletSheet(
                 // nobody; what people do with an address is paste it.
                 Text(
                     if (copied) "Copied" else w.short,
-                    color = if (copied) D.Success else D.Quiet,
+                    color = if (copied) D.SuccessInk else D.Quiet,
                     fontSize = 12.5.sp, fontFamily = FontFamily.Monospace,
                     modifier = Modifier.then(PressScale(copy)).clip(RoundedCornerShape(6.dp))
                         .clickable(copy, indication = null) {
@@ -2476,7 +2480,7 @@ private fun WalletSheet(
                 ) {
                     HIcon(
                         if (c.ok) R.drawable.hi_tick else R.drawable.hi_alert,
-                        if (c.ok) D.Success else D.Danger, 16.dp,
+                        if (c.ok) D.SuccessInk else D.DangerInk, 16.dp,
                     )
                     Spacer(Modifier.width(10.dp))
                     Column(Modifier.weight(1f)) {
@@ -2508,7 +2512,7 @@ private fun WalletSheet(
         val remove = remember { MutableInteractionSource() }
         Text(
             if (confirming) "Tap again to remove" else "Remove wallet",
-            color = D.Danger, fontSize = 15.sp, fontWeight = FontWeight.Bold,
+            color = D.DangerInk, fontSize = 15.sp, fontWeight = FontWeight.Bold,
             textAlign = TextAlign.Center,
             modifier = Modifier.fillMaxWidth().then(PressScale(remove))
                 .clip(RoundedCornerShape(Tray.INNER))
@@ -2560,7 +2564,7 @@ private fun WalletPicker(apps: List<WalletLink.App>, onPick: (WalletLink.App) ->
                 } else {
                     Box(Modifier.size(34.dp).clip(CircleShape).background(D.Blue.copy(alpha = .15f)),
                         contentAlignment = Alignment.Center) {
-                        HIcon(R.drawable.hi_wallet, D.Blue, 17.dp)
+                        HIcon(R.drawable.hi_wallet, D.BlueInk, 17.dp)
                     }
                 }
                 Spacer(Modifier.width(12.dp))
@@ -2784,7 +2788,7 @@ private fun NameLine(
         )
         if (called.verified) {
             Spacer(Modifier.width(3.dp))
-            HIcon(R.drawable.hi_verified, D.Blue, size.value.dp + 3.dp)
+            HIcon(R.drawable.hi_verified, D.BlueInk, size.value.dp + 3.dp)
         }
     }
 }
@@ -2798,7 +2802,7 @@ private fun People(list: List<Contact>, waiting: (String) -> Int, onAll: (() -> 
             // Anything whose payer or payee this phone never learned cannot be filed under a
             // person, so the flat list stays reachable — but only when it holds something.
             onAll?.let {
-                Text("All activity", color = D.Blue, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
+                Text("All activity", color = D.BlueInk, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
                     modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable(onClick = it)
                         .padding(horizontal = 6.dp, vertical = 2.dp))
             }
@@ -2845,7 +2849,7 @@ private fun People(list: List<Contact>, waiting: (String) -> Int, onAll: (() -> 
                                 Modifier.align(Alignment.BottomEnd).size(19.dp).clip(CircleShape)
                                     .background(D.White),
                                 contentAlignment = Alignment.Center,
-                            ) { HIcon(R.drawable.hi_verified, D.Blue, 17.dp) }
+                            ) { HIcon(R.drawable.hi_verified, D.BlueInk, 17.dp) }
                         }
                         // What is outstanding with this person, on this person. The home page
                         // used to carry one "12 waiting" row for everybody, which said how much
@@ -2955,14 +2959,14 @@ private fun Thread(
                     // out below rather than given a second identical tick beside this one.
                     if (called.verified) {
                         Spacer(Modifier.width(5.dp))
-                        HIcon(R.drawable.hi_verified, D.Blue, 16.dp)
+                        HIcon(R.drawable.hi_verified, D.BlueInk, 16.dp)
                     }
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     // When you have renamed somebody who owns a domain, their real name still
                     // shows here — your label is for recognising them, not for hiding this.
                     if (called.kind == Called.Kind.Yours && called.domain != null) {
-                        Text(called.domain, color = D.Blue, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                        Text(called.domain, color = D.BlueInk, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
                         Text(" · ", color = D.Quiet, fontSize = 11.sp)
                     }
                     Text(who.short, color = D.Quiet, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
@@ -2972,7 +2976,7 @@ private fun Thread(
                         Text(" · linked wallet", color = D.Quiet, fontSize = 11.sp)
                     }
                     if (who.seeker) {
-                        Text(" · Seeker", color = D.Blue, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                        Text(" · Seeker", color = D.BlueInk, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
                     }
                 }
             }
@@ -3032,7 +3036,7 @@ private fun Thread(
                                     onClick = { onDecline(line) },
                                     enabled = paying == null,
                                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                                ) { Text("Decline", color = D.Danger, fontSize = 14.sp, fontWeight = FontWeight.SemiBold) }
+                                ) { Text("Decline", color = D.DangerInk, fontSize = 14.sp, fontWeight = FontWeight.SemiBold) }
                             }
                         }
                     }
@@ -3107,7 +3111,7 @@ private fun Thread(
 
         // One button, because the sheet it opens is one screen: a Pay form with "Request
         // instead" on it. Two buttons here would promise two destinations and deliver one.
-        PrimaryButton("Pay or request", onClick = onOpen, modifier = Modifier.fillMaxWidth().padding(top = 10.dp))
+        PrimaryButton("Pay or ask", onClick = onOpen, modifier = Modifier.fillMaxWidth().padding(top = 10.dp))
     }
 }
 
@@ -3166,7 +3170,7 @@ private fun Bubble(
         else -> D.Fill
     }
     val ink = when {
-        mood == Mood.REFUSED -> D.Danger
+        mood == Mood.REFUSED -> D.DangerInk
         mood == Mood.DROPPED -> D.Quiet
         mine -> D.White
         else -> D.Black
@@ -3194,7 +3198,7 @@ private fun Bubble(
                     textDecoration = if (mood == Mood.DROPPED) TextDecoration.LineThrough else null)
                 if (mood == Mood.DONE) {
                     Spacer(Modifier.width(7.dp))
-                    HIcon(R.drawable.hi_verified, if (mine) D.White else D.Success, 16.dp)
+                    HIcon(R.drawable.hi_verified, if (mine) D.White else D.SuccessInk, 16.dp)
                 }
             }
             Spacer(Modifier.height(3.dp))
@@ -3219,7 +3223,7 @@ private fun Face(c: Contact, size: Dp, ring: Color? = null) {
             contentAlignment = Alignment.Center,
         ) {
             when {
-                look == null -> Text(c.label.take(1).uppercase(), color = tint,
+                look == null -> Text(c.label.take(1).uppercase(), color = tint.ink,
                     fontSize = size.value.times(0.38f).sp, fontWeight = FontWeight.Bold, fontFamily = Display)
                 look.picture -> Image(painterResource(look.drawable), contentDescription = null,
                     modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
@@ -3323,8 +3327,8 @@ private fun LogView(log: List<String>) {
         items(log) { line ->
             Text(line,
                 color = when {
-                    line.startsWith("✓") -> D.Success
-                    line.startsWith("✗") -> D.Danger
+                    line.startsWith("✓") -> D.SuccessInk
+                    line.startsWith("✗") -> D.DangerInk
                     else -> D.Quiet
                 },
                 fontSize = 11.sp, fontFamily = FontFamily.Monospace,
@@ -3348,14 +3352,14 @@ private fun ConfirmSheet(
         title = { Text("Pay ${req.label}?", color = D.Black) },
         text = {
             Column {
-                Text("${req.amount} ${req.token}", color = D.Blue,
+                Text("${req.amount} ${req.token}", color = D.BlueInk,
                     fontSize = 30.sp, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(8.dp))
                 Text("to ${req.recipient.take(8)}…${req.recipient.takeLast(6)}",
                     color = D.Quiet, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
                 if (req.genesis != null) {
                     Spacer(Modifier.height(6.dp))
-                    Text("✓ Verified Seeker", color = D.Blue, fontSize = 12.sp)
+                    Text("✓ Verified Seeker", color = D.BlueInk, fontSize = 12.sp)
                 }
                 Spacer(Modifier.height(10.dp))
                 Text("No rush — this stays in Requests until you pay it.", color = D.Quiet, fontSize = 11.sp)
@@ -3363,12 +3367,12 @@ private fun ConfirmSheet(
         },
         confirmButton = {
             TextButton(onClick = onPay, enabled = !busy) {
-                Text(if (busy) "…" else "Pay", color = D.Blue, fontWeight = FontWeight.Bold)
+                Text(if (busy) "…" else "Pay", color = D.BlueInk, fontWeight = FontWeight.Bold)
             }
         },
         dismissButton = {
             Row {
-                TextButton(onClick = onDecline, enabled = !busy) { Text("Decline", color = D.Danger) }
+                TextButton(onClick = onDecline, enabled = !busy) { Text("Decline", color = D.DangerInk) }
                 TextButton(onClick = onLater) { Text("Later", color = D.Quiet) }
             }
         },
@@ -3515,7 +3519,7 @@ private fun RechargeSection(
                 Text(
                     if (number.isNotBlank() && e164 == null) "That is not a 10-digit number."
                     else "The recharge is credited to this number.",
-                    color = if (number.isNotBlank() && e164 == null) D.Danger else D.Quiet,
+                    color = if (number.isNotBlank() && e164 == null) D.DangerInk else D.Quiet,
                 )
             },
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
@@ -3578,7 +3582,7 @@ private fun RechargeSection(
                 }
                 Spacer(Modifier.width(10.dp))
                 Text(
-                    "Change", color = D.Blue, fontSize = 12.5.sp, fontWeight = FontWeight.Bold,
+                    "Change", color = D.BlueInk, fontSize = 12.5.sp, fontWeight = FontWeight.Bold,
                     modifier = Modifier.clip(RoundedCornerShape(10.dp))
                         .clickable { picking = true }.padding(horizontal = 8.dp, vertical = 6.dp),
                 )
@@ -3679,7 +3683,7 @@ private fun RechargeSection(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Column(Modifier.weight(1f)) {
-                        Text("LAST TIME", color = D.Blue, fontSize = 10.sp, letterSpacing = 1.sp,
+                        Text("LAST TIME", color = D.BlueInk, fontSize = 10.sp, letterSpacing = 1.sp,
                             fontWeight = FontWeight.ExtraBold)
                         Spacer(Modifier.height(3.dp))
                         Text(
@@ -3771,7 +3775,7 @@ private fun RechargeSection(
                     // inferred, and it is what people filter on.
                     if (detail.fast) {
                         Text(
-                            "5G", color = D.Success, fontSize = 10.sp, fontWeight = FontWeight.ExtraBold,
+                            "5G", color = D.SuccessInk, fontSize = 10.sp, fontWeight = FontWeight.ExtraBold,
                             modifier = Modifier.clip(RoundedCornerShape(6.dp))
                                 .background(D.Success.copy(alpha = .12f))
                                 .padding(horizontal = 6.dp, vertical = 2.dp),
@@ -3803,7 +3807,7 @@ private fun RechargeSection(
                         } else {
                             Spacer(Modifier.weight(1f))
                         }
-                        HIcon(R.drawable.hi_arrow_up_right, if (ready) D.Blue else D.Quiet, 17.dp)
+                        HIcon(R.drawable.hi_arrow_up_right, if (ready) D.BlueInk else D.Quiet, 17.dp)
                     }
                     // The full line underneath, when the columns did not carry all of it —
                     // "+ JioHotstar" and "+ Netflix Basic" are half the reason to pick a plan.
@@ -3856,13 +3860,13 @@ private fun EmailRow(email: String?, onEdit: () -> Unit) {
             Spacer(Modifier.height(2.dp))
             Text(
                 email ?: "Add an email for a copy",
-                color = if (email == null) D.Blue else D.Black,
+                color = if (email == null) D.BlueInk else D.Black,
                 fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
         }
         Spacer(Modifier.width(8.dp))
-        Text(if (email == null) "Add" else "Change", color = D.Blue, fontSize = 12.sp,
+        Text(if (email == null) "Add" else "Change", color = D.BlueInk, fontSize = 12.sp,
             fontWeight = FontWeight.Bold)
     }
 }
@@ -3894,7 +3898,7 @@ private fun EmailDialog(current: String, onDismiss: () -> Unit, onSave: (String)
                         Text(
                             if (bad) "That does not look like an email address."
                             else "Kept on this phone. Leave it empty for no email.",
-                            color = if (bad) D.Danger else D.Quiet,
+                            color = if (bad) D.DangerInk else D.Quiet,
                         )
                     },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
@@ -3904,7 +3908,7 @@ private fun EmailDialog(current: String, onDismiss: () -> Unit, onSave: (String)
         },
         confirmButton = {
             TextButton(onClick = { onSave(text) }, enabled = !bad) {
-                Text("Save", color = D.Blue, fontWeight = FontWeight.Bold)
+                Text("Save", color = D.BlueInk, fontWeight = FontWeight.Bold)
             }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel", color = D.Quiet) } },
@@ -3983,7 +3987,7 @@ private fun CodeRow(label: String, value: String, mono: Boolean = true) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(label, color = D.Quiet, fontSize = 11.sp, fontWeight = FontWeight.SemiBold,
                 letterSpacing = 0.8.sp, modifier = Modifier.weight(1f))
-            Text(if (copied) "Copied" else "Copy", color = D.Blue, fontSize = 12.sp,
+            Text(if (copied) "Copied" else "Copy", color = D.BlueInk, fontSize = 12.sp,
                 fontWeight = FontWeight.Bold)
         }
         Spacer(Modifier.height(4.dp))
@@ -4004,10 +4008,10 @@ private fun MainnetNote() {
             .background(D.Blue.copy(alpha = .08f)).padding(horizontal = 12.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        HIcon(R.drawable.hi_info, D.Blue, 17.dp)
+        HIcon(R.drawable.hi_info, D.BlueInk, 17.dp)
         Spacer(Modifier.width(8.dp))
         Text("Real money on Solana mainnet.",
-            color = D.Blue, fontSize = 12.5.sp, fontWeight = FontWeight.Medium)
+            color = D.BlueInk, fontSize = 12.5.sp, fontWeight = FontWeight.Medium)
     }
 }
 
@@ -4033,10 +4037,10 @@ private fun ShopSection(
                 .background(D.Blue.copy(alpha = .08f)).padding(horizontal = 12.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            HIcon(R.drawable.hi_info, D.Blue, 17.dp)
+            HIcon(R.drawable.hi_info, D.BlueInk, 17.dp)
             Spacer(Modifier.width(8.dp))
             Text("Real money on Solana mainnet.",
-                color = D.Blue, fontSize = 12.5.sp, fontWeight = FontWeight.Medium)
+                color = D.BlueInk, fontSize = 12.5.sp, fontWeight = FontWeight.Medium)
         }
         // A short shelf opens itself. Four subscription services behind four taps is a list
         // pretending to be a menu; sixty-three shopping brands genuinely need collapsing.
@@ -4433,13 +4437,13 @@ private fun RequestsTab(
                                 fontSize = 16.sp, fontWeight = FontWeight.Bold)
                             if (gone) {
                                 Spacer(Modifier.width(8.dp))
-                                Text("WITHDRAWN BY ${item.request.label.uppercase()}", color = D.Danger,
+                                Text("WITHDRAWN BY ${item.request.label.uppercase()}", color = D.DangerInk,
                                     fontSize = 8.sp, letterSpacing = 1.sp, fontWeight = FontWeight.Bold,
                                     modifier = Modifier.background(D.Danger.copy(alpha = .12f), RoundedCornerShape(4.dp))
                                         .padding(horizontal = 6.dp, vertical = 2.dp))
                             } else if (item.request.genesis != null) {
                                 Spacer(Modifier.width(6.dp))
-                                Text("SEEKER", color = D.Blue, fontSize = 8.sp, letterSpacing = 1.sp, fontWeight = FontWeight.Bold)
+                                Text("SEEKER", color = D.BlueInk, fontSize = 8.sp, letterSpacing = 1.sp, fontWeight = FontWeight.Bold)
                             }
                         }
                         Text(
@@ -4480,7 +4484,7 @@ private fun RequestsTab(
                                 val tag = if (no) "DECLINED BY ${e.rejectedBy!!.uppercase()}" else "PENDING"
                                 val tone = if (no) D.Danger else D.Blue
                                 Spacer(Modifier.width(8.dp))
-                                Text(tag, color = tone, fontSize = 8.sp,
+                                Text(tag, color = tone.ink, fontSize = 8.sp,
                                     letterSpacing = 1.sp, fontWeight = FontWeight.Bold,
                                     modifier = Modifier.background(tone.copy(alpha = .12f), RoundedCornerShape(4.dp))
                                         .padding(horizontal = 6.dp, vertical = 2.dp))
@@ -4506,7 +4510,7 @@ private fun RequestsTab(
             SectionLabel("DONE")
             history.forEach { (at, what, sig) ->
                 Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text("✓", color = D.Blue, fontSize = 13.sp)
+                    Text("✓", color = D.BlueInk, fontSize = 13.sp)
                     Spacer(Modifier.width(10.dp))
                     Column(Modifier.weight(1f)) {
                         Text(what, color = D.Black, fontSize = 13.sp)
@@ -4558,6 +4562,29 @@ private fun PayBar(modifier: Modifier, onTap: () -> Unit, onScan: () -> Unit) {
         // Width comes from the content, not the page. Stretched edge to edge the two halves
         // were mostly empty and the labels ended up far from the seam that joins them — which
         // is the one detail making this read as a single control.
+        // At a large font scale the two-line labels stop fitting across the screen. Measured
+        // rather than guessed from `fontScale`: the labels, the icon, the padding and the ring
+        // are all real numbers, and a threshold on the scale would be a different wrong answer
+        // on every device. When they will not fit, the second line goes and "Pay" · "Scan"
+        // carry it alone.
+        val measurer = rememberTextMeasurer()
+        BoxWithConstraints(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+            val widest: Int = remember(measurer, maxWidth) {
+                listOf("via Tap", "any QR").maxOf { label ->
+                    val laid = measurer.measure(label, PayBarLabel)
+                    laid.size.width
+                }
+            }
+            val needed = with(LocalDensity.current) {
+                // Each half: 16dp + icon 26 + gap 10 + label + 16dp. Plus the seam and the ring.
+                (2 * ((16 + 26 + 10 + 16).dp.roundToPx() + widest) +
+                    PayBarGap.roundToPx() + 2 * PayBarRing.roundToPx()).toDp()
+            }
+            // Against the page's content width, not the screen. The bar floats over a page
+            // with a 20dp gutter, and a control that runs edge to edge reads as stuck to the
+            // sides rather than floating over them.
+            val twoLine = needed <= maxWidth - Space.gutter * 2
+
         Row(
             Modifier.cardShadow(PayBarRadius)
                 .clip(RoundedCornerShape(PayBarRadius)).background(D.White)
@@ -4567,15 +4594,16 @@ private fun PayBar(modifier: Modifier, onTap: () -> Unit, onScan: () -> Unit) {
             horizontalArrangement = Arrangement.spacedBy(PayBarGap),
         ) {
             PayChoice(
-                first = "Pay", second = "via Tap",
+                first = "Pay", second = if (twoLine) "via Tap" else null,
                 icon = R.drawable.hi_nfc, iconFirst = true,
                 fill = D.Black, shape = PayBarLeft, onClick = onTap,
             )
             PayChoice(
-                first = "Scan", second = "any QR",
+                first = "Scan", second = if (twoLine) "any QR" else null,
                 icon = R.drawable.hi_scan, iconFirst = false,
                 fill = D.Blue, shape = PayBarRight, onClick = onScan,
             )
+        }
         }
         Spacer(Modifier.height(14.dp))
     }
@@ -4587,6 +4615,17 @@ private val PayBarRing = 5.dp
 /** The seam, narrower than the ring so the two halves sit closer without touching. */
 private val PayBarGap = 3.dp
 private val PayBarRadius = PayBarHeight / 2 + PayBarRing
+
+/**
+ * The label, defined once because it is both measured and drawn.
+ *
+ * 19sp, not 17: white on `D.Blue` is 3.30:1, which passes only as large text — so the label on
+ * the blue half has to BE large text. If these two uses ever drift the bar measures one thing
+ * and draws another.
+ */
+private val PayBarLabel = TextStyle(
+    fontFamily = Ui, fontSize = 19.sp, lineHeight = 21.sp, fontWeight = FontWeight.Bold,
+)
 
 /**
  * The corners where the two halves meet.
@@ -4617,7 +4656,8 @@ private val PayBarRight = RoundedCornerShape(
 @Composable
 private fun PayChoice(
     first: String,
-    second: String,
+    /** Null when the two-line labels no longer fit across the screen. */
+    second: String?,
     @DrawableRes icon: Int,
     iconFirst: Boolean,
     fill: Color,
@@ -4626,7 +4666,7 @@ private fun PayChoice(
 ) {
     val interaction = remember { MutableInteractionSource() }
     Row(
-        Modifier.height(PayBarHeight).clip(shape).background(fill)
+        Modifier.heightIn(min = PayBarHeight).clip(shape).background(fill)
             .clickable(interaction, indication = null, onClick = onClick)
             .padding(horizontal = 16.dp),
         horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -4641,10 +4681,8 @@ private fun PayChoice(
         )
         if (iconFirst) HIcon(icon, ink, 26.dp)
         Column {
-            Text(first, color = ink, fontSize = 17.sp, fontWeight = FontWeight.Bold,
-                fontFamily = Display, lineHeight = 19.sp, maxLines = 1)
-            Text(second, color = ink, fontSize = 17.sp, fontWeight = FontWeight.Bold,
-                fontFamily = Display, lineHeight = 19.sp, maxLines = 1)
+            Text(first, color = ink, style = PayBarLabel, maxLines = 1)
+            if (second != null) Text(second, color = ink, style = PayBarLabel, maxLines = 1)
         }
         if (!iconFirst) HIcon(icon, ink, 26.dp)
     }
@@ -4683,7 +4721,7 @@ private fun TxnRow(t: History.Txn, onOpen: () -> Unit) {
             val mark = markFor(t)
             when {
                 mark != null -> MarkCanvas(mark, 21.dp)
-                t.incoming -> HIcon(R.drawable.hi_arrow_down, D.Success, 19.dp)
+                t.incoming -> HIcon(R.drawable.hi_arrow_down, D.SuccessInk, 19.dp)
                 else -> HIcon(R.drawable.hi_arrow_up_right, D.Black, 19.dp)
             }
         }
@@ -4699,11 +4737,11 @@ private fun TxnRow(t: History.Txn, onOpen: () -> Unit) {
                 // ellipsized line showed neither properly and copied both as one blob; the
                 // row opens the sheet where each part is labelled and separately copyable.
                 Text(
-                    "Tap for the code", color = D.Blue, fontSize = 12.sp, maxLines = 1,
+                    "Tap for the code", color = D.BlueInk, fontSize = 12.sp, maxLines = 1,
                     fontWeight = FontWeight.SemiBold,
                 )
             } else {
-                Text(t.note ?: t.category, color = if (t.note != null) D.Blue else D.Quiet,
+                Text(t.note ?: t.category, color = if (t.note != null) D.BlueInk else D.Quiet,
                     fontSize = 12.sp, maxLines = 1)
             }
         }
@@ -4711,7 +4749,7 @@ private fun TxnRow(t: History.Txn, onOpen: () -> Unit) {
         Column(horizontalAlignment = Alignment.End) {
             Text(
                 (if (t.incoming) "+" else "−") + t.amount,
-                color = if (t.incoming) D.Success else D.Black,
+                color = if (t.incoming) D.SuccessInk else D.Black,
                 fontSize = 14.sp, fontWeight = FontWeight.Bold, style = Figures, maxLines = 1,
             )
             Spacer(Modifier.height(1.dp))
@@ -4727,7 +4765,7 @@ private fun HistoryStrip(list: List<History.Txn>, onViewAll: () -> Unit, onOpen:
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text("Transaction history", color = D.Black, fontSize = 17.sp, fontWeight = FontWeight.Bold)
             Spacer(Modifier.weight(1f))
-            Text("View all", color = D.Blue, fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
+            Text("View all", color = D.BlueInk, fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
                 modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable(onClick = onViewAll)
                     .padding(horizontal = 6.dp, vertical = 4.dp))
         }
@@ -4838,10 +4876,10 @@ private fun MonthSheet(
                             .clickable { onPick(m) }.padding(horizontal = 14.dp, vertical = 13.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text(m.format(MONTH), color = if (on) D.Blue else D.Black, fontSize = 14.sp,
+                        Text(m.format(MONTH), color = if (on) D.BlueInk else D.Black, fontSize = 14.sp,
                             fontWeight = if (on) FontWeight.Bold else FontWeight.Medium)
                         Spacer(Modifier.weight(1f))
-                        if (on) HIcon(R.drawable.hi_tick, D.Blue, 16.dp)
+                        if (on) HIcon(R.drawable.hi_tick, D.BlueInk, 16.dp)
                     }
                 }
             }
@@ -4884,7 +4922,7 @@ private fun AlertsTab(list: List<Alerts.Alert>, seenAt: Long, onOpen: (Alerts.Al
                 Box(
                     Modifier.size(38.dp).clip(CircleShape).background(look.second.copy(alpha = .12f)),
                     contentAlignment = Alignment.Center,
-                ) { HIcon(look.first, look.second, 19.dp) }
+                ) { HIcon(look.first, look.second.ink, 19.dp) }
                 Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f)) {
                     Text(a.title, color = D.Black, fontSize = 14.sp,
@@ -4990,7 +5028,7 @@ private fun WalletIdentity(w: Linked, linking: Boolean, onLink: () -> Unit) {
                     Text(mine, color = D.Black, fontSize = 17.sp, fontWeight = FontWeight.Bold,
                         fontFamily = Display, maxLines = 1)
                     Spacer(Modifier.width(5.dp))
-                    HIcon(R.drawable.hi_verified, D.Blue, 15.dp)
+                    HIcon(R.drawable.hi_verified, D.BlueInk, 15.dp)
                 }
                 Spacer(Modifier.height(4.dp))
                 Text(
@@ -5008,7 +5046,7 @@ private fun WalletIdentity(w: Linked, linking: Boolean, onLink: () -> Unit) {
                         fontFamily = Display, maxLines = 1,
                     )
                     Spacer(Modifier.width(5.dp))
-                    HIcon(R.drawable.hi_verified, D.Blue, 15.dp)
+                    HIcon(R.drawable.hi_verified, D.BlueInk, 15.dp)
                 }
                 Spacer(Modifier.height(4.dp))
                 Text(
@@ -5084,7 +5122,7 @@ private fun HowYouLook(domain: String?, borrowed: Boolean, username: String, onE
                 )
                 if (verified) {
                     Spacer(Modifier.width(4.dp))
-                    HIcon(R.drawable.hi_verified, D.Blue, 14.dp)
+                    HIcon(R.drawable.hi_verified, D.BlueInk, 14.dp)
                 }
             }
             Spacer(Modifier.height(2.dp))
@@ -5102,7 +5140,7 @@ private fun HowYouLook(domain: String?, borrowed: Boolean, username: String, onE
         }
         if (!verified) {
             Spacer(Modifier.width(8.dp))
-            Text("Change", color = D.Blue, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            Text("Change", color = D.BlueInk, fontSize = 12.sp, fontWeight = FontWeight.Bold)
         }
     }
 }
@@ -5138,7 +5176,7 @@ private fun ContactNameDialog(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(called.domain, color = D.Black, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
                         Spacer(Modifier.width(4.dp))
-                        HIcon(R.drawable.hi_verified, D.Blue, 14.dp)
+                        HIcon(R.drawable.hi_verified, D.BlueInk, 14.dp)
                     }
                     Spacer(Modifier.height(6.dp))
                     Text(
@@ -5161,7 +5199,7 @@ private fun ContactNameDialog(
                     supportingText = {
                         Text(
                             problem ?: "Leave it empty to go back to their own name.",
-                            color = if (problem != null) D.Danger else D.Quiet,
+                            color = if (problem != null) D.DangerInk else D.Quiet,
                         )
                     },
                     modifier = Modifier.fillMaxWidth(),
@@ -5170,7 +5208,7 @@ private fun ContactNameDialog(
         },
         confirmButton = {
             TextButton(onClick = { onSave(text) }, enabled = problem == null) {
-                Text("Save", color = D.Blue, fontWeight = FontWeight.Bold)
+                Text("Save", color = D.BlueInk, fontWeight = FontWeight.Bold)
             }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel", color = D.Quiet) } },
@@ -5213,7 +5251,7 @@ private fun NameDialog(
                         Text(domain, color = D.Black, fontSize = 20.sp,
                             fontWeight = FontWeight.Bold, fontFamily = Display)
                         Spacer(Modifier.width(5.dp))
-                        HIcon(R.drawable.hi_verified, D.Blue, 17.dp)
+                        HIcon(R.drawable.hi_verified, D.BlueInk, 17.dp)
                     }
                     Spacer(Modifier.height(8.dp))
                     Text(
@@ -5235,7 +5273,7 @@ private fun NameDialog(
                         supportingText = {
                             Text(
                                 problem ?: "${text.trim().length}/${Username.MAX}",
-                                color = if (problem != null) D.Danger else D.Quiet,
+                                color = if (problem != null) D.DangerInk else D.Quiet,
                             )
                         },
                         modifier = Modifier.fillMaxWidth(),
@@ -5255,12 +5293,12 @@ private fun NameDialog(
         },
         confirmButton = {
             if (domain != null) {
-                TextButton(onClick = onDismiss) { Text("Done", color = D.Blue, fontWeight = FontWeight.Bold) }
+                TextButton(onClick = onDismiss) { Text("Done", color = D.BlueInk, fontWeight = FontWeight.Bold) }
             } else {
                 TextButton(
                     onClick = { onSave(text) },
                     enabled = problem == null && Username.clean(text) != null,
-                ) { Text("Save", color = D.Blue, fontWeight = FontWeight.Bold) }
+                ) { Text("Save", color = D.BlueInk, fontWeight = FontWeight.Bold) }
             }
         },
         dismissButton = {
