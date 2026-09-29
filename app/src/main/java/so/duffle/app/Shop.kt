@@ -16,6 +16,21 @@ import org.json.JSONObject
  * screen stays: money leaving for goods is worth saying out loud even when the tap beside it is
  * equally real.
  */
+/**
+ * Optional text out of a payload we do not control, honouring JSON `null`.
+ *
+ * `optString` does not return null for one. Android resolves the key to `JSONObject.NULL` and
+ * stringifies it, handing back the four characters **"null"** — which is not blank, so every
+ * `takeIf { it.isNotBlank() }` downstream waved it through. It reached the screen: a product
+ * with no description rendered the word `null` where the description goes.
+ *
+ * The description was the harmless case. The same reads cover a gift card's PIN, which Bitrefill
+ * sends as `null` for the products that do not have one, and printing `null` as the PIN of
+ * something somebody just paid for is the version of this bug that costs money.
+ */
+internal fun JSONObject.text(name: String): String? =
+    if (isNull(name)) null else optString(name).takeIf { it.isNotBlank() }
+
 object Shop {
 
     /** Real USDC, on the cluster where it is real. */
@@ -152,7 +167,7 @@ object Shop {
         name = j.optString("name"),
         currency = j.optString("currency", "INR"),
         recipient = j.optString("recipient", "none"),
-        image = j.optString("image").takeIf { it.isNotBlank() },
+        image = j.text("image"),
         categories = j.optJSONArray("categories").let { a ->
             (0 until (a?.length() ?: 0)).map { a!!.optString(it) }
         },
@@ -167,7 +182,7 @@ object Shop {
                 a!!.optJSONObject(i)?.let { o ->
                     o.optString("value").takeIf { it.isNotBlank() }
                         ?.let { v ->
-                            Package(v, o.optInt("amount", 0), o.optString("id").takeIf { i -> i.isNotBlank() })
+                            Package(v, o.optInt("amount", 0), o.text("id"))
                         }
                 }
             }
@@ -264,8 +279,8 @@ object Shop {
             put("product_id", productId)
         }, timeoutMs = 15_000) ?: return null
         val d = Details(
-            about = o.optString("about").takeIf { it.isNotBlank() },
-            terms = o.optString("terms").takeIf { it.isNotBlank() },
+            about = o.text("about"),
+            terms = o.text("terms"),
         )
         synchronized(detailCache) { detailCache[productId] = d }
         return d
@@ -382,12 +397,11 @@ object Shop {
         is org.json.JSONArray ->
             (0 until any.length()).firstNotNullOfOrNull { parseRedemption(any.opt(it)) }
         is JSONObject -> Redemption(
-            code = any.optString("code").takeIf { it.isNotBlank() },
-            pin = any.optString("pin").takeIf { it.isNotBlank() },
-            link = any.optString("link").takeIf { it.isNotBlank() }
-                ?: any.optString("url").takeIf { it.isNotBlank() },
-            instructions = any.optString("instructions").takeIf { it.isNotBlank() },
-            expires = any.optString("expiration_date").takeIf { it.isNotBlank() },
+            code = any.text("code"),
+            pin = any.text("pin"),
+            link = any.text("link") ?: any.text("url"),
+            instructions = any.text("instructions"),
+            expires = any.text("expiration_date"),
             // Anything Bitrefill sends that we have no name for. Never dropped.
             // Anything Bitrefill sends that we have no name for. Never dropped — Subway's
             // barcode_format arrived this way and is worth keeping.
@@ -402,7 +416,7 @@ object Shop {
                 }
                 .filterNot { line ->
                     listOf("code", "pin").any { key ->
-                        any.optString(key).takeIf { it.isNotBlank() }?.let { line.contains(it) } == true
+                        any.text(key)?.let { line.contains(it) } == true
                     }
                 }
                 .joinToString("\n").takeIf { it.isNotBlank() },
