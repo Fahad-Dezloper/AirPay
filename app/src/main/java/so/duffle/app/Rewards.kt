@@ -17,16 +17,6 @@ import org.json.JSONObject
  */
 object Rewards {
 
-    /**
-     * A string field that may be JSON null.
-     *
-     * `optString` returns the **string "null"** for a JSON null on Android, not null and not
-     * "". A claimed offer rendered its refusal as the word "null" on the phone because of it —
-     * the code read fine and only a real run showed it.
-     */
-    private fun JSONObject.stringOrNull(key: String): String? =
-        if (isNull(key)) null else optString(key).ifBlank { null }
-
     /** Off unless this build asked for it and a server is configured to answer. */
     val enabled get() = BuildConfig.REWARDS && ServerClient.enabled
 
@@ -49,7 +39,7 @@ object Rewards {
         // stringOrNull, not optString: a preview that refuses nothing sends JSON null here, and
         // reading that as the string "null" made `earns` false — so the review screen could
         // never say "Earns N SKR", only ever the refusals. It looked like a design choice.
-        return Preview(o.optInt("skr"), o.stringOrNull("refused"), o.optInt("min_age_days", 7))
+        return Preview(o.optInt("skr"), o.text("refused"), o.optInt("min_age_days", 7))
     }
 
     /**
@@ -111,13 +101,13 @@ object Rewards {
             for (i in 0 until a.length()) a.optJSONObject(i)?.let {
                 rows += Row(it.optString("kind"), it.optInt("skr"), it.optString("counterparty"),
                     (it.optDouble("created_at") * 1000).toLong(), (it.optDouble("unlock_at") * 1000).toLong(),
-                    it.optString("state"), it.stringOrNull("reason"))
+                    it.optString("state"), it.text("reason"))
             }
         }
         val refusals = mutableListOf<Refusal>()
         o.optJSONArray("refused")?.let { a ->
             for (i in 0 until a.length()) a.optJSONObject(i)?.let {
-                refusals += Refusal(it.optString("counterparty"), it.stringOrNull("refused") ?: "",
+                refusals += Refusal(it.optString("counterparty"), it.text("refused") ?: "",
                     (it.optDouble("at") * 1000).toLong())
             }
         }
@@ -163,7 +153,7 @@ object Rewards {
                     minimum = j.optLong("minimum"), decimals = if (token == "SOL") 9 else 6,
                     link = j.optString("link"), windowHours = j.optDouble("window_hours", 48.0).toInt(),
                     state = j.optString("state", "available"), earned = j.optInt("skr_earned"),
-                    signature = j.stringOrNull("signature"), refused = j.stringOrNull("refused"),
+                    signature = j.text("signature"), refused = j.text("refused"),
                 )
             }
         }
@@ -175,7 +165,7 @@ object Rewards {
         val o = ServerClient.ask("/v1/offers/$offerId/claim", JSONObject().apply {
             put("address", address)
         }) ?: return "no_server"
-        return if (o.optBoolean("ok")) null else o.stringOrNull("refused") ?: "refused"
+        return if (o.optBoolean("ok")) null else o.text("refused") ?: "refused"
     }
 
     /** Why an offer can't be opened, or hasn't paid yet. */

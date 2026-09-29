@@ -16,21 +16,6 @@ import org.json.JSONObject
  * screen stays: money leaving for goods is worth saying out loud even when the tap beside it is
  * equally real.
  */
-/**
- * Optional text out of a payload we do not control, honouring JSON `null`.
- *
- * `optString` does not return null for one. Android resolves the key to `JSONObject.NULL` and
- * stringifies it, handing back the four characters **"null"** — which is not blank, so every
- * `takeIf { it.isNotBlank() }` downstream waved it through. It reached the screen: a product
- * with no description rendered the word `null` where the description goes.
- *
- * The description was the harmless case. The same reads cover a gift card's PIN, which Bitrefill
- * sends as `null` for the products that do not have one, and printing `null` as the PIN of
- * something somebody just paid for is the version of this bug that costs money.
- */
-internal fun JSONObject.text(name: String): String? =
-    if (isNull(name)) null else optString(name).takeIf { it.isNotBlank() }
-
 object Shop {
 
     /** Real USDC, on the cluster where it is real. */
