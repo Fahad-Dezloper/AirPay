@@ -250,7 +250,7 @@ object Shop {
      * kept verbatim rather than discarded. Showing an odd-looking string beats swallowing the
      * one thing the purchase was for.
      */
-    data class Delivery(val status: String, val code: String?) {
+    data class Delivery(val status: String, val redemption: Redemption?) {
         /** See [Orders.Order.delivered] — the invoice says "all_delivered", the order "delivered". */
         val delivered get() = status in setOf("all_delivered", "complete", "delivered")
         val failed get() = status in setOf("denied", "payment_error", "failed", "expired")
@@ -264,29 +264,103 @@ object Shop {
         return Delivery(status, redemption(o.optJSONArray("orders")))
     }
 
-    /** Whatever the buyer actually needs, out of a field whose shape is not ours to fix. */
-    private fun redemption(orders: org.json.JSONArray?): String? {
+    /**
+     * What a delivered gift card actually gives you.
+     *
+     * The real shape, read off a delivered PhonePe card rather than guessed:
+     *
+     * ```
+     * {"code": "9092609239069813", "pin": "171129",
+     *  "expiration_date": "2027-09-28T00:00:00.000Z", "extra_fields": {}}
+     * ```
+     *
+     * Kept in parts rather than flattened. The first version joined everything with newlines,
+     * which stored the right characters and threw away which was the card number and which was
+     * the PIN — leaving a sixteen-digit run and a six-digit run with nothing to say which was
+     * which, on a row that shows one line.
+     *
+     * [raw] holds whatever could not be named, because a field we have not seen is still worth
+     * showing: the alternative is silently dropping the thing somebody paid for.
+     */
+    data class Redemption(
+        val code: String? = null,
+        val pin: String? = null,
+        val link: String? = null,
+        val instructions: String? = null,
+        val expires: String? = null,
+        val raw: String? = null,
+    ) {
+        val empty get() = code == null && pin == null && link == null &&
+            instructions == null && raw == null
+
+        /** For storage: everything, losslessly, in one string. */
+        fun toJson(): String = JSONObject().apply {
+            code?.let { put("code", it) }
+            pin?.let { put("pin", it) }
+            link?.let { put("link", it) }
+            instructions?.let { put("instructions", it) }
+            expires?.let { put("expires", it) }
+            raw?.let { put("raw", it) }
+        }.toString()
+
+        companion object {
+            /** Reads back what [toJson] wrote — or treats a bare string as the code itself. */
+            fun of(stored: String?): Redemption? {
+                val s = stored?.takeIf { it.isNotBlank() } ?: return null
+                return try {
+                    val o = JSONObject(s)
+                    Redemption(
+                        code = o.optString("code").takeIf { it.isNotBlank() },
+                        pin = o.optString("pin").takeIf { it.isNotBlank() },
+                        link = o.optString("link").takeIf { it.isNotBlank() },
+                        instructions = o.optString("instructions").takeIf { it.isNotBlank() },
+                        expires = o.optString("expires").takeIf { it.isNotBlank() },
+                        raw = o.optString("raw").takeIf { it.isNotBlank() },
+                    ).takeIf { !it.empty }
+                } catch (e: Exception) {
+                    // Not JSON: either a product that returns a bare string, or a code stored
+                    // by the first version of this, which joined the parts with newlines in
+                    // the order Bitrefill lists them — code, then pin. That is our own format
+                    // rather than a guess about somebody else's, so it can be split back
+                    // instead of being left as one unreadable run of digits.
+                    val lines = s.lines().map { it.trim() }.filter { it.isNotEmpty() }
+                    if (lines.size == 2) Redemption(code = lines[0], pin = lines[1])
+                    else Redemption(code = s)
+                }
+            }
+        }
+    }
+
+    /** The redemption of whichever order in the invoice has one. */
+    private fun redemption(orders: org.json.JSONArray?): Redemption? {
         if (orders == null) return null
         for (i in 0 until orders.length()) {
             val r = orders.optJSONObject(i)?.opt("redemption") ?: continue
-            readable(r)?.let { return it }
+            parseRedemption(r)?.let { return it }
         }
         return null
     }
 
-    private fun readable(any: Any?): String? = when (any) {
+    private fun parseRedemption(any: Any?): Redemption? = when (any) {
         null, JSONObject.NULL -> null
-        is String -> any.takeIf { it.isNotBlank() }
+        is String -> any.takeIf { it.isNotBlank() }?.let { Redemption(code = it) }
         is org.json.JSONArray ->
-            (0 until any.length()).mapNotNull { readable(any.opt(it)) }.joinToString("\n")
-                .takeIf { it.isNotBlank() }
-        is JSONObject -> {
-            // The fields worth showing, in the order somebody would read them. Anything else
-            // falls through to the whole object, which is ugly and still better than nothing.
-            val parts = listOf("code", "pin", "link", "url", "instructions", "other")
-                .mapNotNull { k -> any.opt(k)?.let { readable(it) }?.let { v -> v } }
-            parts.joinToString("\n").takeIf { it.isNotBlank() } ?: any.toString().takeIf { it != "{}" }
-        }
-        else -> any.toString().takeIf { it.isNotBlank() }
+            (0 until any.length()).firstNotNullOfOrNull { parseRedemption(any.opt(it)) }
+        is JSONObject -> Redemption(
+            code = any.optString("code").takeIf { it.isNotBlank() },
+            pin = any.optString("pin").takeIf { it.isNotBlank() },
+            link = any.optString("link").takeIf { it.isNotBlank() }
+                ?: any.optString("url").takeIf { it.isNotBlank() },
+            instructions = any.optString("instructions").takeIf { it.isNotBlank() },
+            expires = any.optString("expiration_date").takeIf { it.isNotBlank() },
+            // Anything Bitrefill sends that we have no name for. Never dropped.
+            raw = any.keys().asSequence()
+                .filterNot { it in setOf("code", "pin", "link", "url", "instructions", "expiration_date") }
+                .mapNotNull { k ->
+                    any.opt(k)?.toString()?.takeIf { it.isNotBlank() && it != "{}" }?.let { "$k: $it" }
+                }
+                .joinToString("\n").takeIf { it.isNotBlank() },
+        ).takeIf { !it.empty }
+        else -> any.toString().takeIf { it.isNotBlank() }?.let { Redemption(raw = it) }
     }
 }

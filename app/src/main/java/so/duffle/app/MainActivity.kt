@@ -195,6 +195,14 @@ class MainActivity : ComponentActivity() {
     /** Where gift-card codes are also emailed, if anywhere. Optional, kept on this phone. */
     private var myEmail by mutableStateOf<String?>(null)
     private var editingEmail by mutableStateOf(false)
+    /**
+     * The purchase whose code should be put in front of somebody.
+     *
+     * Set when an order is bought and again when its code arrives, because those are seconds
+     * apart and the screen showed "Sent" in between and then nothing at all. A gift card that
+     * is delivered silently has not really been delivered.
+     */
+    private var showCodeFor by mutableStateOf<String?>(null)
 
     /** UI mirrors of the two on-disk lists. Disk is the truth; these are re-read after writes. */
     private val notes = mutableStateListOf<Messages.Note>()
@@ -460,7 +468,10 @@ class MainActivity : ComponentActivity() {
             orders.setStatus(inv.id, d.status)
             // The code, saved the moment it exists. This screen is often gone by the time
             // delivery lands, so it cannot be the only place it is kept.
-            d.code?.let { orders.setCode(inv.id, it) }
+            d.redemption?.let {
+                orders.setCode(inv.id, it.toJson())
+                showCodeFor = inv.id
+            }
             refreshLists()
             if (d.delivered) {
                 push("✓ delivered")
@@ -482,6 +493,14 @@ class MainActivity : ComponentActivity() {
             thread = person
             tab = Tab.TAP
             return
+        }
+        // A purchase that produced a code opens the code, not a block explorer. The signature
+        // is a receipt for the money; the code is the thing that was bought.
+        if (t.code != null) {
+            bought.firstOrNull { it.signature == t.signature }?.let {
+                showCodeFor = it.invoiceId
+                return
+            }
         }
         val sig = t.signature ?: return
         runCatching {
@@ -607,7 +626,15 @@ class MainActivity : ComponentActivity() {
                 val d = Shop.order(o.invoiceId) ?: continue
                 // The catch-up matters more than the live watcher for this: the code usually
                 // lands after the app is closed, so this is where most of them are collected.
-                d.code?.let { orders.setCode(o.invoiceId, it) }
+                d.redemption?.let {
+                    // Only raise the sheet for something bought in this session. A code found
+                    // while catching up on a week-old order is not news worth interrupting for.
+                    val isNew = o.code.isNullOrBlank()
+                    orders.setCode(o.invoiceId, it.toJson())
+                    if (isNew && o.at > System.currentTimeMillis() - 10 * 60_000L) {
+                        showCodeFor = o.invoiceId
+                    }
+                }
                 if (d.status != o.status) {
                     orders.setStatus(o.invoiceId, d.status)
                     push("shop: ${o.name} — ${d.status}")
@@ -1320,6 +1347,12 @@ class MainActivity : ComponentActivity() {
                             push("— removed ${w.name} ${w.short}")
                         },
                     )
+                }
+
+                showCodeFor?.let { id ->
+                    bought.firstOrNull { it.invoiceId == id }?.let { o ->
+                        CodeSheet(o) { showCodeFor = null }
+                    }
                 }
 
                 if (editingEmail) {
@@ -3772,6 +3805,91 @@ private fun EmailDialog(current: String, onDismiss: () -> Unit, onSave: (String)
     )
 }
 
+/**
+ * The thing you bought, put in front of you.
+ *
+ * This did not exist, and its absence was the whole failure: a real PhonePe card was paid for,
+ * delivered, and captured correctly — and the screen said "Sent" and then nothing. The code sat
+ * in storage while the buyer went to their email to find it.
+ *
+ * Each part is its own labelled, copyable row rather than one blob. A card number and a PIN are
+ * used in different boxes on someone else's website, and a sixteen-digit run followed by a
+ * six-digit run says nothing about which is which.
+ */
+@Composable
+private fun CodeSheet(order: Orders.Order, onClose: () -> Unit) {
+    val r = remember(order.code) { Shop.Redemption.of(order.code) }
+    Tray(onClose = onClose) {
+        Spacer(Modifier.height(18.dp))
+        Text(order.name.removeSuffix(" India"), color = D.Black, fontSize = 20.sp,
+            fontWeight = FontWeight.ExtraBold, fontFamily = Display)
+        Spacer(Modifier.height(2.dp))
+        Text("${order.value} · paid ${order.paid}", color = D.Quiet, fontSize = 12.5.sp)
+        Spacer(Modifier.height(18.dp))
+
+        if (r == null) {
+            Text(
+                "Delivered. This one returns no code — the value went straight to the " +
+                    "recipient.",
+                color = D.Quiet, fontSize = 13.sp, lineHeight = 18.sp,
+            )
+        } else {
+            r.code?.let { CodeRow("Card number", it) }
+            r.pin?.let { CodeRow("PIN", it) }
+            r.link?.let { CodeRow("Redeem at", it, mono = false) }
+            r.instructions?.let {
+                Spacer(Modifier.height(10.dp))
+                Text(it, color = D.Quiet, fontSize = 12.sp, lineHeight = 17.sp)
+            }
+            r.raw?.let {
+                Spacer(Modifier.height(10.dp))
+                Text(it, color = D.Quiet, fontSize = 11.5.sp, lineHeight = 16.sp)
+            }
+            r.expires?.let {
+                Spacer(Modifier.height(12.dp))
+                Text("Valid until ${it.take(10)}", color = D.Quiet, fontSize = 12.sp)
+            }
+        }
+
+        Spacer(Modifier.height(16.dp))
+        Text(
+            "Kept in your history. It is also emailed to whoever the order named.",
+            color = D.Quiet, fontSize = 11.5.sp, lineHeight = 16.sp,
+        )
+        Spacer(Modifier.height(16.dp))
+        PrimaryButton("Done", onClick = onClose)
+        Spacer(Modifier.height(10.dp))
+    }
+}
+
+/** One labelled part of a code, big enough to read off and tappable to copy. */
+@Composable
+private fun CodeRow(label: String, value: String, mono: Boolean = true) {
+    val clip = LocalClipboardManager.current
+    var copied by remember(value) { mutableStateOf(false) }
+    Column(
+        Modifier.fillMaxWidth().padding(bottom = 10.dp).clip(RoundedCornerShape(Tray.INNER))
+            .background(D.Fill).clickable {
+                clip.setText(AnnotatedString(value)); copied = true
+            }
+            .padding(14.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(label, color = D.Quiet, fontSize = 11.sp, fontWeight = FontWeight.SemiBold,
+                letterSpacing = 0.8.sp, modifier = Modifier.weight(1f))
+            Text(if (copied) "Copied" else "Copy", color = D.Blue, fontSize = 12.sp,
+                fontWeight = FontWeight.Bold)
+        }
+        Spacer(Modifier.height(4.dp))
+        Text(
+            value, color = D.Black, fontSize = if (mono) 19.sp else 14.sp,
+            fontWeight = FontWeight.Bold,
+            fontFamily = if (mono) FontFamily.Monospace else FontFamily.Default,
+            lineHeight = 24.sp,
+        )
+    }
+}
+
 /** The one line that has to be on every shop screen: this is the real-money corner of the app. */
 @Composable
 private fun MainnetNote() {
@@ -3819,7 +3937,10 @@ private fun ShopSection(
         val alwaysOpen = section.products.size <= 6
         // Only where a code is the thing being bought. A DTH recharge credits a set-top box
         // and has nothing to email.
-        if (section.products.any { "online" in it.redemption }) {
+        // Gated on "comes back to YOU", not on the redemption method. The first version asked
+        // for `"online" in redemption`, which is false for PhonePe — it redeems by phone — so
+        // the one shelf where somebody bought a gift card never offered to email them a copy.
+        if (section.products.any { it.recipient == "none" }) {
             EmailRow(email, onEmail)
         }
         section.products.forEach { p ->
@@ -4430,16 +4551,12 @@ private fun TxnRow(t: History.Txn, onOpen: () -> Unit) {
             // and tapping it copies rather than opening the row. A code you cannot get out of
             // the app is barely delivered.
             if (t.code != null) {
-                val clip = LocalClipboardManager.current
-                var copied by remember(t.code) { mutableStateOf(false) }
+                // A summary, not the code itself. Cramming a card number and a PIN onto one
+                // ellipsized line showed neither properly and copied both as one blob; the
+                // row opens the sheet where each part is labelled and separately copyable.
                 Text(
-                    if (copied) "Copied" else t.code,
-                    color = D.Blue, fontSize = 12.sp, maxLines = 1,
-                    fontFamily = FontFamily.Monospace,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.clip(RoundedCornerShape(6.dp)).clickable {
-                        clip.setText(AnnotatedString(t.code)); copied = true
-                    },
+                    "Tap for the code", color = D.Blue, fontSize = 12.sp, maxLines = 1,
+                    fontWeight = FontWeight.SemiBold,
                 )
             } else {
                 Text(t.note ?: t.category, color = if (t.note != null) D.Blue else D.Quiet,

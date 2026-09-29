@@ -1,6 +1,8 @@
 package so.duffle.app
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -69,5 +71,57 @@ class OrderStatusTest {
         assertFalse(o.delivered)
         assertFalse(o.failed)
         assertTrue(o.waiting)
+    }
+}
+
+/**
+ * Reading a delivered gift card back out of storage.
+ *
+ * The real payload, from a PhonePe card that was actually bought:
+ * `{"code":"9092609239069813","pin":"171129","expiration_date":"2027-09-28T00:00:00.000Z"}`
+ *
+ * The first version flattened that to "code\npin", which kept every character and lost which
+ * was which — a sixteen-digit run above a six-digit run, on a row showing one line. Both
+ * formats have to read back correctly now, because a card bought under the old one is still in
+ * somebody's history.
+ */
+class RedemptionTest {
+
+    @Test fun `the real PhonePe payload reads back in parts`() {
+        val r = Shop.Redemption.of(
+            """{"code":"9092609239069813","pin":"171129","expires":"2027-09-28T00:00:00.000Z"}"""
+        )!!
+        assertEquals("9092609239069813", r.code)
+        assertEquals("171129", r.pin)
+        assertEquals("2027-09-28T00:00:00.000Z", r.expires)
+    }
+
+    @Test fun `a card stored in the old flat format is split back`() {
+        // Written by our own joiner, code first then pin, so this is a format we own rather
+        // than an inference about somebody else's.
+        val r = Shop.Redemption.of("9092609239069813\n171129")!!
+        assertEquals("9092609239069813", r.code)
+        assertEquals("171129", r.pin)
+    }
+
+    @Test fun `a bare single-line code stays a code`() {
+        val r = Shop.Redemption.of("ABCD-EFGH-IJKL")!!
+        assertEquals("ABCD-EFGH-IJKL", r.code)
+        assertNull(r.pin)
+    }
+
+    @Test fun `nothing stored reads back as nothing`() {
+        assertNull(Shop.Redemption.of(null))
+        assertNull(Shop.Redemption.of(""))
+        assertNull(Shop.Redemption.of("   "))
+    }
+
+    @Test fun `a round trip keeps every part`() {
+        val before = Shop.Redemption(
+            code = "C1", pin = "P2", link = "https://x.example", instructions = "Use it",
+            expires = "2027-01-01", raw = "note: hello",
+        )
+        val after = Shop.Redemption.of(before.toJson())!!
+        assertEquals(before, after)
     }
 }
