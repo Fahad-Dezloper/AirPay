@@ -89,7 +89,10 @@ class VouchTest {
     }
 
     @Test fun `an expired link is refused`() {
-        val past = LocalDate.now().minusDays(1).toEpochDay()
+        // UTC, because `Link.expired()` is UTC. With the local zone this passed for most of the
+        // day and failed between 00:00 and 05:30 IST, where the local date is already tomorrow
+        // and "yesterday" is still today in UTC — so the link it called expired was live.
+        val past = LocalDate.now(java.time.ZoneOffset.UTC).minusDays(1).toEpochDay()
         val signed = signedBy(owner, ownerAddress, wallet, past)
         // Signed perfectly well — and still no.
         assertNotNull(PublicKey(ownerAddress))
