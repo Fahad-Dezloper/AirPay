@@ -4024,13 +4024,7 @@ private fun ShopSection(
                                 // printed straight after the currency symbol, so the button to
                                 // buy a ₹399 subscription read "₹Amazon Prime Subscription 3M".
                                 val price = "${symbolFor(p.currency)}${pack.price}"
-                                // What the price buys, when the value says more than the number
-                                // already does. 399 and 1499 are three months and twelve, and a
-                                // row of bare prices does not say which is which.
-                                val what = pack.value
-                                    .takeIf { pack.amount > 0 && it.toIntOrNull() == null }
-                                    ?.removePrefix(p.name.removeSuffix(" India"))
-                                    ?.trim()?.takeIf { it.isNotBlank() }
+                                val what = packageLabel(pack, p.name)
                                 Column(
                                     Modifier.clip(RoundedCornerShape(if (what == null) 999.dp else 16.dp))
                                         .background(D.Blue).clickable { onBuy(p, pack.value) }
@@ -4052,6 +4046,23 @@ private fun ShopSection(
         Spacer(Modifier.height(20.dp))
     }
 }
+
+/**
+ * What the price buys, when the value says more than the number already does.
+ *
+ * 399 and 1499 are three months of Prime and twelve, and a row of bare prices does not say
+ * which is which — so a value like "Amazon Prime Subscription 3M" is printed under the price
+ * as a caption, with the product's own name trimmed off the front of it.
+ *
+ * A value that is **just a number** is already on the pill and must not be repeated. The test
+ * for that was `toIntOrNull()`, which is true of 399 and false of **1.8** — so Tinder's $1.80
+ * pill carried a second line reading "1.8", and the eSIM's four fractional prices would each
+ * have done the same. A price is a number whether or not it is a whole one.
+ */
+internal fun packageLabel(pack: Shop.Package, productName: String): String? = pack.value
+    .takeIf { pack.amount > 0 && it.toDoubleOrNull() == null }
+    ?.removePrefix(productName.removeSuffix(" India"))
+    ?.trim()?.takeIf { it.isNotBlank() }
 
 private fun symbolFor(currency: String) = when (currency) {
     "INR" -> "₹"
