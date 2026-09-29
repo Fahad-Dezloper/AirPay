@@ -125,3 +125,36 @@ class RedemptionTest {
         assertEquals(before, after)
     }
 }
+
+/**
+ * Which number to print as a package's price.
+ *
+ * Bitrefill sends two, and they disagree. `value` is the clean face value; `amount` carries a
+ * rounding artefact — KFC's ₹1000 card is `value "1000"` with `amount 999.92`, and Bigbasket's
+ * ₹5000 is 4999.59. Showing `amount` put those on screen as the price of the card.
+ *
+ * But `amount` cannot simply be dropped: for a bundle the value is a sentence and the price
+ * lives nowhere else.
+ */
+class PackagePriceTest {
+
+    @Test fun `a clean face value wins over the rounding artefact`() {
+        assertEquals("1000", Shop.Package("1000", 999).price)
+        assertEquals("500", Shop.Package("500", 499).price)
+        assertEquals("100", Shop.Package("100", 100).price)
+    }
+
+    @Test fun `a bundle falls back to the amount, because its value is a sentence`() {
+        assertEquals("859", Shop.Package("2GB/Day 5G Plan – 84 Days", 859).price)
+        assertEquals("219", Shop.Package("30GB – 30 Day Data Pack", 219).price)
+    }
+
+    @Test fun `a genuinely fractional value keeps its paise`() {
+        assertEquals("249.15", Shop.Package("249.15", 249).price)
+    }
+
+    @Test fun `a whole number never prints a decimal point`() {
+        // "1000.0" beside "₹" reads as a bug even when the arithmetic is right.
+        assertEquals("1000", Shop.Package("1000.00", 1000).price)
+    }
+}

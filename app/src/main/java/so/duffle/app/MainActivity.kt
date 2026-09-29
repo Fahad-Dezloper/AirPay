@@ -3675,7 +3675,7 @@ private fun RechargeSection(
                     Row(verticalAlignment = Alignment.Top) {
                         Column(Modifier.width(96.dp)) {
                             Text(
-                                if (pack.amount > 0) "$symbol${pack.amount}" else "$symbol${pack.value}",
+                                "$symbol${pack.price}",
                                 color = if (ready) D.Black else D.Quiet,
                                 fontSize = 21.sp, fontWeight = FontWeight.ExtraBold,
                                 fontFamily = Display, style = Figures,
@@ -4014,8 +4014,7 @@ private fun ShopSection(
                                 // value is a name — "Amazon Prime Subscription 3M" — was being
                                 // printed straight after the currency symbol, so the button to
                                 // buy a ₹399 subscription read "₹Amazon Prime Subscription 3M".
-                                val price = if (pack.amount > 0) "${symbolFor(p.currency)}${pack.amount}"
-                                else "${symbolFor(p.currency)}${pack.value}"
+                                val price = "${symbolFor(p.currency)}${pack.price}"
                                 // What the price buys, when the value says more than the number
                                 // already does. 399 and 1499 are three months and twelve, and a
                                 // row of bare prices does not say which is which.

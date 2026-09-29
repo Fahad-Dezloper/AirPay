@@ -86,7 +86,22 @@ object Shop {
      * It is for **choosing**: the price anybody actually pays comes back on the invoice, in
      * USDC, and is the only number this app treats as authoritative.
      */
-    data class Package(val value: String, val amount: Int, val id: String? = null)
+    data class Package(val value: String, val amount: Int, val id: String? = null) {
+        /**
+         * What to print as the price.
+         *
+         * `value` wins whenever it is a number, because it is the clean face value — KFC's
+         * ₹1000 card has `value: "1000"` and `amount: 999.92`, a rounding artefact of their
+         * pricing that was being shown to people as the price of the card. Bigbasket's ₹5000
+         * reads 4999.59 the same way.
+         *
+         * `amount` is for the products where `value` is a sentence rather than a number: a Jio
+         * bundle's value is "2GB/Day 5G Plan - 84 Days" and its price lives nowhere else.
+         */
+        val price: String get() = value.toDoubleOrNull()
+            ?.let { if (it == Math.floor(it)) it.toLong().toString() else "%.2f".format(it) }
+            ?: amount.toString()
+    }
 
     data class Section(val title: String, val products: List<Product>)
 
