@@ -203,6 +203,8 @@ class MainActivity : ComponentActivity() {
     /** True while a wallet is away getting a link signed, so the button can say so. */
     private var linking by mutableStateOf(false)
     private var renaming by mutableStateOf(false)
+    /** The left panel: who you are, the code to be paid with, and every other screen. */
+    private var drawerOpen by mutableStateOf(false)
     /** Where gift-card codes are also emailed, if anywhere. Optional, kept on this phone. */
     private var myEmail by mutableStateOf<String?>(null)
     private var editingEmail by mutableStateOf(false)
@@ -938,7 +940,7 @@ class MainActivity : ComponentActivity() {
                             me = myDomain ?: myName,
                             // Editing the name IS the profile, for now: it is the only thing
                             // about yourself this app stores, and it is what other phones see.
-                            onProfile = { renaming = true },
+                            onProfile = { drawerOpen = true },
                             onCheck = { checking = !checking },
                             onAlerts = {
                                 tab = Tab.ALERTS
@@ -1346,6 +1348,28 @@ class MainActivity : ComponentActivity() {
                     }
                     }
                     }
+                }
+
+                if (drawerOpen) {
+                    ProfileDrawer(
+                        name = myDomain ?: myName,
+                        address = connected,
+                        walletName = walletList.firstOrNull { it.address == connected }?.name,
+                        isSeeker = myGenesis != null,
+                        network = Chain.NETWORK,
+                        version = BuildConfig.VERSION_NAME,
+                        email = myEmail,
+                        onRename = { drawerOpen = false; renaming = true },
+                        onEmail = { drawerOpen = false; editingEmail = true },
+                        onWallets = {
+                            drawerOpen = false
+                            walletDetails = walletList.firstOrNull { it.address == connected }
+                        },
+                        onShare = { drawerOpen = false; shareText(it) },
+                        onGo = { drawerOpen = false; tab = it },
+                        onDiagnostics = { drawerOpen = false; checking = true },
+                        onClose = { drawerOpen = false },
+                    )
                 }
 
                 offerDetail?.let { o ->

@@ -28,6 +28,19 @@ object Chain {
 
     private const val PUBLIC_RPC = "https://api.mainnet-beta.solana.com"
 
+    /**
+     * Which cluster this build talks to, for the one place that says so out loud.
+     *
+     * Read off the endpoint rather than declared beside it, so a build pointed somewhere else
+     * cannot keep telling people it is on mainnet. The label is on the profile panel above a
+     * line about real money, which is exactly the claim that must not go stale.
+     */
+    val NETWORK: String get() = when {
+        "devnet" in PUBLIC_RPC -> "devnet"
+        "testnet" in PUBLIC_RPC -> "testnet"
+        else -> "mainnet"
+    }
+
     const val LAMPORTS_PER_SOL = 1_000_000_000.0
 
     /** Solana's fee is ~5000 lamports, but leave headroom rather than land on the boundary. */
