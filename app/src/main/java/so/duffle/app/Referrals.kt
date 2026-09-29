@@ -80,8 +80,18 @@ object Referrals {
      * The message that goes out. No link: duffle.so does not resolve, and a share whose one
      * link is dead is worse than one with none — so the code is the thing to carry, and it is
      * spelled out rather than buried at the end of a sentence.
+     *
+     * **[me] is very often empty.** `Identity.label` returns "" for anybody who has never set a
+     * name, which is the default, and the old invite text interpolated it regardless — so the
+     * message this app has been sending reads " is paying people by tapping phones", with a
+     * leading space where the name should be. Naming yourself is optional here, so the sentence
+     * has to work without one rather than assume one.
      */
-    fun message(me: String, code: String, theirReward: Int): String =
-        "$me is paying people by tapping phones with AirPay — no address to type.\n\n" +
+    fun message(me: String, code: String, theirReward: Int): String {
+        val opener = me.trim().takeIf { it.isNotBlank() }
+            ?.let { "$it is paying people by tapping phones with AirPay" }
+            ?: "Pay anyone by tapping phones with AirPay"
+        return "$opener — no address to type.\n\n" +
             "Use my code $code when you join and your first tap earns you $theirReward SKR."
+    }
 }
