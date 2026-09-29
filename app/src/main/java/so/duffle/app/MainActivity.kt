@@ -510,17 +510,18 @@ class MainActivity : ComponentActivity() {
     }
 
     /** Hands the system an invite to pass on. Real, and no more than it says. */
-    private fun shareInvite() {
-        val me = Identity.label(this)
+    /**
+     * Hands text to whatever the phone shares with.
+     *
+     * The message itself is [Referrals.message] rather than a literal here: it carries the
+     * referral code and the amount the rules actually pay, neither of which this activity
+     * knows. All that is left is the Android half.
+     */
+    private fun shareText(text: String) {
         runCatching {
             startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
                 type = "text/plain"
-                putExtra(Intent.EXTRA_TEXT,
-                    // No link until there is a domain to link to. duffle.so does not resolve
-                    // (Phantom's favicon fetch for it fails), and a share message whose one
-                    // link is dead is worse than one with none. See pending.txt.
-                    "$me is paying people by tapping phones with AirPay. " +
-                        "Tap to pay anyone — no address to type.")
+                putExtra(Intent.EXTRA_TEXT, text)
             }, "Invite a friend"))
         }
     }
@@ -1043,6 +1044,7 @@ class MainActivity : ComponentActivity() {
                                     Tab.ALERTS -> "Notifications"
                                     Tab.HISTORY -> "Transactions"
                                     Tab.REWARDS -> "Earn"
+                                    Tab.REFERRALS -> "Refer & earn"
                                     else -> shopSection?.title ?: "Pay a bill"
                                 },
                             ) { tab = Tab.TAP; shopSection = null; shopProduct = null }
@@ -1108,8 +1110,17 @@ class MainActivity : ComponentActivity() {
                             return@Column
                         }
 
+                        if (tab == Tab.REFERRALS) {
+                            ReferralsTab(
+                                connected = connected,
+                                onShare = { shareText(it) },
+                                myName = myDomain ?: Identity.label(this@MainActivity),
+                            )
+                            return@Column
+                        }
+
                         if (tab == Tab.REWARDS) {
-                            RewardsTab(connected, myGenesis != null, onInvite = { shareInvite() })
+                            RewardsTab(connected, myGenesis != null, onInvite = { tab = Tab.REFERRALS })
                             return@Column
                         }
 
@@ -1259,7 +1270,7 @@ class MainActivity : ComponentActivity() {
                                 // Nothing on the server tracks a referral yet, so this shares an
                                 // invite and claims nothing else. A tile that promised a bonus
                                 // nobody is counting would be the one lie on this screen.
-                                onReferrals = { shareInvite() },
+                                onReferrals = { tab = Tab.REFERRALS },
                             )
                         }
 
@@ -1730,7 +1741,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-enum class Tab { TAP, REQUESTS, REWARDS, SHOP, ALERTS, HISTORY }
+enum class Tab { TAP, REQUESTS, REWARDS, REFERRALS, SHOP, ALERTS, HISTORY }
 
 fun ago(at: Long, now: Long = System.currentTimeMillis()): String {
     val s = ((now - at) / 1000).coerceAtLeast(0)
