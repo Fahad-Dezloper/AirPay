@@ -36,9 +36,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
@@ -72,13 +75,14 @@ import kotlinx.coroutines.launch
 internal fun ReferralsTab(
     connected: String?,
     onShare: (String) -> Unit,
+    /** Opens the explainer. Hosted by the Activity so its scrim covers the whole screen. */
+    onHowToRefer: (Referrals.Summary) -> Unit,
     /** The name to put in the message — the same one the rest of the app shows for you. */
     myName: String,
 ) {
     var summary by remember { mutableStateOf<Referrals.Summary?>(null) }
     var loading by remember { mutableStateOf(true) }
     var refresh by remember { mutableIntStateOf(0) }
-    var howOpen by rememberSaveable { mutableStateOf(false) }
     var query by rememberSaveable { mutableStateOf("") }
     var entering by rememberSaveable { mutableStateOf(false) }
     var codeIn by rememberSaveable { mutableStateOf("") }
@@ -116,7 +120,7 @@ internal fun ReferralsTab(
             return@Column
         }
 
-        HowToRefer(howOpen, s) { howOpen = !howOpen }
+        HowToReferPill { onHowToRefer(s) }
         Spacer(Modifier.height(14.dp))
         ReferHero(s) { onShare(Referrals.message(myName, s.code, s.theirReward)) }
         Spacer(Modifier.height(12.dp))
@@ -192,42 +196,32 @@ internal fun ReferralsTab(
     }
 }
 
-/** The three steps, folded away until asked for. */
+/**
+ * The way in to the explainer.
+ *
+ * A pill rather than a link, and drawn with its own mark, because it is the only thing on this
+ * screen that answers "what am I actually agreeing to" — and the answer includes the condition
+ * that the reward waits for a real payment. Somebody who never opens it still sees that line
+ * on the card; this is for the person who wants it spelled out.
+ */
 @Composable
-private fun HowToRefer(open: Boolean, s: Referrals.Summary, onToggle: () -> Unit) {
+private fun HowToReferPill(onOpen: () -> Unit) {
     val interaction = remember { MutableInteractionSource() }
-    Column {
-        Box(
-            Modifier.then(PressScale(interaction)).clip(RoundedCornerShape(999.dp))
-                .background(D.Fill).clickable(interaction, indication = null, onClick = onToggle)
-                .padding(horizontal = 16.dp, vertical = 10.dp),
-        ) {
-            Text(if (open) "How to refer  ▴" else "How to refer  ▾", color = D.Blue,
-                fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+    Row(
+        Modifier.then(PressScale(interaction)).clip(RoundedCornerShape(999.dp))
+            .background(D.Fill).clickable(interaction, indication = null, onClick = onOpen)
+            .padding(start = 14.dp, end = 18.dp, top = 10.dp, bottom = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Canvas(Modifier.size(17.dp)) {
+            val r = size.minDimension / 2
+            drawCircle(D.Blue, r, style = Stroke(size.minDimension * .10f))
+            drawCircle(D.Blue, size.minDimension * .055f, Offset(r, size.height * .30f))
+            drawLine(D.Blue, Offset(r, size.height * .45f), Offset(r, size.height * .74f),
+                strokeWidth = size.minDimension * .10f, cap = StrokeCap.Round)
         }
-        AnimatedVisibility(open) {
-            Column(Modifier.padding(top = 10.dp).fillMaxWidth().clip(RoundedCornerShape(16.dp))
-                .background(D.Fill).padding(16.dp)) {
-                listOf(
-                    "1" to "Send them your code.",
-                    "2" to "They enter it in AirPay before their first payment.",
-                    "3" to "They pay someone by tapping. They earn ${s.theirReward} SKR, you earn ${s.reward}.",
-                ).forEach { (n, line) ->
-                    Row(Modifier.padding(bottom = 10.dp)) {
-                        Text(n, color = D.Blue, fontSize = 13.sp, fontWeight = FontWeight.Bold,
-                            modifier = Modifier.width(20.dp))
-                        Text(line, color = D.Black, fontSize = 13.sp)
-                    }
-                }
-                // The condition, said where somebody reading the rules will look for it rather
-                // than in small print under the button.
-                Text(
-                    "Nothing is paid for joining. A wallet costs nothing to make, so the reward " +
-                        "waits until a real payment has happened.",
-                    color = D.Quiet, fontSize = 12.sp,
-                )
-            }
-        }
+        Spacer(Modifier.width(8.dp))
+        Text("How to refer", color = D.Blue, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
     }
 }
 
@@ -438,6 +432,149 @@ private fun HaveACode(
                 Spacer(Modifier.height(10.dp))
                 PrimaryButton("Use this code", onClaim, enabled = code.length == 8 && !claiming,
                     loading = claiming)
+            }
+        }
+    }
+}
+
+/**
+ * The explainer: three steps, and the one condition that makes them honest.
+ *
+ * On the app's own [Tray] rather than a Material dialog — same scrim, same spring, same corner
+ * as every other sheet here. The steps alternate side to side so the eye zig-zags down them
+ * instead of skimming a list, which is the only reason the reference's layout is shaped that
+ * way and the only reason to copy it.
+ *
+ * Step 3 carries the weight. It is where the reward actually happens, so it is the step that
+ * has to say *a real payment*, not *a sign-up* — and the line under the three repeats it,
+ * because this sheet is exactly where somebody comes to check whether the offer is real.
+ *
+ * The button says "Share your code", not "Refer via WhatsApp": the share sheet is the phone's,
+ * and naming one app we do not integrate with would be a promise about where it goes.
+ */
+@Composable
+internal fun HowToReferSheet(s: Referrals.Summary, onShare: () -> Unit, onClose: () -> Unit) {
+    Tray(onClose = onClose) {
+        Spacer(Modifier.height(10.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("How to refer", color = D.Black, fontSize = 24.sp, fontWeight = FontWeight.Bold,
+                fontFamily = Display, modifier = Modifier.weight(1f))
+            val close = remember { MutableInteractionSource() }
+            Box(
+                Modifier.then(PressScale(close)).size(34.dp).background(D.Fill, CircleShape)
+                    .clickable(close, indication = null, onClick = onClose),
+                contentAlignment = Alignment.Center,
+            ) {
+                Canvas(Modifier.size(13.dp)) {
+                    val w = size.minDimension * .13f
+                    drawLine(D.Black, Offset.Zero, Offset(size.width, size.height),
+                        strokeWidth = w, cap = StrokeCap.Round)
+                    drawLine(D.Black, Offset(size.width, 0f), Offset(0f, size.height),
+                        strokeWidth = w, cap = StrokeCap.Round)
+                }
+            }
+        }
+        Spacer(Modifier.height(22.dp))
+
+        Step(1, "Send them your code", "It is on the screen behind this, ready to share.",
+             artOnLeft = false)
+        Step(2, "They enter it in AirPay",
+             "Before their first payment — a code is an invitation, not a receipt.",
+             artOnLeft = true)
+        Step(3, "They pay someone by tapping",
+             "They earn ${s.theirReward} SKR. You earn ${s.reward}.", artOnLeft = false)
+
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "Nothing is paid for joining. A wallet costs nothing to make, so the reward waits " +
+                "until a real payment has happened.",
+            color = D.Quiet, fontSize = 12.5.sp,
+        )
+        Spacer(Modifier.height(18.dp))
+        PrimaryButton("Share your code", onShare)
+        Spacer(Modifier.height(4.dp))
+    }
+}
+
+/** One step: a number, a line, and a drawing, with the drawing on alternating sides. */
+@Composable
+private fun Step(n: Int, title: String, detail: String, artOnLeft: Boolean) {
+    Row(
+        Modifier.fillMaxWidth().padding(bottom = 20.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (artOnLeft) {
+            StepArt(n)
+            Spacer(Modifier.width(16.dp))
+        }
+        Column(Modifier.weight(1f)) {
+            Text("STEP $n", color = D.Quiet, fontSize = 10.5.sp, letterSpacing = 1.4.sp,
+                fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(5.dp))
+            Text(title, color = D.Black, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(3.dp))
+            Text(detail, color = D.Quiet, fontSize = 13.sp)
+        }
+        if (!artOnLeft) {
+            Spacer(Modifier.width(16.dp))
+            StepArt(n)
+        }
+    }
+}
+
+/**
+ * The three vignettes, drawn rather than drawn *for* us.
+ *
+ * Built from the shapes the rest of the app already uses — the code rail, a phone, the two
+ * rings of a tap, the coin discs of a reward — so the sheet reads as this app explaining
+ * itself rather than as stock illustration dropped into it.
+ */
+@Composable
+private fun StepArt(n: Int) {
+    Box(Modifier.size(86.dp).background(D.Blue.copy(alpha = .09f), CircleShape)) {
+        Canvas(Modifier.fillMaxSize().padding(18.dp)) {
+            val w = size.width
+            val h = size.height
+            val line = w * .085f
+            when (n) {
+                // 1 — the code rail, going out. The arrow leaves the card, which is the whole
+                // action of the step.
+                1 -> {
+                    drawRoundRect(D.Blue, Offset(0f, h * .16f), Size(w * .74f, h * .40f),
+                        CornerRadius(w * .10f))
+                    drawLine(Color.White, Offset(w * .10f, h * .30f), Offset(w * .50f, h * .30f),
+                        strokeWidth = line * .8f, cap = StrokeCap.Round)
+                    drawLine(Color.White, Offset(w * .10f, h * .43f), Offset(w * .36f, h * .43f),
+                        strokeWidth = line * .8f, cap = StrokeCap.Round)
+                    drawLine(D.Blue, Offset(w * .22f, h * .80f), Offset(w, h * .80f),
+                        strokeWidth = line, cap = StrokeCap.Round)
+                    drawLine(D.Blue, Offset(w * .76f, h * .62f), Offset(w, h * .80f),
+                        strokeWidth = line, cap = StrokeCap.Round)
+                    drawLine(D.Blue, Offset(w * .76f, h * .98f), Offset(w, h * .80f),
+                        strokeWidth = line, cap = StrokeCap.Round)
+                }
+                // 2 — a phone with the code typed into it, and a tick.
+                2 -> {
+                    drawRoundRect(D.Blue, Offset(w * .16f, 0f), Size(w * .52f, h),
+                        CornerRadius(w * .14f), style = Stroke(line))
+                    drawRoundRect(D.Blue.copy(alpha = .30f), Offset(w * .26f, h * .30f),
+                        Size(w * .32f, h * .16f), CornerRadius(w * .05f))
+                    drawLine(D.Blue, Offset(w * .32f, h * .68f), Offset(w * .40f, h * .78f),
+                        strokeWidth = line, cap = StrokeCap.Round)
+                    drawLine(D.Blue, Offset(w * .40f, h * .78f), Offset(w * .60f, h * .56f),
+                        strokeWidth = line, cap = StrokeCap.Round)
+                }
+                // 3 — two rings meeting, the way the avatars meet on a tap, over a coin.
+                else -> {
+                    val r = w * .26f
+                    drawCircle(D.Blue.copy(alpha = .40f), r, Offset(w * .34f, h * .38f),
+                        style = Stroke(line))
+                    drawCircle(D.Blue, r, Offset(w * .66f, h * .38f), style = Stroke(line))
+                    listOf(.86f to .34f, .74f to .20f).forEachIndexed { i, (cw, dy) ->
+                        drawOval(D.Blue.copy(alpha = .35f + i * .35f),
+                            Offset(w * (1 - cw) / 2, h * (.70f + dy)), Size(w * cw, h * .17f))
+                    }
+                }
             }
         }
     }

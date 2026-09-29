@@ -152,6 +152,10 @@ class MainActivity : ComponentActivity() {
     private var cards by mutableStateOf(false)
     /** The wallet whose details sheet is open, or null. */
     private var walletDetails by mutableStateOf<Linked?>(null)
+    /** The referral explainer, held here so its scrim covers the screen rather than the
+     *  padded column the tab is drawn inside. Carries the summary because the numbers in
+     *  it are the server's, and this Activity does not read them. */
+    private var howToRefer by mutableStateOf<Referrals.Summary?>(null)
     /** The installed wallet apps, while choosing which one to link. Null when not choosing. */
     private var picker by mutableStateOf<List<WalletLink.App>?>(null)
     /** Every linked wallet, re-read whenever one is added, switched or dropped. */
@@ -1114,6 +1118,7 @@ class MainActivity : ComponentActivity() {
                             ReferralsTab(
                                 connected = connected,
                                 onShare = { shareText(it) },
+                                onHowToRefer = { howToRefer = it },
                                 myName = myDomain ?: Identity.label(this@MainActivity),
                             )
                             return@Column
@@ -1318,6 +1323,18 @@ class MainActivity : ComponentActivity() {
                     }
                     }
                     }
+                }
+
+                howToRefer?.let { s ->
+                    HowToReferSheet(
+                        s = s,
+                        onShare = {
+                            howToRefer = null
+                            shareText(Referrals.message(
+                                myDomain ?: Identity.label(this@MainActivity), s.code, s.theirReward))
+                        },
+                        onClose = { howToRefer = null },
+                    )
                 }
 
                 walletDetails?.let { w ->
