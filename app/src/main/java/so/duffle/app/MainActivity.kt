@@ -156,6 +156,13 @@ class MainActivity : ComponentActivity() {
      *  padded column the tab is drawn inside. Carries the summary because the numbers in
      *  it are the server's, and this Activity does not read them. */
     private var howToRefer by mutableStateOf<Referrals.Summary?>(null)
+    /** The offer whose conditions are open. Hosted here for the same reason as the
+     *  explainer: the scrim belongs to the screen, not to the padded column. */
+    private var offerDetail by mutableStateOf<Rewards.Offer?>(null)
+    private var offerClaiming by mutableStateOf(false)
+    private var offerProblem by mutableStateOf<String?>(null)
+    /** Bumped after a claim so the list re-reads rather than showing what it had. */
+    private var offersReload by mutableIntStateOf(0)
     /** The installed wallet apps, while choosing which one to link. Null when not choosing. */
     private var picker by mutableStateOf<List<WalletLink.App>?>(null)
     /** Every linked wallet, re-read whenever one is added, switched or dropped. */
@@ -1049,6 +1056,7 @@ class MainActivity : ComponentActivity() {
                                     Tab.HISTORY -> "Transactions"
                                     Tab.REWARDS -> "Earn"
                                     Tab.REFERRALS -> "Refer & earn"
+                                    Tab.OFFERS -> "Offers"
                                     else -> shopSection?.title ?: "Pay a bill"
                                 },
                             ) { tab = Tab.TAP; shopSection = null; shopProduct = null }
@@ -1114,6 +1122,17 @@ class MainActivity : ComponentActivity() {
                             return@Column
                         }
 
+                        if (tab == Tab.OFFERS) {
+                            OffersTab(
+                                connected = connected,
+                                isSeeker = myGenesis != null,
+                                onOpenOffer = { offerDetail = it },
+                                onReferrals = { tab = Tab.REFERRALS },
+                                reloadKey = offersReload,
+                            )
+                            return@Column
+                        }
+
                         if (tab == Tab.REFERRALS) {
                             ReferralsTab(
                                 connected = connected,
@@ -1125,7 +1144,11 @@ class MainActivity : ComponentActivity() {
                         }
 
                         if (tab == Tab.REWARDS) {
-                            RewardsTab(connected, myGenesis != null, onInvite = { tab = Tab.REFERRALS })
+                            RewardsTab(
+                                connected, myGenesis != null,
+                                onInvite = { tab = Tab.REFERRALS },
+                                onOffers = { tab = Tab.OFFERS },
+                            )
                             return@Column
                         }
 
@@ -1271,7 +1294,7 @@ class MainActivity : ComponentActivity() {
                             Spacer(Modifier.height(10.dp))
                             EarnTiles(
                                 onRewards = { tab = Tab.REWARDS },
-                                onOffers = { tab = Tab.REWARDS },
+                                onOffers = { tab = Tab.OFFERS },
                                 // Nothing on the server tracks a referral yet, so this shares an
                                 // invite and claims nothing else. A tile that promised a bonus
                                 // nobody is counting would be the one lie on this screen.
@@ -1323,6 +1346,31 @@ class MainActivity : ComponentActivity() {
                     }
                     }
                     }
+                }
+
+                offerDetail?.let { o ->
+                    OfferSheet(
+                        offer = o,
+                        isSeeker = myGenesis != null,
+                        claiming = offerClaiming,
+                        problem = offerProblem,
+                        onClaim = {
+                            val me = connected ?: return@OfferSheet
+                            offerClaiming = true
+                            offerProblem = null
+                            lifecycleScope.launch {
+                                val why = Rewards.claim(o.id, me)
+                                offerClaiming = false
+                                if (why == null) {
+                                    offersReload++
+                                    offerDetail = null
+                                } else {
+                                    offerProblem = Rewards.offerWhy(why)
+                                }
+                            }
+                        },
+                        onClose = { offerDetail = null; offerProblem = null },
+                    )
                 }
 
                 howToRefer?.let { s ->
@@ -1758,7 +1806,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-enum class Tab { TAP, REQUESTS, REWARDS, REFERRALS, SHOP, ALERTS, HISTORY }
+enum class Tab { TAP, REQUESTS, REWARDS, REFERRALS, OFFERS, SHOP, ALERTS, HISTORY }
 
 fun ago(at: Long, now: Long = System.currentTimeMillis()): String {
     val s = ((now - at) / 1000).coerceAtLeast(0)

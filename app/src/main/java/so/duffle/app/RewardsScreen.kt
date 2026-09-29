@@ -79,29 +79,19 @@ import kotlinx.coroutines.launch
  * paid makes the rules look arbitrary the first time one of them refuses.
  */
 @Composable
-internal fun RewardsTab(connected: String?, isSeeker: Boolean, onInvite: () -> Unit) {
+internal fun RewardsTab(
+    connected: String?,
+    isSeeker: Boolean,
+    onInvite: () -> Unit,
+    onOffers: () -> Unit,
+) {
     var summary by remember { mutableStateOf<Rewards.Summary?>(null) }
-    var offers by remember { mutableStateOf<List<Rewards.Offer>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
-    var claiming by remember { mutableStateOf<String?>(null) }
-    /** Why a claim was refused. Shown under the list rather than in a dialog: it is
-     *  information, not an interruption. */
-    var claimProblem by remember { mutableStateOf<String?>(null) }
     var refresh by remember { mutableIntStateOf(0) }
     val scope = rememberCoroutineScope()
     LaunchedEffect(connected, refresh) {
         loading = true
-        // Both at once: they are independent reads, and one after the other made the screen
-        // wait twice — long enough that the offers looked absent rather than pending.
-        val me = connected
-        if (me == null) {
-            summary = null; offers = emptyList()
-        } else coroutineScope {
-            val s = async { Rewards.summary(me) }
-            val o = async { Rewards.offers(me) }
-            summary = s.await()
-            offers = o.await() ?: emptyList()
-        }
+        summary = connected?.let { Rewards.summary(it) }
         loading = false
     }
 
@@ -174,24 +164,10 @@ internal fun RewardsTab(connected: String?, isSeeker: Boolean, onInvite: () -> U
         Text("More ways to earn", color = D.Black, fontSize = 17.sp, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(12.dp))
 
-        if (loading && offers.isEmpty()) {
-            Text("Checking…", color = D.Quiet, fontSize = 13.sp, modifier = Modifier.padding(bottom = 10.dp))
-        }
-        offers.forEach { offer ->
-            OfferCard(offer, isSeeker, claiming == offer.id, enabled = claiming == null) {
-                val me = connected ?: return@OfferCard
-                claiming = offer.id
-                scope.launch {
-                    val why = Rewards.claim(offer.id, me)
-                    claiming = null
-                    if (why == null) refresh++ else claimProblem = Rewards.offerWhy(why)
-                }
-            }
-        }
-        claimProblem?.let {
-            Text(it, color = D.Danger, fontSize = 12.sp, modifier = Modifier.padding(bottom = 8.dp))
-        }
-
+        // Two doors rather than the offers themselves. They used to be listed here *and*
+        // on the Offers screen, which meant two places to claim the same thing and two places
+        // to keep right; a list that exists twice is a list that disagrees with itself.
+        EarnDoor("Offers", "Pay an app, earn SKR", onOffers)
         InviteCard(onInvite)
 
         // ---------------------------------------------------------------- what earned nothing
@@ -442,53 +418,30 @@ private fun WeekProgress(s: Rewards.Summary) {
     }
 }
 
-/** One offer: pay a particular app, earn SKR. The funder is named — it is their money. */
+/** A way out of this screen to one that earns. Same shape as [InviteCard], deliberately. */
 @Composable
-private fun OfferCard(
-    offer: Rewards.Offer, isSeeker: Boolean, busy: Boolean, enabled: Boolean, onClaim: () -> Unit,
-) {
-    Column(
-        Modifier.fillMaxWidth().padding(bottom = 10.dp).clip(RoundedCornerShape(16.dp))
-            .background(D.Fill).padding(16.dp),
+private fun EarnDoor(title: String, detail: String, onOpen: () -> Unit) {
+    val interaction = remember { MutableInteractionSource() }
+    Row(
+        Modifier.then(PressScale(interaction)).fillMaxWidth().padding(bottom = 10.dp)
+            .clip(RoundedCornerShape(16.dp)).background(D.Fill)
+            .clickable(interaction, indication = null, onClick = onOpen).padding(16.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text(offer.what, color = D.Black, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                Text(
-                    if (offer.funder == "duffle") "${offer.app} · from AirPay"
-                    else "${offer.app} · from ${offer.funder}",
-                    color = D.Quiet, fontSize = 12.sp,
-                )
-            }
-            if (offer.reward > 0) {
-                Text("${offer.reward} SKR", color = D.Blue, fontSize = 14.sp,
-                    fontWeight = FontWeight.Bold, style = Figures)
-            }
+        Canvas(Modifier.size(38.dp)) {
+            // The notched ticket of the Offers tile, so the door looks like where it goes.
+            val w = size.width
+            drawRoundRect(D.Blue, Offset(w * .08f, w * .26f), androidx.compose.ui.geometry.Size(w * .84f, w * .48f),
+                androidx.compose.ui.geometry.CornerRadius(w * .12f))
+            drawCircle(D.Fill, w * .10f, Offset(w * .08f, w * .5f))
+            drawCircle(D.Fill, w * .10f, Offset(w * .92f, w * .5f))
         }
-        Spacer(Modifier.height(10.dp))
-        when {
-            offer.state == "paid" -> Text("✓ Earned ${offer.earned} SKR", color = D.Blue, fontSize = 13.sp)
-            // Claimed and waiting. The reason it hasn't paid is worth showing: "pay again" is
-            // actionable, "nothing happened" is not.
-            offer.waiting -> Text(
-                Rewards.offerWhy(offer.refused)
-                    ?: "Claimed · pay ${offer.app} within ${offer.windowHours}h",
-                color = D.Quiet, fontSize = 13.sp,
-            )
-            offer.state == "expired" ->
-                Text("The window closed — claim it again", color = D.Quiet, fontSize = 13.sp)
-            // Say it before, not after. A live Claim button on a phone that can never claim is
-            // the same mistake as a rule nobody hears about until they are not paid — and this
-            // one is answerable on the spot, because the app already knows about Genesis.
-            !isSeeker -> Text("Seeker only — this wallet holds no Genesis Token",
-                color = D.Quiet, fontSize = 13.sp)
-            else -> Button(
-                onClick = onClaim,
-                enabled = enabled,
-                colors = ButtonDefaults.buttonColors(containerColor = D.Blue, contentColor = D.White),
-                shape = RoundedCornerShape(10.dp),
-            ) { Text(if (busy) "…" else "Claim", fontWeight = FontWeight.Bold) }
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(title, color = D.Black, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+            Text(detail, color = D.Quiet, fontSize = 12.sp)
         }
+        Text("Open", color = D.Blue, fontSize = 14.sp, fontWeight = FontWeight.Bold)
     }
 }
 
