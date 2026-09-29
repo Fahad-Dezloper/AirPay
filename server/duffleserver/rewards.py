@@ -35,10 +35,23 @@ CHAIN_UNREACHABLE = "chain_unreachable"
 #: We never learned who paid, so there is nobody to pay.
 NO_PAYER = "no_payer"
 
+# Why a referral could not be claimed. Same discipline as the refusals above: named once, so
+# the app and the admin view talk about the same set.
+UNKNOWN_CODE = "unknown_code"
+SELF_REFERRAL = "self_referral"
+ALREADY_REFERRED = "already_referred"
+#: Claimed after the invitee had already earned their first payment. A code is an invitation,
+#: not a receipt — letting it be claimed afterwards would pay for people who were already here.
+REFERRAL_TOO_LATE = "referral_too_late"
+
 # What a reward is for.
 FIRST_PAYMENT = "first_payment"
 PER_PAYMENT = "per_payment"
 STREAK = "streak"
+#: Paid to the *inviter*, when someone they invited makes their first rewarded tap. Never paid
+#: on the invitee's say-so alone — a wallet is free, so "I joined" has to cost a real payment
+#: before it is worth anything.
+REFERRAL = "referral"
 
 
 @dataclass(frozen=True)
@@ -57,6 +70,10 @@ class Config:
     first_payment: int = 250
     per_payment: int = 50
     streak: int = 200
+    #: To the inviter, once the person they invited has made a first rewarded payment. Larger
+    #: than per_payment because it costs the inviter something real to bring somebody, and
+    #: smaller than first_payment because the invitee is the one who had to turn up.
+    referral: int = 300
     #: Rewarded payments in one week that complete a streak.
     streak_needed: int = 4
     #: Rewarded payments allowed per week (the streak is the last of them).
@@ -90,7 +107,7 @@ class Config:
     #: silently invent a setting nobody reads.
     TUNABLE = ("first_payment", "per_payment", "streak", "streak_needed", "weekly_payments",
                "monthly_cap", "user_cap", "weekly_pool", "cooldown_days",
-               "counterparty_min_age_days", "lock_days")
+               "counterparty_min_age_days", "lock_days", "referral")
 
     def with_overrides(self, values: dict) -> "Config":
         """A copy with whatever the database says on top. Unknown or unusable values are
@@ -240,6 +257,35 @@ def evaluate(payment: Payment, history: History, now: float, config: Config | No
         left -= awards[-1].skr
 
     return Decision(tuple(awards), None, now + c.lock_days * DAY)
+
+
+def referral_award(history: History, now: float, config: Config | None = None) -> Decision:
+    """What the **inviter** earns when someone they invited makes a first rewarded payment.
+
+    Separate from [evaluate] rather than folded into it, because every award [evaluate] returns
+    belongs to the payer, and this one belongs to somebody who was not there. Forcing it into
+    that return type is how a reward ends up credited to the wrong wallet.
+
+    It still answers to the same caps. A referral is the easiest reward to manufacture — invite
+    a wallet you also control, pay it once — so it is the last one that should be allowed to
+    ignore the pool, the campaign cap or the month.
+    """
+    c = config or Config()
+    remaining = c.user_cap - history.earned_in_campaign
+    if remaining <= 0:
+        return Decision(refused=CAMPAIGN_CAP)
+    monthly_left = c.monthly_cap - history.earned_this_month
+    if monthly_left <= 0:
+        return Decision(refused=MONTHLY_CAP)
+    remaining = min(remaining, monthly_left)
+    if history.pool_left is not None:
+        if history.pool_left <= 0:
+            return Decision(refused=POOL_EMPTY)
+        remaining = min(remaining, history.pool_left)
+    if remaining <= 0:
+        return Decision(refused=POOL_EMPTY)
+    skr = min(c.referral, remaining)
+    return Decision((Award(REFERRAL, skr),), None, now + c.lock_days * DAY)
 
 
 def week_of(at: float) -> int:

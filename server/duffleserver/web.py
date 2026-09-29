@@ -24,6 +24,7 @@ HEARTBEAT = 15.0
 _PROOF_PATH = re.compile(r"^/v1/offers/([A-Za-z0-9_-]{1,64})/proof$")
 _CLAIM_PATH = re.compile(r"^/v1/offers/([A-Za-z0-9_-]{1,64})/claim$")
 _REWARDS_PATH = re.compile(r"^/v1/rewards/([1-9A-HJ-NP-Za-km-z]{32,44})$")
+_REFERRALS_PATH = re.compile(r"^/v1/referrals/([1-9A-HJ-NP-Za-km-z]{32,44})$")
 _REQ_PATH = re.compile(r"^/v1/requests/([1-9A-HJ-NP-Za-km-z]{32,44})$")
 
 
@@ -96,6 +97,12 @@ def make_handler(service, helius_auth: str | None, limiter: RateLimit | None = N
                 if not is_address(m.group(1)):
                     return self._json(400, {"error": "invalid address"})
                 return self._json(200, service.reward_summary(m.group(1)))
+            m = _REFERRALS_PATH.match(url.path)
+            if m:
+                from .verify import is_address
+                if not is_address(m.group(1)):
+                    return self._json(400, {"error": "invalid address"})
+                return self._json(200, service.referral_summary(m.group(1)))
             if url.path == "/v1/shop":
                 # Public: a catalogue is not a secret, and the key that reads it stays here.
                 return self._json(200, {"enabled": shop.enabled, "sections": shop.sections()})
@@ -268,6 +275,9 @@ def make_handler(service, helius_auth: str | None, limiter: RateLimit | None = N
                     # a URL. It changes only whether a card is shown covered.
                     return self._json(200, service.reveal_reward(
                         body.get("address") or "", int(body.get("id") or 0)))
+                if path == "/v1/referrals/claim":
+                    return self._json(200, service.claim_referral(
+                        body.get("code") or "", body.get("address") or ""))
                 if path == "/v1/offers":
                     # Creating an offer is ours, not a user's — it spends the pool.
                     if not admin_token or self.headers.get("Authorization") != f"Bearer {admin_token}":

@@ -11,12 +11,17 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+import hashlib
 import time
 
 
 class Conflict(Exception):
     pass
 
+
+#: Crockford-ish: no I, L, O or U. See Store.referral_code.
+CODE_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+CODE_LENGTH = 8
 
 class Store:
     def __init__(self, path: str = ":memory:"):
@@ -122,6 +127,26 @@ class Store:
                     updated_at REAL
                 );
 
+                -- A short code somebody can read down a phone line, mapped to the wallet it
+                -- belongs to. Stored rather than derived both ways: a code short enough to
+                -- type is too short to reverse into an address, so the mapping has to live
+                -- somewhere, and collisions have to be resolvable.
+                CREATE TABLE IF NOT EXISTS referral_codes (
+                    code    TEXT PRIMARY KEY,
+                    address TEXT NOT NULL UNIQUE,
+                    at      REAL NOT NULL
+                );
+                -- Who invited whom. The invitee is the key: you can be invited once, by one
+                -- person, and no later claim overwrites the first.
+                CREATE TABLE IF NOT EXISTS referrals (
+                    invitee TEXT PRIMARY KEY,
+                    inviter TEXT NOT NULL,
+                    at      REAL NOT NULL,
+                    -- When the inviter was actually paid, which only happens once the invitee
+                    -- has made a first rewarded payment.
+                    paid_at REAL
+                );
+                CREATE INDEX IF NOT EXISTS referrals_inviter ON referrals(inviter, at);
                 CREATE TABLE IF NOT EXISTS devices (
                     recipient  TEXT NOT NULL,
                     token      TEXT NOT NULL,
@@ -507,6 +532,77 @@ class Store:
             rows = self._db.execute(
                 "SELECT * FROM rewards WHERE payer=? ORDER BY created_at DESC LIMIT ?", (payer, limit),
             ).fetchall()
+        return [dict(r) for r in rows]
+
+    # -- referrals --------------------------------------------------------------------------
+
+    def referral_code(self, address: str, now: float) -> str:
+        """This wallet's code, made once and then never changed.
+
+        Derived from the address rather than drawn at random, so the same wallet asking twice
+        on two phones gets the same answer without either having to store it. The alphabet
+        drops I, L, O and U — the first three because they are unreadable next to 1 and 0 when
+        somebody is reading a code aloud, the last because it turns short codes into words
+        nobody wants printed on their invite.
+        """
+        with self._lock, self._db:
+            row = self._db.execute(
+                "SELECT code FROM referral_codes WHERE address=?", (address,)).fetchone()
+            if row is not None:
+                return row["code"]
+            digest = hashlib.sha256(f"airpay-referral-v1:{address}".encode()).digest()
+            for attempt in range(64):
+                # Re-hashed rather than incremented on collision: bumping the last character
+                # would put two colliding wallets on adjacent codes, so a typo in one lands on
+                # the other.
+                raw = digest if attempt == 0 else hashlib.sha256(digest + bytes([attempt])).digest()
+                n = int.from_bytes(raw[:8], "big")
+                code = ""
+                for _ in range(CODE_LENGTH):
+                    code += CODE_ALPHABET[n % len(CODE_ALPHABET)]
+                    n //= len(CODE_ALPHABET)
+                taken = self._db.execute(
+                    "SELECT address FROM referral_codes WHERE code=?", (code,)).fetchone()
+                if taken is None:
+                    self._db.execute(
+                        "INSERT INTO referral_codes(code,address,at) VALUES (?,?,?)",
+                        (code, address, now))
+                    return code
+            raise RuntimeError("could not allocate a referral code")
+
+    def address_for_code(self, code: str) -> str | None:
+        with self._lock:
+            row = self._db.execute(
+                "SELECT address FROM referral_codes WHERE code=?", (code.strip().upper(),)
+            ).fetchone()
+        return row["address"] if row else None
+
+    def record_referral(self, invitee: str, inviter: str, now: float) -> bool:
+        """Writes down who invited whom. False if this invitee was already claimed by someone."""
+        with self._lock, self._db:
+            cur = self._db.execute(
+                "INSERT OR IGNORE INTO referrals(invitee,inviter,at) VALUES (?,?,?)",
+                (invitee, inviter, now))
+            return cur.rowcount > 0
+
+    def referral_of(self, invitee: str) -> dict | None:
+        with self._lock:
+            row = self._db.execute(
+                "SELECT * FROM referrals WHERE invitee=?", (invitee,)).fetchone()
+        return dict(row) if row else None
+
+    def mark_referral_paid(self, invitee: str, now: float) -> None:
+        with self._lock, self._db:
+            self._db.execute(
+                "UPDATE referrals SET paid_at=? WHERE invitee=? AND paid_at IS NULL",
+                (now, invitee))
+
+    def referrals_by(self, inviter: str) -> list[dict]:
+        """Everyone this wallet invited, newest first — including the ones who never paid,
+        because "invited 6, 2 have paid" is the honest version of a referral count."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT * FROM referrals WHERE inviter=? ORDER BY at DESC", (inviter,)).fetchall()
         return [dict(r) for r in rows]
 
     def reveal_reward(self, payer: str, reward_id: int, now: float) -> float | None:

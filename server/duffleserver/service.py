@@ -297,7 +297,91 @@ class Service:
                                       "kinds": ",".join(a.kind for a in decision.awards),
                                       "unlock_at": decision.unlock_at or now})
         self.store.record_attempt(reference, payer, recipient, decision.refused, decision.total, now)
+        # Whoever invited this payer, if this was the payment that proved they turned up.
+        if any(a.kind == rewards.FIRST_PAYMENT for a in decision.awards):
+            self._pay_referrer(payer, reference, now, config)
         return decision
+
+    def _pay_referrer(self, invitee: str, reference: str, now: float, config: rewards.Config) -> None:
+        """Pays the inviter, once, on the invitee's first rewarded payment.
+
+        Hung off the first payment rather than off the claim, because a claim costs nothing: a
+        wallet is free, so "somebody joined with my code" is worth exactly nothing until they
+        have made a real payment the rules already agreed to reward. That single condition is
+        what stops a referral from being the cheapest reward in the system to manufacture.
+        """
+        link = self.store.referral_of(invitee)
+        if link is None or link.get("paid_at") is not None:
+            return
+        inviter = link["inviter"]
+        past = self.store.reward_history(inviter, "", now, rewards.week_of(now), month_start(now))
+        decision = rewards.referral_award(
+            rewards.History(
+                payer_is_seeker=True,
+                earned_in_campaign=past["earned_in_campaign"],
+                earned_this_month=past["earned_this_month"],
+                pool_left=max(0, config.weekly_pool - past["week_spent"]),
+            ),
+            now, config,
+        )
+        if not decision.earned:
+            # Not marked paid: the inviter is owed this, and a later first payment by somebody
+            # else they invited will find the pool refilled.
+            log.info("referral for %s… not paid: %s", inviter[:8], decision.refused)
+            return
+        written = self.store.record_rewards(
+            reference, inviter, invitee, [(a.kind, a.skr) for a in decision.awards],
+            rewards.week_of(now), now, decision.unlock_at or now,
+        )
+        if written:
+            self.store.mark_referral_paid(invitee, now)
+            log.info("referral %s SKR to %s… for inviting %s…",
+                     decision.total, inviter[:8], invitee[:8])
+            self._deliver(inviter, {"type": "reward", "reference": reference,
+                                    "skr": decision.total, "kinds": rewards.REFERRAL,
+                                    "unlock_at": decision.unlock_at or now})
+
+    # -- referrals --------------------------------------------------------------------------
+
+    def referral_summary(self, address: str) -> dict:
+        """This wallet's own code, and how the people it invited are getting on."""
+        config = self.reward_config()
+        invited = self.store.referrals_by(address)
+        return {
+            "code": self.store.referral_code(address, time.time()),
+            "reward": config.referral,
+            # What the person being invited gets, which is the half worth putting in the
+            # message: it is their reason to accept, not ours.
+            "their_reward": config.first_payment,
+            "invited": len(invited),
+            "paid": sum(1 for r in invited if r.get("paid_at")),
+            "earned": sum(1 for r in invited if r.get("paid_at")) * config.referral,
+            # Who was invited, so the screen can show progress rather than a bare count.
+            "people": [{"invitee": r["invitee"], "at": r["at"], "paid": bool(r.get("paid_at"))}
+                       for r in invited[:20]],
+        }
+
+    def claim_referral(self, code: str, address: str) -> dict:
+        """Records that `address` was invited by whoever owns `code`.
+
+        Every refusal here is a rule somebody would otherwise farm: your own code, a second
+        code after the first, or a code produced after you had already earned — which would
+        turn an invitation into a receipt for people who were already here.
+        """
+        inviter = self.store.address_for_code(code or "")
+        if inviter is None:
+            return {"ok": False, "refused": rewards.UNKNOWN_CODE}
+        if inviter == address:
+            return {"ok": False, "refused": rewards.SELF_REFERRAL}
+        if self.store.referral_of(address) is not None:
+            return {"ok": False, "refused": rewards.ALREADY_REFERRED}
+        now = time.time()
+        past = self.store.reward_history(address, "", now, rewards.week_of(now), month_start(now))
+        if past["had_first_payment"]:
+            return {"ok": False, "refused": rewards.REFERRAL_TOO_LATE}
+        if not self.store.record_referral(address, inviter, now):
+            return {"ok": False, "refused": rewards.ALREADY_REFERRED}
+        return {"ok": True, "inviter": inviter}
 
     def _reward_history(self, payer: str, counterparty: str, payer_is_seeker: bool,
                         now: float, config: rewards.Config) -> rewards.History:
