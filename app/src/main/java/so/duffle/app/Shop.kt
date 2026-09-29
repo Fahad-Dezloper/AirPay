@@ -240,8 +240,8 @@ object Shop {
      * one thing the purchase was for.
      */
     data class Delivery(val status: String, val code: String?) {
-        /** See [Orders.Order.delivered] — the invoice says "complete", the order "delivered". */
-        val delivered get() = status == "complete" || status == "delivered"
+        /** See [Orders.Order.delivered] — the invoice says "all_delivered", the order "delivered". */
+        val delivered get() = status in setOf("all_delivered", "complete", "delivered")
         val failed get() = status in setOf("denied", "payment_error", "failed", "expired")
     }
 

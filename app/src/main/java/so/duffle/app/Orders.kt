@@ -56,13 +56,24 @@ class Orders(context: Context) {
         val status: String,
         val at: Long,
     ) {
-        // Bitrefill's vocabulary, taken from the docs and a real invoice rather than guessed.
-        // An INVOICE is "not_delivered" until it reaches one of complete / denied /
-        // payment_error; an ORDER inside it is "created" until "delivered". Both words reach
-        // here, so both are honoured — and the old check for "delivered" alone would have sat
-        // on "complete" forever, polling a purchase that had already arrived.
-        val delivered get() = status == "complete" || status == "delivered"
+        /**
+         * Bitrefill's vocabulary, read off a real delivered invoice rather than taken from the
+         * docs — which turned out to describe it differently.
+         *
+         * An invoice goes `not_delivered` → **`all_delivered`**. The docs name the terminal
+         * state `complete`; the API says `all_delivered`. An order inside the invoice goes
+         * `created` → `delivered`. All three words reach this field depending on which one was
+         * written down, so all three are honoured.
+         *
+         * Two of them nearly cost a purchase: the check was `== "delivered"` alone, so a real
+         * ₹7.47 Jio top-up that arrived on the phone sat at "On its way" forever — polled on
+         * every launch, never settled. `not_delivered` is listed on the other side precisely
+         * because "delivered" is a substring of it and any looser test would invert it.
+         */
+        val delivered get() = status in setOf("all_delivered", "complete", "delivered")
         val failed get() = status in setOf("denied", "payment_error", "failed", "expired")
+        /** Some orders arrived and some did not. Not finished, and not a failure either. */
+        val partial get() = status == "partially_delivered"
         /** Still owed to us. The only state worth putting in front of someone. */
         val waiting get() = !delivered && !failed
     }

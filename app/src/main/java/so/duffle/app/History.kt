@@ -86,10 +86,13 @@ object History {
                 at = o.at,
                 signature = o.signature,
                 note = when {
-                    // The code IS the purchase. A delivered row that says nothing is a receipt
-                    // for something the buyer never received.
+                    // The code IS the purchase, where there is one.
                     !o.code.isNullOrBlank() -> o.code
-                    o.delivered -> "Delivered — no code for this one"
+                    // A top-up has nothing to redeem — the money went to the number, and
+                    // saying so is the useful fact. Confirmed against a real delivered order:
+                    // Bitrefill returns no redemption_info for a phone product, correctly.
+                    o.delivered && !o.recipient.isNullOrBlank() -> "Credited to ${o.recipient}"
+                    o.delivered -> "Delivered"
                     o.failed -> "Didn't go through — ${o.status}"
                     else -> "On its way"
                 },
