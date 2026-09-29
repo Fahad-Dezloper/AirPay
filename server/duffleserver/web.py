@@ -263,6 +263,11 @@ def make_handler(service, helius_auth: str | None, limiter: RateLimit | None = N
                     return self._json(200, service.reward_preview(
                         body.get("payer") or "", body.get("counterparty") or "",
                         body.get("token") or "SOL", int(body.get("units") or 0)))
+                if path == "/v1/rewards/reveal":
+                    # A POST for the same reason as the preview: an address does not belong in
+                    # a URL. It changes only whether a card is shown covered.
+                    return self._json(200, service.reveal_reward(
+                        body.get("address") or "", int(body.get("id") or 0)))
                 if path == "/v1/offers":
                     # Creating an offer is ours, not a user's — it spends the pool.
                     if not admin_token or self.headers.get("Authorization") != f"Bearer {admin_token}":

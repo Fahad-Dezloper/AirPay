@@ -536,6 +536,20 @@ class Service:
                       "lock_days": config.lock_days},
         }
 
+    def reveal_reward(self, address: str, reward_id: int) -> dict:
+        """Uncovers one reward card.
+
+        Deliberately **not** where the amount is decided. The reward was evaluated, credited
+        and counted against the weekly pool when the payment settled; this records that
+        somebody has now looked at it. Deciding it here instead would make the payout depend
+        on opening a screen, which is a lottery, and the whole defence this layer has against
+        farming is that every reward is a fixed consequence of a rule.
+        """
+        at = self.store.reveal_reward(address, reward_id, time.time())
+        if at is None:
+            return {"ok": False, "refused": "unknown_reward"}
+        return {"ok": True, "revealed_at": at}
+
     # -- checks -----------------------------------------------------------------------------
 
     def check_signature(self, signature: str) -> list[str]:

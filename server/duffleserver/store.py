@@ -153,6 +153,16 @@ class Store:
                     self._db.execute(f"ALTER TABLE requests ADD COLUMN {col} {kind}")
             self._db.execute("CREATE INDEX IF NOT EXISTS by_payer ON requests(payer, status)")
 
+        # When the person actually looked at a reward. The rewards screen shows each one as a
+        # card to scratch, and a card that re-covers itself every time the app is reinstalled
+        # would be lying about which ones are new — so this is the server's fact, not the
+        # phone's. It has no effect on the money: the reward was decided, credited and counted
+        # when the payment settled, and scratching only uncovers what is already there.
+        with self._lock, self._db:
+            cols = {r[1] for r in self._db.execute("PRAGMA table_info(rewards)")}
+            if "revealed_at" not in cols:
+                self._db.execute("ALTER TABLE rewards ADD COLUMN revealed_at REAL")
+
     # -- requests ---------------------------------------------------------------------------
 
     def register(self, reference: str, recipient: str, amount: str, lamports: int, label: str,
@@ -498,6 +508,28 @@ class Store:
                 "SELECT * FROM rewards WHERE payer=? ORDER BY created_at DESC LIMIT ?", (payer, limit),
             ).fetchall()
         return [dict(r) for r in rows]
+
+    def reveal_reward(self, payer: str, reward_id: int, now: float) -> float | None:
+        """Marks one reward as seen. Returns when it was first seen, or None if there is no
+        such reward *for this payer* — the id comes from a phone, so it is checked against the
+        owner rather than trusted.
+
+        Writing only when it is still null makes this idempotent: scratching the same card on
+        a second phone shows the first phone's time instead of moving it forward.
+        """
+        with self._lock, self._db:
+            row = self._db.execute(
+                "SELECT revealed_at FROM rewards WHERE id=? AND payer=?", (reward_id, payer),
+            ).fetchone()
+            if row is None:
+                return None
+            if row["revealed_at"] is not None:
+                return float(row["revealed_at"])
+            self._db.execute(
+                "UPDATE rewards SET revealed_at=? WHERE id=? AND revealed_at IS NULL",
+                (now, reward_id),
+            )
+        return now
 
     def reward_balance(self, payer: str, now: float) -> dict:
         with self._lock:

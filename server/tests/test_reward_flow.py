@@ -123,6 +123,56 @@ class FlowTest(unittest.TestCase):
         self.assertEqual(self.svc.reward_config().weekly_pool - 300, s["pool_left"])
         self.assertEqual(2, len(s["recent"]))
 
+    # -- scratch cards ----------------------------------------------------------------
+
+    def test_a_new_reward_has_not_been_looked_at(self):
+        self.pay()
+        self.assertTrue(all(r["revealed_at"] is None for r in self.rewards_of()),
+                        "a freshly earned reward is a card nobody has scratched yet")
+
+    def test_revealing_records_when_it_was_seen(self):
+        self.pay()
+        row = self.rewards_of()[0]
+        out = self.svc.reveal_reward(SEEKER, row["id"])
+        self.assertTrue(out["ok"])
+        after = [r for r in self.rewards_of() if r["id"] == row["id"]][0]
+        self.assertEqual(out["revealed_at"], after["revealed_at"])
+
+    def test_revealing_twice_keeps_the_first_time(self):
+        # Scratching the same card again — on this phone or another one — must not move the
+        # time forward, or "new since you last looked" would never settle.
+        self.pay()
+        row = self.rewards_of()[0]
+        first = self.svc.reveal_reward(SEEKER, row["id"])["revealed_at"]
+        self.assertEqual(first, self.svc.reveal_reward(SEEKER, row["id"])["revealed_at"])
+
+    def test_you_cannot_scratch_somebody_elses_card(self):
+        # The id comes from a phone, so it is checked against the owner rather than trusted.
+        self.pay()
+        row = self.rewards_of()[0]
+        self.assertEqual({"ok": False, "refused": "unknown_reward"},
+                         self.svc.reveal_reward(FRIEND, row["id"]))
+        self.assertIsNone(self.rewards_of()[0]["revealed_at"], "and it stays covered")
+
+    def test_an_unknown_card_is_refused_rather_than_invented(self):
+        self.assertFalse(self.svc.reveal_reward(SEEKER, 9999)["ok"])
+
+    def test_scratching_does_not_change_what_was_earned(self):
+        """The load-bearing property. The card is theatre over a decision already made.
+
+        A reward whose amount depended on opening a screen would be a lottery, and this layer's
+        only defence against farming is that every reward is a fixed consequence of a rule.
+        """
+        self.pay()
+        before = self.svc.reward_summary(SEEKER)
+        for r in self.rewards_of():
+            self.svc.reveal_reward(SEEKER, r["id"])
+        after = self.svc.reward_summary(SEEKER)
+        self.assertEqual(before["balance"], after["balance"])
+        self.assertEqual(before["pool_left"], after["pool_left"])
+        self.assertEqual([(r["kind"], r["skr"]) for r in before["recent"]],
+                         [(r["kind"], r["skr"]) for r in after["recent"]])
+
     def test_the_review_screen_is_told_before_they_pay_not_after(self):
         # The whole point of the preview: a new wallet is visible on the review screen.
         fresh = self.svc.reward_preview(SEEKER, OTHER, "SOL", 100_000_000)

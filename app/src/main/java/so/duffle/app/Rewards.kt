@@ -71,10 +71,21 @@ object Rewards {
     // ------------------------------------------------------------------ what one person has
 
     /** One reward row, or one payment that earned nothing. */
-    data class Row(val kind: String, val skr: Int, val counterparty: String, val at: Long,
-                   val unlockAt: Long, val state: String,
-                   /** Why it was taken back, when it was. Shown rather than hidden. */
-                   val reason: String?)
+    data class Row(
+        /** The server's own id, and the only handle a phone has to say "I looked at this". */
+        val id: Int,
+        val kind: String, val skr: Int, val counterparty: String, val at: Long,
+        val unlockAt: Long, val state: String,
+        /** Why it was taken back, when it was. Shown rather than hidden. */
+        val reason: String?,
+        /**
+         * Whether this card has been scratched, as the **server** remembers it.
+         *
+         * Not kept on the phone: a card that re-covers itself after a reinstall would be lying
+         * about which rewards are new. It has no bearing on the money — see [reveal].
+         */
+        val revealed: Boolean,
+    )
 
     data class Refusal(val counterparty: String, val why: String, val at: Long)
 
@@ -99,9 +110,9 @@ object Rewards {
         val rows = mutableListOf<Row>()
         o.optJSONArray("recent")?.let { a ->
             for (i in 0 until a.length()) a.optJSONObject(i)?.let {
-                rows += Row(it.optString("kind"), it.optInt("skr"), it.optString("counterparty"),
+                rows += Row(it.optInt("id"), it.optString("kind"), it.optInt("skr"), it.optString("counterparty"),
                     (it.optDouble("created_at") * 1000).toLong(), (it.optDouble("unlock_at") * 1000).toLong(),
-                    it.optString("state"), it.text("reason"))
+                    it.optString("state"), it.text("reason"), !it.isNull("revealed_at"))
             }
         }
         val refusals = mutableListOf<Refusal>()
@@ -121,6 +132,28 @@ object Rewards {
             streakNeeded = rates?.optInt("streak_needed") ?: 4, lockDays = rates?.optInt("lock_days") ?: 7,
             rows = rows, refusals = refusals,
         )
+    }
+
+    /**
+     * Uncovers one reward card.
+     *
+     * **This does not decide anything.** The reward was evaluated, credited and counted against
+     * the week's pool the moment the payment settled; all this records is that somebody has now
+     * looked at it. The card is theatre over a decision already made, which is the whole
+     * difference between it and a scratch card that pays out a random amount — a reward that
+     * depended on opening a screen would be a lottery, and every defence this layer has against
+     * farming rests on each reward being a fixed consequence of a rule.
+     *
+     * Returns true when the server took it. A refusal leaves the card covered rather than
+     * showing a reveal the server does not agree happened.
+     */
+    suspend fun reveal(address: String, id: Int): Boolean {
+        if (!enabled || id <= 0) return false
+        val o = ServerClient.ask("/v1/rewards/reveal", JSONObject().apply {
+            put("address", address)
+            put("id", id)
+        }) ?: return false
+        return o.optBoolean("ok")
     }
 
     // ------------------------------------------------------------------------- offers
