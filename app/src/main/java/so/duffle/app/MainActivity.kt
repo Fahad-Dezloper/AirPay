@@ -922,7 +922,13 @@ class MainActivity : ComponentActivity() {
                         Modifier.fillMaxSize()
                             .then(if (tab == Tab.TAP && !cards && !checking && thread == null)
                                 Modifier.verticalScroll(rememberScrollState()) else Modifier)
-                            .padding(horizontal = 20.dp, vertical = 20.dp)
+                            // Top is deliberately smaller than the rest. statusBarsPadding
+                            // has already cleared the clock and the cutout, so a further
+                            // 20dp sat the wordmark a third of the way down the screen for
+                            // no reason — and in a debug build the §N tag adds its own line
+                            // on top of that. The bottom keeps 20dp: it is the end of a
+                            // scroll, where content running into the edge reads as cut off.
+                            .padding(start = 20.dp, end = 20.dp, top = 6.dp, bottom = 20.dp)
                             // ONE inset modifier, not two. `navigationBarsPadding().imePadding()`
                             // chained is the documented way to wedge this: each consumes what it
                             // applies, the keyboard animation re-reports what is left, and the
