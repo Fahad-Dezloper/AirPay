@@ -3316,7 +3316,7 @@ private fun EarnTiles(onRewards: () -> Unit, onOffers: () -> Unit, onReferrals: 
     }
 }
 
-private enum class Mark { Coins, Ticket, Rings, Signal, Screen, Receipt, Basket, Plane, Cup, Game, Dots, Play }
+private enum class Mark { Coins, Ticket, Rings, Signal, Screen, Receipt, Basket, Plane, Cup, Game, Dots, Play, Cinema }
 
 /**
  * Recharging a phone, which is a different job from buying a gift card.
@@ -3862,6 +3862,16 @@ private fun ShopSection(
                     }
                     HIcon(if (open) R.drawable.hi_arrow_down else R.drawable.hi_arrow_up_right, D.Quiet, 17.dp)
                 }
+                // What to do with the code, in the brand's own words. Only on an opened row:
+                // it is a paragraph, and it matters at the moment of choosing rather than
+                // while scrolling past.
+                if (open && (p.terms != null || p.about != null)) {
+                    Spacer(Modifier.height(10.dp))
+                    Text(
+                        (p.terms ?: p.about)!!,
+                        color = D.Quiet, fontSize = 11.5.sp, lineHeight = 16.sp,
+                    )
+                }
                 // The denominations only appear for the row that was opened, because 156
                 // products with every price showing is a list nobody reads.
                 AnimatedVisibility(visible = open) {
@@ -3923,8 +3933,8 @@ private fun symbolFor(currency: String) = when (currency) {
 @Composable
 private fun ShopTiles(sections: List<Shop.Section>, onOpen: (Shop.Section) -> Unit) {
     val marks = mapOf(
-        "Phone" to Mark.Signal, "Streaming" to Mark.Play, "TV" to Mark.Screen,
-        "Going out" to Mark.Ticket, "Bills & wallets" to Mark.Receipt,
+        "Phone" to Mark.Signal, "Streaming" to Mark.Play,
+        "Cinema" to Mark.Cinema, "Bills & wallets" to Mark.Receipt,
         "Travel" to Mark.Plane, "Food" to Mark.Cup, "Shopping" to Mark.Basket,
         "Games" to Mark.Game, "More" to Mark.Dots,
     )
@@ -4056,6 +4066,20 @@ private fun MarkCanvas(mark: Mark, side: Dp) {
                         CornerRadius(w * .18f))
                     drawCircle(D.Fill, radius = w * .08f, center = Offset(w * .31f, w * .50f))
                     drawCircle(D.Fill, radius = w * .08f, center = Offset(w * .69f, w * .50f))
+                }
+                // A strip of film: sprocket holes down both edges. Distinct from Ticket, which
+                // is the Offers mark, and from Play, which is streaming — three neighbours that
+                // would otherwise all be "a rectangle about watching something".
+                Mark.Cinema -> {
+                    drawRoundRect(blue, Offset(w * .14f, w * .12f), Size(w * .72f, w * .76f),
+                        CornerRadius(w * .12f))
+                    repeat(4) { i ->
+                        val y = w * (.22f + i * .18f)
+                        drawRoundRect(D.Fill, Offset(w * .20f, y), Size(w * .09f, w * .09f),
+                            CornerRadius(w * .02f))
+                        drawRoundRect(D.Fill, Offset(w * .71f, y), Size(w * .09f, w * .09f),
+                            CornerRadius(w * .02f))
+                    }
                 }
                 // A play triangle in a rounded frame: the thing you press, not the box it
                 // comes out of. Deliberately unlike Screen, which is the set-top box shelf

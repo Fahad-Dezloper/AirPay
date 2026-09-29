@@ -36,6 +36,15 @@ object Shop {
         val categories: List<String> = emptyList(),
         /** Bitrefill's image id, e.g. "hotstar-svg". See [logoUrl]. */
         val image: String? = null,
+        /**
+         * Where the code is used, in the brand's own words.
+         *
+         * The app can say a code is coming and say nothing about what to do with it, which is
+         * how somebody ends up at a cinema counter holding a BookMyShow voucher that their own
+         * terms say only works in the app.
+         */
+        val terms: String? = null,
+        val about: String? = null,
         /** The denominations on offer, in the product's own currency. */
         val values: List<String>,
         /** The same denominations with what each costs. See [Package]. */
@@ -137,6 +146,8 @@ object Shop {
         currency = j.optString("currency", "INR"),
         recipient = j.optString("recipient", "none"),
         image = j.optString("image").takeIf { it.isNotBlank() },
+        terms = j.optString("terms").takeIf { it.isNotBlank() },
+        about = j.optString("about").takeIf { it.isNotBlank() },
         categories = j.optJSONArray("categories").let { a ->
             (0 until (a?.length() ?: 0)).map { a!!.optString(it) }
         },

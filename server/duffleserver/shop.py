@@ -53,8 +53,12 @@ SECTIONS = (
     #
     # Keyed on the precise category rather than "entertainment", which all three carry.
     ("Streaming", ("streaming",)),
-    ("TV", ("dth",)),
-    ("Going out", ("experiences",)),
+    # Cinema is an explicit list, not a category. All four "experiences" products in India
+    # carry identical categories — PVR, BookMyShow, an arcade and Tinder — so there is nothing
+    # to key on. An include list means anything new falls through to More rather than being
+    # labelled Cinema because nobody updated a rule.
+    ("Cinema", ()),
+    # dth is deliberately absent: a set-top box recharge is not something this app does.
     ("Bills & wallets", ("digital-wallet",)),
     ("Travel", ("travel", "flights", "train", "bus", "online-travel-agencies", "gasoline")),
     ("Food", ("food", "food-delivery", "groceries", "restaurants")),
@@ -129,6 +133,15 @@ class Shop:
             # What the buyer has to supply: a phone number, an account, or nothing at all.
             "recipient": p.get("recipient_type") or "none",
             "redemption": p.get("redemption_methods") or [],
+            # Where the code is actually used, in the brand's own words. Dropping these meant
+            # the app could say "Code delivered to you" and nothing about what to do with it —
+            # BookMyShow's own terms say a voucher works only in their app and NOT at the
+            # cinema counter, which is exactly the thing somebody needs to know beforehand.
+            #
+            # Trimmed: full terms across 156 products would triple the catalogue for text
+            # nobody reads past the first sentences.
+            "terms": (p.get("termsAndConditions") or "")[:400].strip() or None,
+            "about": (p.get("description") or "")[:240].strip() or None,
             "values": [pk.get("value") for pk in (p.get("packages") or []) if pk.get("value")],
             # The same packages carrying what they cost, because a screen that asks somebody to
             # CHOOSE needs it: "2GB/Day 5G Plan - 84 Days" is not something anyone can pick
@@ -150,12 +163,22 @@ class Shop:
             ],
         }
 
+    #: The Cinema shelf, by id. See the SECTIONS note.
+    CINEMA = ("pvr-cinemas-india", "bookmyshow-voucher-india")
+
     def sections(self) -> list[dict]:
         """The catalogue grouped the way someone shops for it, not the way a shop files it."""
         items = self.products()
         seen: set[str] = set()
         out = []
+        cinema = [p for p in items if p["id"] in self.CINEMA]
+        for p in cinema:
+            seen.add(p["id"])
         for title, cats in SECTIONS:
+            if title == "Cinema":
+                if cinema:
+                    out.append({"title": title, "products": cinema})
+                continue
             rows = [p for p in items
                     if p["id"] not in seen and any(c in cats for c in p["categories"])]
             for p in rows:
