@@ -3972,9 +3972,18 @@ private fun ShopSection(
                         Text(p.name.removeSuffix(" India"), color = D.Black, fontSize = 15.sp,
                             fontWeight = FontWeight.SemiBold, maxLines = 1)
                         Text(
+                            // WHERE it can be spent, which is the thing that decides whether
+                            // a voucher is any use. Twenty-five of the sixty-three shopping
+                            // brands are in-store only — you cannot spend them on the website
+                            // — and the row used to say "9 prices", which answers a question
+                            // nobody asked.
                             when {
                                 p.needsPhone -> "Credited to a phone number"
-                                "online" in p.redemption -> "Code delivered to you"
+                                "online" in p.redemption && "instore" in p.redemption ->
+                                    "Online or in store"
+                                "instore" in p.redemption -> "In store only"
+                                "online" in p.redemption -> "Online only"
+                                "phone" in p.redemption -> "In their app"
                                 p.values.size == 1 -> "One price"
                                 else -> "${p.values.size} prices"
                             },

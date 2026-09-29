@@ -389,10 +389,21 @@ object Shop {
             instructions = any.optString("instructions").takeIf { it.isNotBlank() },
             expires = any.optString("expiration_date").takeIf { it.isNotBlank() },
             // Anything Bitrefill sends that we have no name for. Never dropped.
+            // Anything Bitrefill sends that we have no name for. Never dropped — Subway's
+            // barcode_format arrived this way and is worth keeping.
+            //
+            // But a field that merely repeats one already shown is noise: the same card put
+            // "PIN Code: 298093" in an `other` field with the PIN already above it, so the
+            // sheet said it twice.
             raw = any.keys().asSequence()
                 .filterNot { it in setOf("code", "pin", "link", "url", "instructions", "expiration_date") }
                 .mapNotNull { k ->
                     any.opt(k)?.toString()?.takeIf { it.isNotBlank() && it != "{}" }?.let { "$k: $it" }
+                }
+                .filterNot { line ->
+                    listOf("code", "pin").any { key ->
+                        any.optString(key).takeIf { it.isNotBlank() }?.let { line.contains(it) } == true
+                    }
                 }
                 .joinToString("\n").takeIf { it.isNotBlank() },
         ).takeIf { !it.empty }
