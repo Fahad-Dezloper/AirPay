@@ -3977,15 +3977,25 @@ private fun ShopSection(
                             // brands are in-store only — you cannot spend them on the website
                             // — and the row used to say "9 prices", which answers a question
                             // nobody asked.
-                            when {
-                                p.needsPhone -> "Credited to a phone number"
-                                "online" in p.redemption && "instore" in p.redemption ->
-                                    "Online or in store"
-                                "instore" in p.redemption -> "In store only"
-                                "online" in p.redemption -> "Online only"
-                                "phone" in p.redemption -> "In their app"
-                                p.values.size == 1 -> "One price"
-                                else -> "${p.values.size} prices"
+                            buildString {
+                                append(
+                                    when {
+                                        p.needsPhone -> "Credited to a phone number"
+                                        "online" in p.redemption && "instore" in p.redemption ->
+                                            "Online or in store"
+                                        "instore" in p.redemption -> "In store only"
+                                        "online" in p.redemption -> "Online only"
+                                        "phone" in p.redemption -> "In their app"
+                                        p.values.size == 1 -> "One price"
+                                        else -> "${p.values.size} prices"
+                                    }
+                                )
+                                // Three of the hundred and fifty-eight products are priced in
+                                // dollars by the shop — Tinder, Viber and the eSIM. A lone $3
+                                // among rupees reads as a bug rather than a fact, so the row
+                                // says which it is instead of leaving the symbol to argue for
+                                // itself.
+                                if (p.currency != "INR") append(" · priced in ${p.currency}")
                             },
                             color = D.Quiet, fontSize = 12.sp,
                         )
