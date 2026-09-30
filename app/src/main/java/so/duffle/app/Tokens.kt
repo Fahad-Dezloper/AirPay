@@ -37,9 +37,18 @@ object Tokens {
         /** What a request calls this token: "SOL" or the mint. */
         val token get() = mint ?: "SOL"
         val amount: String get() = Chain.fmtUnits(units, decimals)
-        /** For reading, not paying: at most 4 decimals, rounded down so it never overstates. */
-        val shown: String get() = java.math.BigDecimal.valueOf(units, decimals)
-            .setScale(minOf(4, decimals), java.math.RoundingMode.DOWN).stripTrailingZeros().toPlainString()
+        /**
+         * For reading, not paying.
+         *
+         * Through [Money], so it is cut rather than rounded, grouped the way the phone's locale
+         * groups, and says `<0.0001` when a real balance cuts away to nothing.
+         *
+         * It used to end in `stripTrailingZeros()`, which made the decimal count depend on the
+         * value: 2.50 rendered as "2.5" and 2.00 as "2", so a column of balances had its points
+         * in different places and tabular figures had nothing to align.
+         */
+        val shown: String get() =
+            Money.tokenAmount(java.math.BigDecimal.valueOf(units, decimals), symbol)
     }
 
     private const val METAPLEX = "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s"

@@ -43,6 +43,12 @@ internal object D {
     // at 1.15:1 — never a dot, a line, a ring or a border.
     val Highlight = Color(0xFFD7FF3A)
 
+    // The one dark surface: the head of a token card, and the price pill on it. NOT a card
+    // colour for anything else — every other surface in this app is white. White on it is
+    // 18.7:1. It was a raw 0xFF0E1013 written out at both call sites, which is the thing §1
+    // rule 5 forbids: a hex in a composable is a colour dark mode can never reach.
+    val Night = Color(0xFF0E1013)
+
     // Blue, Success and Danger are FILL colours: buttons, the pay bar, discs, drawn marks, tints.
     // As text they fail AA (3.3, 2.22 and 3.55:1 on white). Each has an ink — the same hue
     // darkened until it reads — for text and small icons. Every ink clears 4.5:1 on white, on

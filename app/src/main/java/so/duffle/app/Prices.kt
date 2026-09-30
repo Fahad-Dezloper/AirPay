@@ -104,6 +104,7 @@ object Prices {
         return if (first <= 0.0) null else (last - first) / first
     }
 
-    /** "1,234.56" — grouped, two places, which is how money is read. */
-    fun money(amount: Double): String = String.format("%,.2f", amount)
+    // `money()` was here — a fiat figure with no currency and no symbol, which left both
+    // callers to concatenate a "$" of their own. One of them put it outside the "less than"
+    // and rendered "$<0.01". Money.fiat and Money.fiatParts own the symbol now.
 }

@@ -288,9 +288,21 @@ object Chain {
         return out
     }
 
-    private fun fmt(sol: Double) = "%.4f".format(sol)
+    /**
+     * A SOL figure for the screen.
+     *
+     * Was `"%.4f".format(sol)`, which is HALF_UP — it rounded a balance **up**, so 0.00009 SOL
+     * showed as 0.0001 and claimed money the wallet does not have. [Money] cuts instead, and
+     * says `<0.0001` when a real amount cuts away to nothing rather than showing zero.
+     *
+     * The Double comes from a lamport count, so it is exact at this scale; it is converted
+     * through a string so the BigDecimal is the decimal value and not the binary one.
+     */
+    private fun fmt(sol: Double) =
+        Money.tokenAmount(java.math.BigDecimal(sol.toString()), "SOL")
 
     /** Raw units back to a readable amount, trimmed: 1500000 at 6 decimals is "1.5". */
+    /** Raw units to a readable amount. Cut, never rounded — see [Money]. */
     fun fmtUnits(units: Long, decimals: Int): String =
         java.math.BigDecimal.valueOf(units, decimals).stripTrailingZeros().toPlainString()
 

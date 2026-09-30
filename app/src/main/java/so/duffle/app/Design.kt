@@ -39,6 +39,11 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Canvas
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.unit.LayoutDirection
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
@@ -249,8 +254,14 @@ internal fun markStroke(size: Dp, disc: Boolean = false): Float =
     if (disc) 2.75f else (if (size <= 16.dp) 1.5f else 2f) * 24f / size.value
 
 @Composable
-internal fun HIcon(@DrawableRes id: Int, tint: Color, size: Dp = 24.dp, modifier: Modifier = Modifier) =
-    Icon(painterResource(id), contentDescription = null, tint = tint, modifier = modifier.size(size))
+internal fun HIcon(@DrawableRes id: Int, tint: Color, size: Dp = 24.dp, modifier: Modifier = Modifier) {
+    // A line icon is drawn by [HiIcon], whose stroke follows the text (ui/PORT.md §5). The
+    // drawables hard-code strokeWidth 1.5 and cannot. Anything else here is a picture — a
+    // brand logo — and is painted as it ships.
+    val line = HI_FOR_RES[id]
+    if (line != null) HiIcon(line, tint, size, modifier = modifier)
+    else Icon(painterResource(id), contentDescription = null, tint = tint, modifier = modifier.size(size))
+}
 
 @Composable
 internal fun IconDisc(
@@ -277,8 +288,12 @@ internal fun PrimaryButton(
 ) {
     val interaction = remember { MutableInteractionSource() }
     val live = enabled || loading
-    val bg by animateColorAsState(if (live) D.Blue else D.Blue.copy(alpha = .35f), label = "bg")
-    val fg = D.White
+    // Disabled is GREY, not a faded blue. A 35% blue is a tint, which rule 4 forbids, and it
+    // reads as a lighter live button rather than a dead one — the one thing a disabled
+    // control must not do. Disabled text is exempt from the contrast floor; looking disabled
+    // is not.
+    val bg by animateColorAsState(if (live) D.Blue else D.Line, label = "bg")
+    val fg by animateColorAsState(if (live) D.White else D.Quiet, label = "fg")
     Box(
         modifier.then(PressScale(interaction)).heightIn(min = 60.dp).clip(RoundedCornerShape(18.dp)).background(bg)
             .clickable(interaction, indication = null, enabled = enabled && !loading, onClick = onClick),
@@ -312,11 +327,18 @@ internal fun PrimaryButton(
 internal fun SecondaryButton(label: String, onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true) {
     val interaction = remember { MutableInteractionSource() }
     Box(
-        modifier.then(PressScale(interaction)).heightIn(min = 52.dp).clip(RoundedCornerShape(16.dp)).background(D.Fill)
+        // An ink outline on white, not a grey body (ui/PORT.md §9). The grey was a container,
+        // and with the containers gone it was the only thing on the screen still drawing a box
+        // — a filled shape reads as the primary action, which is the one thing this button is
+        // not. The border is the boundary, so it is 1.5dp and in ink rather than D.Line.
+        modifier.then(PressScale(interaction)).heightIn(min = 52.dp).clip(RoundedCornerShape(16.dp))
+            .background(D.White)
+            .border(1.5.dp, if (enabled) D.Black else D.Line, RoundedCornerShape(16.dp))
             .clickable(interaction, indication = null, enabled = enabled, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
-        Text(label, color = if (enabled) D.Black else D.Quiet, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, style = Figures)
+        // Every button label is Type.heading (§3), so the two buttons read as one pair.
+        Text(label, color = if (enabled) D.Black else D.Quiet, style = Type.heading)
     }
 }
 
@@ -326,7 +348,7 @@ internal fun TextLink(label: String, onClick: () -> Unit, enabled: Boolean = tru
         Modifier.padding(top = 6.dp).then(modifier).fillMaxWidth().heightIn(min = 48.dp).clip(RoundedCornerShape(14.dp))
             .clickable(enabled = enabled, onClick = onClick),
         contentAlignment = Alignment.Center,
-    ) { Text(label, color = if (enabled) D.Black else D.Quiet, fontSize = 16.sp, fontWeight = FontWeight.Bold) }
+    ) { Text(label, color = if (enabled) D.Black else D.Quiet, style = Type.heading) }
 }
 
 /**
@@ -510,3 +532,95 @@ internal fun FlowFigure(
 /** The `settle` spring as an Int animation, for the slide offsets. */
 private fun FiniteAnimationSpec<Float>.toInt(delay: Int): FiniteAnimationSpec<IntOffset> =
     spring(dampingRatio = 0.9f, stiffness = 247f, visibilityThreshold = IntOffset.VisibilityThreshold)
+
+// ------------------------------------------------------------------- shared primitives
+//
+// Each of these existed three or four times over, privately, in the screen files. Kotlin lets
+// two files in one package each keep their own `private` top-level declaration, so the
+// compiler never said a word — and the copies drifted. The row chevron was shipping at two
+// different sizes AND two different stroke weights; one of the four did not mirror for RTL.
+// That is the drift PARITY.md keeps a record of, and the cure is that there is one of each.
+
+/**
+ * The disclosure chevron at the end of a row.
+ *
+ * The geometry is the sandbox's `chevron` mark: a 16 box with the glyph on the 24 grid
+ * (`M4.8 0 19.2 12 4.8 24`, stroke 3.744) — hence `.2`→`.8` and `.156`. The two 9x15 copies
+ * were a different shape at a different weight.
+ *
+ * It mirrors for Arabic and Hebrew, because it means "forward" and forward is not always
+ * right. [turn] is for the ones that point down when a section is open; a rotation needs no
+ * mirroring of its own, which is why it is a rotation and not a second glyph.
+ */
+@Composable
+internal fun Chevron(side: Dp = 16.dp, tint: Color = D.Quiet, turn: Float = 0f) {
+    val rtl = LocalLayoutDirection.current == LayoutDirection.Rtl
+    Canvas(
+        Modifier.size(side).graphicsLayer {
+            rotationZ = turn
+            if (rtl) scaleX = -1f
+        },
+    ) {
+        // `size` here is the DrawScope's, not the Dp parameter — the parameter is shadowed
+        // inside this lambda, which is why the box side is read off the scope.
+        val w = size.width
+        val h = size.height
+        val stroke = w * .156f
+        drawLine(tint, Offset(w * .2f, 0f), Offset(w * .8f, h / 2), strokeWidth = stroke, cap = StrokeCap.Round)
+        drawLine(tint, Offset(w * .8f, h / 2), Offset(w * .2f, h), strokeWidth = stroke, cap = StrokeCap.Round)
+    }
+}
+
+/**
+ * This step, set in the figure face with tabular digits.
+ *
+ * The sandbox's `<Amount>` chooses the face and leaves the size to the caller, so "a caption
+ * that happens to be a number" is a scale step wearing Geist rather than a step of its own.
+ * Four files had written this one line out for themselves.
+ */
+internal fun TextStyle.figure(): TextStyle = copy(fontFamily = Figure, fontFeatureSettings = "tnum")
+
+/**
+ * This step, set in the monospace face.
+ *
+ * [Type.mono] welds a size (13/18) to the face, so there was no way to say "an address at the
+ * body step" without writing the copy out again — which three files did.
+ */
+internal fun TextStyle.monospaced(): TextStyle = copy(fontFamily = Mono)
+
+/**
+ * An SKR figure.
+ *
+ * `Int` in, because the server sends whole SKR and the unit has no decimals — and still
+ * through [Money], because the phone's locale is what groups the digits. `"$n"` reads "1000"
+ * everywhere; this reads "1,000" in the US and "1.000" in Germany.
+ */
+internal fun skr(n: Int, sign: Boolean = false): String =
+    Money.tokenAmount(java.math.BigDecimal(n), "SKR", sign = sign)
+
+/**
+ * A letter in a disc — the app's one avatar.
+ *
+ * Five places drew this, and they disagreed about the letter's weight. The letter is 0.38x the
+ * disc: part of the avatar's own composition, not a step on the type scale, which is why it is
+ * a ratio here and not an `sp`. A white disc with a hairline is everybody; 2dp of blue is a
+ * verified Seeker.
+ */
+@Composable
+internal fun Initial(
+    letter: String,
+    size: Dp,
+    seeker: Boolean = false,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier.size(size).clip(CircleShape).background(D.White)
+            .border(if (seeker) 2.dp else 1.5.dp, if (seeker) D.Blue else D.Line, CircleShape),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            letter, color = if (seeker) D.Black else D.Quiet,
+            fontSize = (size.value * 0.38f).sp, fontWeight = FontWeight.Bold, fontFamily = Ui,
+        )
+    }
+}

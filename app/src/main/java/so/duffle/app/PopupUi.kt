@@ -29,6 +29,7 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
@@ -51,9 +52,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.ExperimentalTextApi
-import androidx.compose.ui.text.PlatformTextStyle
 import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.style.LineHeightStyle
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontVariation
@@ -69,6 +68,8 @@ import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.foundation.IndicationNodeFactory
 import androidx.compose.foundation.interaction.InteractionSource
 import androidx.compose.foundation.interaction.PressInteraction
@@ -108,8 +109,11 @@ import androidx.compose.animation.scaleOut
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.graphics.drawscope.scale
+import androidx.compose.ui.graphics.vector.PathParser
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
@@ -120,6 +124,7 @@ import kotlinx.coroutines.flow.first
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.foundation.Image
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.layout.ContentScale
@@ -285,7 +290,7 @@ internal fun PopupScreen(
                         else offset.animateTo(0f, spring(0.9f, 247f), initialVelocity = velocity)
                     },
                 )
-                .background(D.White, RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp))
+                .background(D.White, RoundedCornerShape(topStart = Tray.OUTER, topEnd = Tray.OUTER))
                 // Swallow taps so touching the sheet never dismisses it.
                 .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {}
                 .navigationBarsPadding()
@@ -293,16 +298,18 @@ internal fun PopupScreen(
                 // (SizeTransform); a second size animation on the sheet chased the first one frame by
                 // frame, re-laying out the whole sheet each time — 40-50ms frames going to the device
                 // page on a OnePlus, against a 16ms budget.
-                .padding(start = 22.dp, end = 22.dp, top = 10.dp, bottom = 12.dp),
+                .padding(start = Tray.PAD, end = Tray.PAD, top = 10.dp, bottom = 12.dp),
         ) {
             Box(Modifier.align(Alignment.CenterHorizontally).size(36.dp, 4.dp).background(D.Line, CircleShape))
-            Spacer(Modifier.height(16.dp))
+            // The sheet's own top padding, below the grab handle: `pt-5` on the body in
+            // ui/components/screens/Tap.tsx. Not a spacing role — it is this sheet's inset.
+            Spacer(Modifier.height(20.dp))
             if (peer != null) {
                 val paying = peer is TapPayload.Card && connected && (phase == Phase.Ready || phase is Phase.Working)
                 PeerHeader(peer, me, history, title = if (paying && !aboutThem) "Pay ${peer.label.ifBlank { "them" }}" else peer.label.ifBlank { "Unknown phone" },
                     verified = genesis is Genesis.Check.Held,
                     onOpen = if (phase is Phase.Working) null else ({ aboutThem = !aboutThem }), open = aboutThem)
-                Spacer(Modifier.height(14.dp))
+                Spacer(Modifier.height(Space.lead))
             }
 
             // Typing and paying are one screen: the button morphs instead of the sheet swapping.
@@ -335,21 +342,30 @@ internal fun PopupScreen(
                             showSecond = aboutThem && phase !is Phase.Working,
                             first = {
                                 Form(p, phase, connected, amount, { amount = it }, token, { token = it }, holdings, onConnect, onPay, onRequest,
-                                    { leave(onDecline) }, { leave(onLater) }, confirming, { confirming = it }, covered = aboutThem)
+                                    { leave(onDecline) }, { leave(onLater) }, confirming, { confirming = it }, covered = aboutThem,
+                                    cameFrom = cameFrom)
                             },
                             second = { AboutThem(p, history, genesis, wallet, cameFrom, onBack = { aboutThem = false }) },
                         ) }
                         "waiting" -> (phase as? Phase.Waiting)?.let { WaitingBody(peer?.label.orEmpty(), it.amount, it.symbol, waitingNote, close) }
                         "success" -> (phase as? Phase.Success)?.let {
-                            ResultBody(Result.Success, it.title, it.detail, it.signature, onExplorer, earned) {
-                                PrimaryButton("Done", close)
+                            ResultBody(Tone.Paid, it.title, it.detail, earned) {
+                                ExplorerUnder(it.signature, onExplorer) { PrimaryButton("Done", close) }
                             }
                         }
+                        // Error is NOT Failed. Error means nothing was sent: no transaction exists,
+                        // which is why no signature is passed, and why the disc is the neutral one.
+                        // An ordinary outcome must not be dressed as an alarm — that is how somebody
+                        // pays twice.
                         "error" -> (phase as? Phase.Error)?.let {
-                            ResultBody(Result.Calm, it.title, it.detail, null, onExplorer) { RetryRow(close, onRetry) }
+                            ResultBody(Tone.Nothing, it.title, it.detail) { RetryRow(close, onRetry) }
                         }
+                        // Failed means a transaction went out and the chain refused it. The only red
+                        // on this sheet, and the only outcome with a signature worth looking up.
                         "failed" -> (phase as? Phase.Failed)?.let {
-                            ResultBody(Result.Failed, it.title, it.detail, it.signature, onExplorer) { RetryRow(close, onRetry) }
+                            ResultBody(Tone.Refused, it.title, it.detail) {
+                                ExplorerUnder(it.signature, onExplorer) { RetryRow(close, onRetry) }
+                            }
                         }
                     }
                 }
@@ -380,37 +396,38 @@ private fun ArmedBody(onCancel: () -> Unit) {
         animationSpec = infiniteRepeatable(tween(1_600, easing = LinearEasing), RepeatMode.Restart),
         label = "wave",
     )
+    // Every centred state on this sheet is the same stack: disc, 16, headline, 4, the line under
+    // it, 24, the actions (`Centered` in ui/components/screens/Tap.tsx). No leading spacer — the
+    // sheet's own top padding is the only space above the disc.
     Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-        Spacer(Modifier.height(10.dp))
-        Box(Modifier.size(132.dp), contentAlignment = Alignment.Center) {
-            Canvas(Modifier.fillMaxSize()) {
-                // Two rings a half-cycle apart, so there is always one on its way out.
-                for (i in 0..1) {
-                    val t = (wave + i * .5f) % 1f
-                    drawCircle(
-                        color = D.Blue.copy(alpha = .35f * (1f - t)),
-                        radius = size.minDimension * (.26f + .24f * t),
-                        style = Stroke(width = 2.dp.toPx()),
-                    )
-                }
-            }
-            Box(
-                Modifier.size(68.dp).clip(CircleShape).background(D.Blue),
-                contentAlignment = Alignment.Center,
-            ) { HIcon(R.drawable.hi_nfc, D.White, 34.dp) }
-        }
-        Spacer(Modifier.height(18.dp))
-        Text("Touch both the mobiles", color = D.Black, fontSize = 20.sp,
-            fontWeight = FontWeight.Bold, fontFamily = Display, textAlign = TextAlign.Center)
-        Spacer(Modifier.height(6.dp))
+        // Waiting is the pending tone, and the NFC mark says what kind of waiting it is.
+        StatusDisc(Tone.Pending, size = 72.dp, mark = { HiIcon(Hi.Nfc, D.White, 40.dp) })
+        Spacer(Modifier.height(Space.row))
+        Text("Hold your phones together", color = D.Black, style = Type.title, textAlign = TextAlign.Center)
+        Spacer(Modifier.height(Space.tight))
         Text(
-            "Hold the backs of the phones together until they buzz.",
-            color = D.Quiet, fontSize = 13.sp, textAlign = TextAlign.Center,
-            modifier = Modifier.padding(horizontal = 12.dp),
+            "Back to back, until they buzz.",
+            color = D.Quiet, style = Type.caption, textAlign = TextAlign.Center,
+            // `mx-auto max-w-xs`: a maximum, not an inset, so a longer line in another language
+            // uses the width it needs up to 320 and still sits centred.
+            modifier = Modifier.widthIn(max = 320.dp),
         )
         Spacer(Modifier.height(24.dp))
+        // Three dots, each swelling in turn. The wave is in the SIZE, not the opacity: the two
+        // pale rings that used to pulse here were a wash of a fill colour, which is the one thing
+        // the palette forbids. Solid blue at full strength says the same thing and is allowed.
+        Row(Modifier.padding(bottom = 20.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            repeat(3) { i ->
+                val swell = 1f + .4f * sin(Math.PI * ((wave + i * .18f) % 1f)).toFloat()
+                Box(
+                    Modifier.size(8.dp)
+                        .graphicsLayer { scaleX = swell; scaleY = swell }
+                        .background(D.Blue, CircleShape),
+                )
+            }
+        }
         SecondaryButton("Cancel", onCancel, Modifier.fillMaxWidth())
-        Spacer(Modifier.height(4.dp))
+        Spacer(Modifier.height(Space.tight))
     }
 }
 
@@ -439,21 +456,22 @@ private fun PeerHeader(
             Avatar(peer.label.take(1).uppercase().ifBlank { "?" }, D.Black, Brand.of(peer, verified),
                 Modifier.align(Alignment.CenterEnd).graphicsLayer { translationX = gap * meet.value; alpha = 1f - meet.value * .6f })
         }
-        Spacer(Modifier.width(14.dp))
+        Spacer(Modifier.width(Space.inline))
         Column(Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 // One line, shortened with "…" if it must be. The "VERIFIED SEEKER" pill that used to
                 // sit here didn't fit beside a name on a narrower phone and cut "Pay Seeker" to
                 // "Pay"; a verified mark after the name says the same, and the device page says why.
-                Text(title, color = D.Black, fontSize = 20.sp, fontWeight = FontWeight.Bold, fontFamily = Ui,
+                Text(title, color = D.Black, style = Type.heading,
                     maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f, fill = false))
                 if (seeker) {
-                    Spacer(Modifier.width(5.dp))
-                    HIcon(R.drawable.hi_verified, D.BlueInk, 20.dp)
+                    Spacer(Modifier.width(Space.tight))
+                    HiIcon(Hi.Verified, D.BlueInk, 20.dp)
                 }
             }
-            Text("${peer.address.take(6)}…${peer.address.takeLast(6)}", color = D.Quiet, fontSize = 14.sp, maxLines = 1)
+            // An address is read a character at a time, so it is set in the mono step.
+            Text("${peer.address.take(6)}…${peer.address.takeLast(6)}", color = D.Quiet, style = Type.mono, maxLines = 1)
         }
     }
 }
@@ -468,6 +486,8 @@ private fun Avatar(letter: String, colour: Color, brand: String?, modifier: Modi
         contentAlignment = Alignment.Center,
     ) {
         when {
+            // 17 on a 46dp disc is the sandbox's `size * 0.38` (`Avatar` in ui/components/ui/Bits.tsx):
+            // the initial is fitted to the circle and moves with it, so it is not a scale step.
             look == null -> Text(letter, color = D.White, fontSize = 17.sp, fontWeight = FontWeight.Bold, fontFamily = Display)
             look.picture -> Image(painterResource(look.drawable), contentDescription = null,
                 modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
@@ -498,6 +518,8 @@ private fun Form(
     onConfirming: (Boolean) -> Unit,
     /** The device page is showing over this form; its back button belongs to that page. */
     covered: Boolean = false,
+    /** How the sheet was opened, for the line under an incoming ask. */
+    cameFrom: String? = null,
 ) {
     val working = (phase as? Phase.Working)?.text
     if (!connected) return ConnectBody(working, onConnect)
@@ -550,7 +572,8 @@ private fun Form(
                 Entry(peer, working, amount, onAmount, token, onToken, holdings, { onConfirming(true) }, onRequest, onDecline, onLater,
                     // Shown here too when the amount is already fixed: on a request there is
                     // nothing left to change, so the earlier they read it the better.
-                    reward = if (peer is TapPayload.Request) reward else null)
+                    reward = if (peer is TapPayload.Request) reward else null,
+                    cameFrom = cameFrom)
             }
         }
         }
@@ -641,11 +664,33 @@ private fun Entry(
     onDecline: () -> Unit,
     onLater: () -> Unit,
     reward: Rewards.Preview? = null,
+    /** How the sheet was opened, for the line under an incoming ask. */
+    cameFrom: String? = null,
 ) {
     if (peer is TapPayload.Request) {
         val asked = peer.request.amount
-        Text("Asks you for", color = D.Quiet, fontSize = 13.sp, modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center)
-        AmountDisplay(asked, null, peer.request.symbol, centred = true)
+        // How the ask reached you. Only said when we know — the device page has the same rule,
+        // and a guess about how two phones met is not worth printing above a Pay button.
+        val met = when (cameFrom) {
+            "nfc", "hce", "app" -> "In person, by tap · "
+            "server", "notification" -> "Through AirPay, after a tap · "
+            else -> ""
+        }
+        // The ask, centred, with the amount as the hero: `Asking` in
+        // ui/components/screens/Tap.tsx. The amount is the `amount` step, not `display` — one
+        // amount size on every state of this sheet, so the ask and the screen that waits for it
+        // to be paid show the same number at the same size.
+        Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+            Text("Asks you for", color = D.Quiet, style = Type.caption)
+            Spacer(Modifier.height(Space.tight))
+            Text(
+                moneyOr(asked, peer.request.symbol), color = D.Black, style = Type.amount,
+                maxLines = 1, softWrap = false, textAlign = TextAlign.Center,
+                modifier = Modifier.shared("amount"),
+            )
+            Spacer(Modifier.height(Space.tight))
+            Text("${met}Solana mainnet", color = D.Quiet, style = Type.caption, textAlign = TextAlign.Center)
+        }
         RewardLine(reward)
         Spacer(Modifier.height(24.dp))
         PrimaryButton(working ?: "Pay", onReview,
@@ -653,9 +698,19 @@ private fun Entry(
         // Two different answers: "Later" keeps it in Requests and tells them nothing; "Decline"
         // is a no, and their phone is told so they stop waiting.
         AnimatedVisibility(visible = working == null) {
-            Row(Modifier.padding(top = 10.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                SecondaryButton("Decline", onDecline, Modifier.weight(1f))
-                SecondaryButton("Later", onLater, Modifier.weight(1f))
+            Column {
+                Row(Modifier.padding(top = Space.lead), horizontalArrangement = Arrangement.spacedBy(Space.inline)) {
+                    SecondaryButton("Decline", onDecline, Modifier.weight(1f))
+                    SecondaryButton("Later", onLater, Modifier.weight(1f))
+                }
+                // Said under the answer, not above it: somebody looking at a stranger's ask is
+                // deciding whether to open their wallet, so what this app cannot reach is part
+                // of the decision.
+                Text(
+                    "AirPay never holds your keys.", color = D.Quiet, style = Type.caption,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(top = Space.lead),
+                )
             }
         }
         return
@@ -693,7 +748,7 @@ private fun Entry(
         Haptics.tick(context)
         onAmount(typed(amount, key, chosen.decimals))
     }
-    Spacer(Modifier.height(16.dp))
+    Spacer(Modifier.height(Space.row))
     PrimaryButton(
         working ?: "Pay",
         onReview, Modifier.fillMaxWidth().shared("primary", bounds = true), enabled = valid && enough, loading = working != null,
@@ -739,34 +794,32 @@ private fun ConfirmBody(
 
     Column(Modifier.fillMaxWidth()) {
         Box(Modifier.shared("logo-${token.token}")) { TokenImage(token, 52.dp) }
-        Spacer(Modifier.height(12.dp))
+        Spacer(Modifier.height(Space.inline))
         Row(verticalAlignment = Alignment.Bottom) {
-            // Styled exactly like the keypad's amount, so the number moves without changing shape.
+            // The `display` step, exactly as on the keypad, so the number moves between the two
+            // screens without changing shape. It is the biggest thing on the sheet, and the step
+            // is a maximum: nothing here is larger.
             Text(
-                amount, color = D.Black, fontSize = 60.sp, fontWeight = FontWeight.ExtraBold, fontFamily = Display,
-                letterSpacing = (-2).sp, softWrap = false, maxLines = 1,
-                style = TextStyle(
-                    fontFeatureSettings = "tnum", lineHeight = 60.sp,
-                    platformStyle = PlatformTextStyle(includeFontPadding = false),
-                    lineHeightStyle = LineHeightStyle(LineHeightStyle.Alignment.Center, LineHeightStyle.Trim.Both),
-                ),
+                amount, color = D.Black, style = Type.display, softWrap = false, maxLines = 1,
                 modifier = Modifier.weight(1f, fill = false).shared("amount"),
             )
-            Spacer(Modifier.width(10.dp))
-            Text(token.symbol, color = D.Black, fontSize = 26.sp, fontWeight = FontWeight.Bold,
+            Spacer(Modifier.width(Space.inline))
+            // `title` here against `heading` on the keypad: the symbol still grows as the review
+            // opens, and both ends of that growth are scale steps.
+            Text(token.symbol, color = D.Black, style = Type.title,
                 modifier = Modifier.padding(bottom = 6.dp).shared("symbol-${token.token}", bounds = true))
         }
-        Text("to ${peer.label.ifBlank { "them" }}", color = D.Quiet, fontSize = 15.sp)
+        Text("to ${peer.label.ifBlank { "them" }}", color = D.Quiet, style = Type.caption)
 
-        Spacer(Modifier.height(18.dp))
+        Spacer(Modifier.height(Space.row))
         DetailRow("Pay with") {
             TokenImage(token, 20.dp)
-            Spacer(Modifier.width(6.dp))
+            Spacer(Modifier.width(Space.inline))
             Value(token.symbol)
         }
         DetailRow("To") {
             MiniAvatar(brand, peer.label)
-            Spacer(Modifier.width(6.dp))
+            Spacer(Modifier.width(Space.inline))
             Value(peer.label.ifBlank { "Unknown phone" })
         }
         DetailRow("Address") { Value("${peer.address.take(6)}…${peer.address.takeLast(6)}") }
@@ -804,34 +857,50 @@ private fun RewardLine(reward: Rewards.Preview?) {
     val why = Rewards.sayWhy(reward)
     AnimatedVisibility(visible = reward != null && (reward.earns || why != null)) {
         val earns = reward?.earns == true
+        // No well behind either line: both used to sit in one, and one of them was a 7% wash of
+        // D.Blue, which is the shape of tint the palette forbids. What is earned goes on the
+        // highlight instead, like a marker pen. The refusal is a reason, not a prize, so it takes
+        // no mark at all.
         Row(
-            Modifier.fillMaxWidth().padding(top = 10.dp)
-                .background(if (earns) D.Blue.copy(alpha = .07f) else D.Fill, RoundedCornerShape(12.dp))
-                .padding(horizontal = 12.dp, vertical = 10.dp),
+            Modifier.fillMaxWidth().padding(top = Space.lead),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            HIcon(if (earns) R.drawable.hi_gift else R.drawable.hi_info, if (earns) D.BlueInk else D.Quiet, 18.dp)
-            Spacer(Modifier.width(8.dp))
-            Text(
-                if (earns) "Earns ${reward?.skr} SKR" else why.orEmpty(),
-                color = if (earns) D.BlueInk else D.Quiet,
-                fontSize = 14.sp, fontWeight = if (earns) FontWeight.SemiBold else FontWeight.Medium,
-            )
+            HIcon(if (earns) R.drawable.hi_gift else R.drawable.hi_info, if (earns) D.Black else D.Quiet, 18.dp)
+            Spacer(Modifier.width(Space.inline))
+            if (earns) Marked("Earns ${reward?.skr} SKR")
+            else Text(why.orEmpty(), color = D.Quiet, style = Type.body)
         }
     }
 }
 
 @Composable
 private fun DetailRow(label: String, value: @Composable RowScope.() -> Unit) {
-    Row(Modifier.fillMaxWidth().padding(vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
-        Text(label, color = D.Quiet, fontSize = 15.sp, modifier = Modifier.weight(1f))
+    Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(label, color = D.Quiet, style = Type.body, modifier = Modifier.weight(1f))
         Row(verticalAlignment = Alignment.CenterVertically, content = value)
     }
 }
 
+/** A row's value — money as often as not, so tabular: digits must not shift as they change. */
 @Composable
 private fun Value(text: String, strong: Boolean = false) =
-    Text(text, color = D.Black, fontSize = 15.sp, fontWeight = if (strong) FontWeight.Bold else FontWeight.Medium, style = Figures, maxLines = 1)
+    Text(text, color = D.Black, style = if (strong) ValueStrong else ValueText, maxLines = 1)
+
+private val ValueText = Type.body.copy(fontFeatureSettings = "tnum")
+private val ValueStrong = ValueText.copy(fontWeight = FontWeight.Bold)
+
+/**
+ * A value worth noticing, on the highlight — the marker pen that replaced the tints.
+ *
+ * Nothing that uses this is a failure: no money moved and nothing was refused, so none of it may
+ * take the red. `D.Highlight` only ever sits behind ink text; alone on white it is invisible at
+ * 1.15:1, so it is never a dot, a line, a ring or a border.
+ */
+@Composable
+private fun Marked(text: String) = Text(
+    text, color = D.Black, style = Type.body, maxLines = 1,
+    modifier = Modifier.background(D.Highlight, RoundedCornerShape(4.dp)).padding(horizontal = 4.dp),
+)
 
 /** A small version of the header avatar: their phone's mark, or their initial. */
 @Composable
@@ -839,6 +908,9 @@ private fun MiniAvatar(brand: String?, label: String) {
     val look = Brand.look(brand)
     Box(Modifier.size(22.dp).clip(CircleShape).background(look?.colour ?: D.Black), contentAlignment = Alignment.Center) {
         when {
+            // Fitted to the 22dp disc, like the header avatar, so not a scale step either.
+            // `Type.micro` would also be 11, but its +1.5sp tracking shoves a single centred
+            // letter off centre.
             look == null -> Text(label.take(1).uppercase().ifBlank { "?" }, color = D.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
             look.picture -> Image(painterResource(look.drawable), null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
             else -> HIcon(look.drawable, D.White, 12.dp)
@@ -865,19 +937,20 @@ private fun AboutThem(
                 null -> Value("Checking…")
                 is Genesis.Check.Held -> {
                     Value("Verified Seeker")
-                    Spacer(Modifier.width(5.dp))
-                    HIcon(R.drawable.hi_verified, D.BlueInk, 18.dp)
+                    Spacer(Modifier.width(Space.tight))
+                    HiIcon(Hi.Verified, D.BlueInk, 18.dp)
                 }
                 Genesis.Check.Unreachable -> Value("Couldn't check")
                 // The one warning here: the phone claimed a Genesis token its wallet doesn't hold.
-                Genesis.Check.None -> if (peer.genesis != null) {
-                    Text("Claimed, not held", color = D.DangerInk, fontSize = 15.sp, fontWeight = FontWeight.Medium)
-                } else Value("Not a Seeker")
+                // Marked, not reddened — red on this sheet means a transaction the chain refused,
+                // and nothing here has even been attempted.
+                Genesis.Check.None -> if (peer.genesis != null) Marked("Claimed, not held")
+                else Value("Not a Seeker")
             }
         }
         DetailRow("Phone") {
             MiniAvatar(brand, peer.label)
-            Spacer(Modifier.width(6.dp))
+            Spacer(Modifier.width(Space.inline))
             Value(Brand.name(brand) ?: "Unknown")
         }
         when (cameFrom) {
@@ -887,7 +960,13 @@ private fun AboutThem(
         DetailRow("With you") {
             Value(when {
                 history == null || history.taps <= 1 -> "First time"
-                history.totalPaid > 0 -> "${history.taps} taps · paid ${"%.4f".format(history.totalPaid).trimEnd('0').trimEnd('.')} SOL"
+                // Through Money, because `"%.4f".format(…)` is HALF_UP: it rounded a lifetime
+                // total UP, and "paid 0.0001 SOL" for 0.00009 is a figure nobody paid. The
+                // trailing zeros still come off — "paid 0.25 SOL", not "0.2500" — and dust
+                // survives the trim because "<0.0001" ends in a 1.
+                history.totalPaid > 0 -> "${history.taps} taps · paid " +
+                    Money.tokenAmount(java.math.BigDecimal(history.totalPaid.toString()), "SOL")
+                        .trimEnd('0').trimEnd('.') + " SOL"
                 else -> "${history.taps} taps since ${fmt.format(java.util.Date(history.firstTapMillis))}"
             })
         }
@@ -896,17 +975,18 @@ private fun AboutThem(
             when {
                 w == null -> Value("Checking…")
                 w.count < 0 -> Value("Couldn't check")
-                w.count == 0 -> Text("Brand new", color = D.DangerInk, fontSize = 15.sp, fontWeight = FontWeight.Medium)
+                // Marked rather than reddened, for the same reason as "Claimed, not held" above.
+                w.count == 0 -> Marked("Brand new")
                 // Only the first thousand transactions are read, so a busier wallet is "before" that date.
                 else -> Value(w.firstMillis?.let { (if (w.count >= 1000) "Before " else "Since ") + fmt.format(java.util.Date(it)) } ?: "In use")
             }
         }
 
-        Spacer(Modifier.height(14.dp))
-        Text("WALLET ADDRESS", color = D.Quiet, fontSize = 11.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 1.sp)
-        Spacer(Modifier.height(6.dp))
+        Spacer(Modifier.height(Space.row))
+        Text("WALLET ADDRESS", color = D.Quiet, style = Type.micro)
+        Spacer(Modifier.height(Space.tight))
         AddressRow(peer.address)
-        Spacer(Modifier.height(4.dp))
+        Spacer(Modifier.height(Space.tight))
         TextLink("Back", onBack)
     }
 }
@@ -920,22 +1000,26 @@ private fun AddressRow(address: String) {
     var copied by remember { mutableStateOf(false) }
     LaunchedEffect(copied) { if (copied) { delay(1_400); copied = false } }
     Row(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(D.Fill)
-            .padding(start = 14.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
+        // No grey well behind it (ui/PORT.md §9): the containers are retired, so this is a row on
+        // the white sheet, bounded by the label above it and the space below. Losing the box also
+        // loses its 14dp inset, so the address now starts on the sheet's own gutter and the two
+        // buttons end on it — the 48dp hit areas carry their own optical padding.
+        Modifier.fillMaxWidth().padding(vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        // `Type.mono` is Geist Mono — the app's own monospace, rather than whatever the phone
+        // happens to call Monospace.
         Text(
-            "${address.take(8)}…${address.takeLast(8)}", color = D.Black, fontSize = 16.sp,
-            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace, maxLines = 1, softWrap = false,
-            modifier = Modifier.weight(1f),
+            "${address.take(8)}…${address.takeLast(8)}", color = D.Black, style = Type.mono,
+            maxLines = 1, softWrap = false, modifier = Modifier.weight(1f),
         )
         RoundIcon(if (copied) R.drawable.hi_tick else R.drawable.hi_copy, if (copied) "Copied" else "Copy address") {
             Haptics.select(context)
             clipboard.setText(androidx.compose.ui.text.AnnotatedString(address))
             copied = true
         }
-        Spacer(Modifier.width(6.dp))
-        RoundIcon(R.drawable.hi_link_out, "View on explorer") {
+        Spacer(Modifier.width(8.dp))
+        RoundIcon(R.drawable.hi_link_out, "View this address on the Solana explorer") {
             Haptics.select(context)
             runCatching { uri.openUri("https://explorer.solana.com/address/$address") }
         }
@@ -947,7 +1031,10 @@ private fun AddressRow(address: String) {
 private fun RoundIcon(@DrawableRes icon: Int, label: String, onClick: () -> Unit) {
     val interaction = remember { MutableInteractionSource() }
     Box(
+        // An icon-only button: `onClickLabel` names the action, `contentDescription` names the
+        // button. Without the second, a screen reader announces it as an unnamed button.
         Modifier.then(PressScale(interaction)).size(48.dp).clip(CircleShape).background(D.White)
+            .semantics { contentDescription = label }
             .clickable(interaction, indication = null, onClickLabel = label, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
@@ -998,12 +1085,27 @@ private fun typed(current: String, key: Char, decimals: Int = 9): String = when 
     }
 }
 
+/**
+ * An amount and its token code, as one string: "2.00 USDC".
+ *
+ * The amounts on this sheet arrive as decimal strings from the wire or the keypad, and every one
+ * of them goes through [Money] — locale grouping, cut never rounded up, dust said as "<", and a
+ * no-break space before the code. A string that is not a decimal at all is shown as it came
+ * rather than swallowed: the sheet is about money, so it never has nothing to say about it.
+ */
+private fun moneyOr(amount: String, symbol: String): String =
+    runCatching { Money.token(java.math.BigDecimal(amount), symbol) }
+        .getOrDefault("$amount $symbol")
+
 @Composable
 private fun AmountDisplay(
-    amount: String, note: String?, token: String, centred: Boolean = false,
+    amount: String, note: String?, token: String,
     chip: (@Composable (Modifier) -> Unit)? = null, warn: Boolean = true,
 ) {
-    Column(Modifier.fillMaxWidth(), horizontalAlignment = if (centred) Alignment.CenterHorizontally else Alignment.Start) {
+    // The keypad's own amount, and only that: `display` is the keypad step (ui/PROJECT.md §3).
+    // The centred variant this used to have belonged to the incoming ask, which now draws its
+    // own amount at the `amount` step, because the sheet shows one amount size per state.
+    Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.Start) {
         // Bottom-aligned with small offsets rather than alignByBaseline: reading a baseline lays a
         // child out during measurement, before the shared-transition host is placed, and the
         // shared amount and chip crashed the sheet on open ("Uninitialized LayoutCoordinates").
@@ -1014,16 +1116,14 @@ private fun AmountDisplay(
             // until "SOL" wrapped one letter per line.
             val scroll = rememberScrollState()
             LaunchedEffect(amount, scroll.maxValue) { scroll.scrollTo(scroll.maxValue) }
+            // The `display` step: Geist, tabular, 60sp. It is a maximum — the biggest thing on
+            // the sheet and the biggest thing in the app — and it is money, so it is tabular:
+            // digits must not shift sideways as they are typed.
             Text(
                 amount.ifBlank { "0" },
                 softWrap = false, maxLines = 1,
                 color = if (amount.isBlank()) D.Quiet else D.Black,
-                fontSize = 60.sp, fontWeight = FontWeight.ExtraBold, fontFamily = Display, letterSpacing = (-2).sp,
-                style = TextStyle(
-                    fontFeatureSettings = "tnum", lineHeight = 60.sp,
-                    platformStyle = PlatformTextStyle(includeFontPadding = false),
-                    lineHeightStyle = LineHeightStyle(LineHeightStyle.Alignment.Center, LineHeightStyle.Trim.Both),
-                ),
+                style = Type.display,
                 modifier = Modifier.weight(1f, fill = false)
                     .shared("amount")
                     .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
@@ -1038,16 +1138,24 @@ private fun AmountDisplay(
                     }
                     .horizontalScroll(scroll),
             )
-            Spacer(Modifier.width(10.dp))
+            Spacer(Modifier.width(Space.inline))
             if (chip == null) {
-                Text(token, color = D.Quiet, fontSize = 20.sp, fontWeight = FontWeight.SemiBold,
+                Text(token, color = D.Quiet, style = Type.heading,
                     modifier = Modifier.padding(bottom = 6.dp).shared("symbol-$token", bounds = true))
             } else {
                 chip(Modifier.padding(bottom = 2.dp))
             }
         }
-        // Only speaks up when there's something to say, in a slot that never changes the sheet's height.
-        Text(note ?: "", color = if (warn) D.DangerInk else D.Quiet, fontSize = 13.sp, modifier = Modifier.height(16.dp))
+        // Only speaks up when there's something to say, in a slot that holds its place whether or
+        // not it does — a minimum rather than a fixed height, so at 2x text size it grows instead
+        // of clipping.
+        //
+        // Not red. A balance that is short and an amount with too many decimals are not failures:
+        // nothing was sent and nothing was refused. Plain ink says it without raising an alarm.
+        Text(
+            note ?: "", color = if (warn) D.Black else D.Quiet, style = Type.caption,
+            modifier = Modifier.heightIn(min = 16.dp),
+        )
     }
 }
 
@@ -1056,24 +1164,30 @@ private fun Keypad(enabled: Boolean, onKey: (Char) -> Unit) {
     val keys = listOf('1', '2', '3', '4', '5', '6', '7', '8', '9', '.', '0', '<')
     Column {
         keys.chunked(3).forEach { row ->
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(Space.inline)) {
                 row.forEach { k -> Key(k, enabled, Modifier.weight(1f)) { onKey(k) } }
             }
         }
     }
 }
 
+/** The keypad's digits are money: Geist, tabular, at the `title` step's size. */
+private val KeyDigit = Type.title.figure()
+
 /** A key lights up grey while held — no ripple, just the pressed state, like the mock. */
 @Composable
 private fun Key(k: Char, enabled: Boolean, modifier: Modifier, onClick: () -> Unit) {
     Box(
-        modifier.height(58.dp).clip(RoundedCornerShape(16.dp))
+        // A minimum, not a fixed height: at 2x text size the digit grows and the row grows with it.
+        modifier.heightIn(min = 58.dp).clip(RoundedCornerShape(16.dp))
+            // Backspace is the one key with no word in it, so it is the one that needs a name.
+            .then(if (k == '<') Modifier.semantics { contentDescription = "Delete the last digit" } else Modifier)
             .clickable(remember { MutableInteractionSource() }, indication = KeyPress, enabled = enabled, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
         val tint = if (enabled) D.Black else D.Quiet
-        if (k == '<') HIcon(R.drawable.hi_backspace, tint, 26.dp)
-        else Text(k.toString(), color = tint, fontSize = 24.sp, fontWeight = FontWeight.Medium, style = Figures)
+        if (k == '<') HiIcon(Hi.Backspace, tint, 26.dp)
+        else Text(k.toString(), color = tint, style = KeyDigit)
     }
 }
 
@@ -1109,12 +1223,17 @@ private class KeyPressNode(private val source: InteractionSource) : Modifier.Nod
 @Composable
 private fun ConnectBody(working: String?, onConnect: () -> Unit) {
     Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-        IconDisc(R.drawable.hi_wallet, D.BlueInk, D.Blue.copy(alpha = .1f))
-        Spacer(Modifier.height(14.dp))
-        Text("Connect a wallet to pay or request", color = D.Black, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center)
-        Spacer(Modifier.height(4.dp))
-        Text("AirPay never holds your keys.", color = D.Quiet, fontSize = 13.5.sp)
-        Spacer(Modifier.height(20.dp))
+        // Not one of the money states, so no status disc — and no pale well behind the mark
+        // either. The bare icon at the hero size, in the ink shade so it holds on white.
+        HiIcon(Hi.Wallet, D.BlueInk, 40.dp)
+        Spacer(Modifier.height(Space.row))
+        Text("Connect a wallet to pay or ask", color = D.Black, style = Type.title, textAlign = TextAlign.Center)
+        Spacer(Modifier.height(Space.tight))
+        Text(
+            "AirPay never holds your keys.", color = D.Quiet, style = Type.caption,
+            textAlign = TextAlign.Center, modifier = Modifier.widthIn(max = 320.dp),
+        )
+        Spacer(Modifier.height(24.dp))
         PrimaryButton(working ?: "Connect wallet", onConnect, loading = working != null)
     }
 }
@@ -1124,30 +1243,35 @@ private fun ConnectBody(working: String?, onConnect: () -> Unit) {
 @Composable
 private fun WaitingBody(label: String, amount: String, symbol: String, note: String?, onClose: () -> Unit) {
     Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-        TickingClock()
-        Spacer(Modifier.height(14.dp))
-        Text("Waiting for ${label.ifBlank { "them" }}", color = D.Black, fontSize = 20.sp, fontWeight = FontWeight.Bold)
-        Text("$amount $symbol", color = D.Black, fontSize = 34.sp, fontWeight = FontWeight.ExtraBold, style = Figures)
-        Spacer(Modifier.height(4.dp))
-        // "Later" lands here. The clock keeps running, because it is still true that we are
-        // waiting — only now we know why, and that somebody looked.
-        AnimatedVisibility(visible = note != null) {
-            Row(
-                Modifier.padding(bottom = 8.dp).background(D.Blue.copy(alpha = .08f), RoundedCornerShape(999.dp))
-                    .padding(horizontal = 12.dp, vertical = 7.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                HIcon(R.drawable.hi_clock, D.BlueInk, 15.dp)
-                Spacer(Modifier.width(6.dp))
-                Text(note.orEmpty(), color = D.BlueInk, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+        // The amount stays the loudest thing here: what is owed outranks the fact that it has not
+        // arrived. The state sits under it as a disc and its words, side by side.
+        //
+        // Through Money, so this reads the same as every other amount in the app: the phone's
+        // grouping, cut rather than rounded up, and the no-break space before the code so the
+        // number and "USDC" can never wrap apart. The fallback is for a string that isn't a
+        // decimal at all \u2014 showing what we were handed beats showing nothing.
+        Text(moneyOr(amount, symbol), color = D.Black, style = Type.amount)
+        Spacer(Modifier.height(Space.row))
+        // The disc and its words are one group, centred as a group with the words start-aligned —
+        // not stretched across the sheet, which would read as a left-aligned row under a centred
+        // amount.
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            // "Later" lands here too, and it is still the pending disc — a deferral is not an
+            // ending, the money can still arrive, so only the words change. The clock keeps
+            // running because it is still true that we are waiting.
+            StatusDisc(Tone.Pending, mark = { TickingClock(20.dp, D.White) })
+            Spacer(Modifier.width(Space.inline))
+            Column {
+                Text(note ?: "Waiting for ${label.ifBlank { "them" }}", color = Tone.Pending.ink, style = Type.body)
+                Spacer(Modifier.height(Space.tight))
+                Text(
+                    if (note != null) "Still watching for it · this stays open"
+                    else "Still watching for it · you can close this",
+                    color = D.Quiet, style = Type.caption,
+                )
             }
         }
-        Text(
-            if (note != null) "Still watching for it — you can close this."
-            else "You can close this — it stays in Requests.",
-            color = D.Quiet, fontSize = 13.5.sp, textAlign = TextAlign.Center,
-        )
-        Spacer(Modifier.height(20.dp))
+        Spacer(Modifier.height(24.dp))
         SecondaryButton("Close", onClose, Modifier.fillMaxWidth())
     }
 }
@@ -1159,9 +1283,14 @@ private fun WaitingBody(label: String, amount: String, symbol: String, note: Str
  * is a low damping ratio on the spring, not a decoration. Waiting is the one screen where a
  * clock means something, so it should read as one: someone glancing at it can tell it is
  * running rather than merely animated.
+ *
+ * It is now the mark inside the pending [StatusDisc] rather than a disc of its own, so it is
+ * drawn on the same 24-unit grid as the other marks, at the stroke a disc asks for, in white on
+ * the tone's fill. The tinted well it used to sit in — a 10% wash of the fill — is gone; the
+ * quarter marks went with it, because at 20dp they were below a pixel.
  */
 @Composable
-private fun TickingClock(size: Dp = 60.dp, tint: Color = D.Blue) {
+private fun TickingClock(size: Dp = 20.dp, tint: Color = D.White) {
     var ticks by remember { mutableIntStateOf(0) }
     LaunchedEffect(Unit) {
         // Aligned to the wall clock so the first tick is not a fraction of a second late.
@@ -1176,37 +1305,37 @@ private fun TickingClock(size: Dp = 60.dp, tint: Color = D.Blue) {
         animationSpec = spring(dampingRatio = 0.42f, stiffness = 2200f),
         label = "second",
     )
-    Box(Modifier.size(size).background(tint.copy(alpha = .1f), CircleShape), contentAlignment = Alignment.Center) {
-        Canvas(Modifier.size(size * 0.62f)) {
-            val r = this.size.minDimension / 2f
-            val c = Offset(this.size.width / 2f, this.size.height / 2f)
-            val stroke = r * 0.11f
-            drawCircle(tint, radius = r - stroke / 2f, center = c, style = Stroke(stroke))
-            // Quarter marks, so the hand has something to tick against.
-            repeat(4) { i ->
-                val a = Math.toRadians(i * 90.0)
-                val from = Offset(c.x + (r * 0.74f * sin(a)).toFloat(), c.y - (r * 0.74f * cos(a)).toFloat())
-                val to = Offset(c.x + (r * 0.56f * sin(a)).toFloat(), c.y - (r * 0.56f * cos(a)).toFloat())
-                drawLine(tint.copy(alpha = .45f), from, to, strokeWidth = stroke * 0.7f, cap = StrokeCap.Round)
-            }
+    Canvas(Modifier.size(size)) {
+        val unit = this.size.minDimension / 24f
+        scale(unit, unit, pivot = Offset.Zero) {
+            // The face is the sandbox's clock mark: r = 8 on the 24 grid, centred.
+            val c = Offset(12f, 12f)
+            val w = markStroke(size, disc = true)
+            drawCircle(tint, radius = 8f - w / 2f, center = c, style = Stroke(w))
             // The hour hand creeps; at this size it reads as "a clock" rather than "a dial".
             val hour = Math.toRadians((second / 60f) * 0.5)
-            drawLine(tint, c, Offset(c.x + (r * 0.34f * sin(hour)).toFloat(), c.y - (r * 0.34f * cos(hour)).toFloat()),
-                strokeWidth = stroke, cap = StrokeCap.Round)
+            drawLine(tint, c, Offset(c.x + (3.5f * sin(hour)).toFloat(), c.y - (3.5f * cos(hour)).toFloat()),
+                strokeWidth = w, cap = StrokeCap.Round)
             val a = Math.toRadians(second.toDouble())
-            drawLine(tint, c, Offset(c.x + (r * 0.58f * sin(a)).toFloat(), c.y - (r * 0.58f * cos(a)).toFloat()),
-                strokeWidth = stroke * 0.8f, cap = StrokeCap.Round)
-            drawCircle(tint, radius = stroke * 0.7f, center = c)
+            drawLine(tint, c, Offset(c.x + (5.5f * sin(a)).toFloat(), c.y - (5.5f * cos(a)).toFloat()),
+                strokeWidth = w, cap = StrokeCap.Round)
         }
     }
 }
 
-private enum class Result { Success, Calm, Failed }
+/** The result line carries an amount, so it is tabular even at the caption step. */
+private val DetailText = Type.caption.copy(fontFeatureSettings = "tnum")
 
+/**
+ * How a payment ended: the outcome's disc, its headline in that outcome's ink, and the line that
+ * says what happened to the money.
+ *
+ * [tone] is the whole difference between the endings, and it carries more than colour — see the
+ * doc on [Tone]. Nothing here decides which tone applies; the caller does, from the phase.
+ */
 @Composable
 private fun ResultBody(
-    kind: Result, title: String, detail: String, signature: String?,
-    onExplorer: (String) -> Unit, earned: Rewards.Earned? = null,
+    tone: Tone, title: String, detail: String, earned: Rewards.Earned? = null,
     actions: @Composable () -> Unit,
 ) {
     // The mark pops in on a spring; the success haptic fires as the phase changes, so the two
@@ -1214,58 +1343,167 @@ private fun ResultBody(
     val pop = remember { Animatable(.5f) }
     LaunchedEffect(Unit) { pop.animateTo(1f, Arrive) }
     Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-        val mod = Modifier.graphicsLayer { scaleX = pop.value; scaleY = pop.value }
-        when (kind) {
-            Result.Success -> IconDisc(R.drawable.hi_tick, D.White, D.SuccessInk, mod, size = 72.dp, icon = 38.dp)
-            Result.Calm -> IconDisc(R.drawable.hi_info, D.Black, D.Fill, mod, size = 72.dp, icon = 34.dp)
-            Result.Failed -> IconDisc(R.drawable.hi_alert, D.DangerInk, D.Danger.copy(alpha = .1f), mod, size = 72.dp, icon = 34.dp)
-        }
-        Spacer(Modifier.height(16.dp))
-        Text(title, color = D.Black, fontSize = 22.sp, fontWeight = FontWeight.Bold)
-        Spacer(Modifier.height(4.dp))
-        Text(detail, color = D.Quiet, fontSize = 15.sp, textAlign = TextAlign.Center, style = Figures)
-        if (signature != null) {
-            Spacer(Modifier.height(12.dp))
-            Row(
-                Modifier.clip(RoundedCornerShape(10.dp)).clickable { onExplorer(signature) }.padding(horizontal = 10.dp, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text("View on explorer", color = D.BlueInk, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                Spacer(Modifier.width(4.dp))
-                HIcon(R.drawable.hi_arrow_up_right, D.BlueInk, 16.dp)
-            }
-        }
+        StatusDisc(tone, Modifier.graphicsLayer { scaleX = pop.value; scaleY = pop.value }, size = 72.dp)
+        Spacer(Modifier.height(Space.row))
+        // The headline takes the tone's ink, so the colour and the words say the same thing. That
+        // is what keeps "Nothing was sent" from reading as a failure, and keeps the chain's
+        // refusal from reading as an ordinary end.
+        Text(title, color = tone.ink, style = Type.title, textAlign = TextAlign.Center)
+        Spacer(Modifier.height(Space.tight))
+        Text(
+            detail, color = D.Quiet, style = DetailText, textAlign = TextAlign.Center,
+            // `mx-auto max-w-xs`, like every other centred state: the line wraps before it runs
+            // the full width of the sheet, so a two-line detail reads as one block.
+            modifier = Modifier.widthIn(max = 320.dp),
+        )
+        // `mt-6` — the gap between the line under the headline and whatever comes next, which is
+        // the reward when there is one and the buttons when there isn't. The explorer link is no
+        // longer a blue phrase floating here: it is a full-width button in the actions below,
+        // stacked under the way out, because two 19sp labels in half-width buttons wrap
+        // ("View on / explorer").
+        Spacer(Modifier.height(24.dp))
         // Arrives seconds after the ✓, because the server only decides once the payment is on
         // the chain. It slides in rather than appearing, so it reads as something that happened
-        // rather than something that was always there.
+        // rather than something that was always there. On the highlight, not in a blue wash, and
+        // with no icon beside it — the marker pen is the whole mark.
         AnimatedVisibility(visible = earned != null, enter = fadeIn(tween(260)) + expandVertically(spring(dampingRatio = 0.75f, stiffness = 158f))) {
-            Row(
-                Modifier.padding(top = 14.dp).background(D.Blue.copy(alpha = .08f), RoundedCornerShape(999.dp))
-                    .padding(horizontal = 14.dp, vertical = 9.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                HIcon(R.drawable.hi_gift, D.BlueInk, 18.dp)
-                Spacer(Modifier.width(7.dp))
-                Text("You earned ${earned?.skr ?: 0} SKR", color = D.BlueInk, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Marked("You earned ${earned?.skr ?: 0} SKR")
+                Spacer(Modifier.height(24.dp))
             }
         }
-
-        Spacer(Modifier.height(20.dp))
         actions()
     }
 }
 
 @Composable
 private fun RetryRow(onClose: () -> Unit, onRetry: () -> Unit) {
-    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+    Row(horizontalArrangement = Arrangement.spacedBy(Space.inline)) {
         SecondaryButton("Close", onClose, Modifier.weight(1f))
         PrimaryButton("Try again", onRetry, Modifier.weight(1f))
     }
 }
 
+/**
+ * [primary] with "View on explorer" stacked under it, when there is a transaction to look up.
+ *
+ * Stacked rather than side by side: both labels are 19sp — every button label is — and
+ * "View on explorer" in a half-width button wraps to "View on / explorer". The way out leads;
+ * the explorer is for whoever wants proof, so it sits second and takes the outline.
+ */
+@Composable
+private fun ExplorerUnder(signature: String?, onExplorer: (String) -> Unit, primary: @Composable () -> Unit) {
+    Column(Modifier.fillMaxWidth()) {
+        primary()
+        if (signature != null) {
+            Spacer(Modifier.height(Space.inline))
+            SecondaryButton("View on explorer", { onExplorer(signature) }, Modifier.fillMaxWidth())
+        }
+    }
+}
+
 // ----------------------------------------------------------------------------------- pieces
 
+/**
+ * A payment state, as a colour and a shape. Ported from `StatusDisc` / `statusInk` in
+ * ui/components/ui/Bits.tsx, and these five are the whole vocabulary of outcomes on this sheet.
+ *
+ * [fill] is the disc; [ink] is the words next to or under it, and the two are never swapped. A
+ * fill is about 3.3:1 with white, which passes for a disc carrying a thick mark and fails for a
+ * sentence — so a label under a disc takes the tone's ink, never its fill.
+ *
+ * All five fills share one brightness on purpose, which means the **shape inside the disc** is
+ * what a colour-blind eye reads. That is why a disc is never drawn without its mark, and why the
+ * mark is stroked at `markStroke(size, disc = true)` rather than at the weight an icon of that
+ * size would otherwise take: it is carrying the meaning, so it has to hold at a glance.
+ *
+ * [Nothing] and [Refused] are the pair that must never converge. Nothing means no transaction
+ * exists; Refused means one went out and the chain turned it down. Grey and red, and only
+ * Refused is ever red.
+ */
+private enum class Tone(
+    val fill: Color,
+    val ink: Color,
+    /** The mark, as `pathData` on the 24-unit icon grid. */
+    val mark: List<String>,
+    /** A filled dot, where the mark needs one that holds at any stroke. */
+    val dot: Offset? = null,
+) {
+    /** A payment that landed. */
+    Paid(D.Success, D.SuccessInk, listOf("M5 14L8.5 17.5L19 6.5")),
 
+    /** Working, waiting, deferred — anything still in flight. A clock, because time is passing. */
+    Pending(D.Blue, D.BlueInk, listOf("M4.0,12.0a8.0,8.0 0 1,0 16.0,0a8.0,8.0 0 1,0 -16.0,0", "M12 8V12L14.5 14")),
+
+    /**
+     * A deadline the person has to meet, and nothing else: the approval window and its countdown.
+     *
+     * No site on this sheet yet, and deliberately not invented one — `Phase.Working` carries a
+     * line of text but no deadline, so there is nothing honest to count down from. Defined here
+     * so that when the window gets a clock, orange is waiting for it and goes nowhere else.
+     */
+    Act(D.Orange, D.OrangeInk, listOf("M12 6.5V13"), dot = Offset(12f, 17.5f)),
+
+    /**
+     * Nothing happened: no money moved and none was going to.
+     *
+     * Grey, because this must not look like a failure. It is an ordinary outcome, and dressing it
+     * as an alarm is how somebody pays a second time for a payment that never went out.
+     */
+    Nothing(D.Neutral, D.Quiet, listOf("M7 12H17")),
+
+    /**
+     * A transaction went out and the chain refused it. The only red on this sheet — and the only
+     * outcome with a signature, because something really did happen.
+     */
+    Refused(D.Danger, D.DangerInk, listOf("M18 6L6.00081 17.9992M17.9992 18L6 6.00085")),
+    ;
+
+    /**
+     * The marks, parsed once each.
+     *
+     * Building a `Path` from its string inside a draw scope is work on a frame, and this sheet
+     * has paid for that mistake before — the same reason the drag offset is read while drawing
+     * and never while composing.
+     */
+    val paths: List<Path> by lazy { mark.map { PathParser().parsePathString(it).toPath() } }
+}
+
+/**
+ * The disc: a bright circle carrying a thick white mark.
+ *
+ * [mark] replaces the tone's own shape where a live one says more — the waiting clock, whose
+ * hands actually move. It does not change the rule: there is always a mark.
+ */
+@Composable
+private fun StatusDisc(
+    tone: Tone,
+    modifier: Modifier = Modifier,
+    size: Dp = 40.dp,
+    mark: (@Composable () -> Unit)? = null,
+) {
+    // 20 in a row disc, 40 in the 72dp hero — the icon scale's two disc sizes.
+    val icon = if (size >= 72.dp) 40.dp else 20.dp
+    Box(modifier.size(size).background(tone.fill, CircleShape), contentAlignment = Alignment.Center) {
+        if (mark != null) {
+            mark()
+        } else {
+            Canvas(Modifier.size(icon)) {
+                // The paths are written on the 24-unit grid, so the whole drawing is scaled into
+                // place — which scales the stroke with it, and `markStroke` is a grid width.
+                val unit = this.size.minDimension / 24f
+                scale(unit, unit, pivot = Offset.Zero) {
+                    val stroke = Stroke(
+                        width = markStroke(icon, disc = true),
+                        cap = StrokeCap.Round, join = StrokeJoin.Round,
+                    )
+                    tone.paths.forEach { drawPath(it, D.White, style = stroke) }
+                    tone.dot?.let { drawCircle(D.White, radius = 1.6f, center = it) }
+                }
+            }
+        }
+    }
+}
 
 // ------------------------------------------------------------------------------------ tokens
 
@@ -1289,7 +1527,12 @@ private fun TokenChip(
 
     Box(modifier) {
         Row(
-            Modifier.clip(RoundedCornerShape(50)).background(D.Fill).clickable { open = true }
+            // An ink outline on white, not a grey body — the same move `SecondaryButton` made
+            // when the containers were retired (ui/PORT.md §9). The chip is a control, so it
+            // needs a findable edge; `D.Line` could not be that edge, because a divider colour
+            // is decorative and never the only boundary of anything.
+            Modifier.clip(RoundedCornerShape(50)).background(D.White)
+                .border(1.5.dp, D.Black, RoundedCornerShape(50)).clickable { open = true }
                 .padding(start = 6.dp, end = 8.dp, top = 5.dp, bottom = 5.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -1303,13 +1546,13 @@ private fun TokenChip(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     // Keyed by token so switching tokens here never has two "logos" at once.
                     Box(Modifier.shared("logo-${t.token}")) { TokenImage(t, 24.dp) }
-                    Spacer(Modifier.width(6.dp))
-                    Text(t.symbol, color = D.Black, fontSize = 18.sp, fontWeight = FontWeight.Bold,
+                    Spacer(Modifier.width(Space.inline))
+                    Text(t.symbol, color = D.Black, style = Type.heading,
                         modifier = Modifier.shared("symbol-${t.token}", bounds = true))
                 }
             }
             Spacer(Modifier.width(2.dp))
-            HIcon(R.drawable.hi_arrow_down, D.Black, 18.dp)
+            HiIcon(Hi.ArrowDown, D.Black, 18.dp)
         }
 
         if (inPopup) {
@@ -1377,14 +1620,14 @@ private fun TokenList(chosen: Tokens.Holding, list: List<Tokens.Holding>, onPick
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 SelectRing(selected = t.token == ringOn) { TokenImage(t, 36.dp) }
-                Spacer(Modifier.width(10.dp))
+                Spacer(Modifier.width(Space.inline))
                 Column(Modifier.weight(1f)) {
-                    Text(t.symbol, color = D.Black, fontSize = 16.sp, fontWeight = FontWeight.Bold, maxLines = 1)
-                    Text(t.name, color = D.Quiet, fontSize = 13.sp, maxLines = 1)
+                    Text(t.symbol, color = D.Black, style = Type.body, maxLines = 1)
+                    Text(t.name, color = D.Quiet, style = Type.caption, maxLines = 1)
                 }
                 Spacer(Modifier.width(8.dp))
-                Text(t.shown, color = D.Black, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, style = Figures, maxLines = 1)
-                Spacer(Modifier.width(6.dp))
+                Text(t.shown, color = D.Black, style = ValueText, maxLines = 1)
+                Spacer(Modifier.width(8.dp))
             }
         }
     }
@@ -1448,6 +1691,8 @@ internal fun TokenImage(t: Tokens.Holding, size: Dp, shape: Shape = CircleShape)
         // A stable colour per mint, so the same token always looks the same.
         val hue = ((t.token.hashCode() and 0x7fffffff) % 360).toFloat()
         Box(round.background(Color.hsv(hue, .55f, .78f)), contentAlignment = Alignment.Center) {
+            // Fitted to the logo circle, like the avatars' initials — a fixed composition, not a
+            // scale step: the letter has to fill whatever size the caller asked for.
             Text(t.symbol.take(1).uppercase(), color = D.White, fontSize = (size.value * .42f).sp, fontWeight = FontWeight.Bold, fontFamily = Display)
         }
     }

@@ -4,6 +4,9 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.foundation.lazy.itemsIndexed
 import android.Manifest
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -83,13 +86,10 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import java.time.YearMonth
@@ -932,7 +932,7 @@ class MainActivity : ComponentActivity() {
                             // no reason — and in a debug build the §N tag adds its own line
                             // on top of that. The bottom keeps 20dp: it is the end of a
                             // scroll, where content running into the edge reads as cut off.
-                            .padding(start = 20.dp, end = 20.dp, top = 6.dp, bottom = 20.dp)
+                            .padding(start = Space.gutter, end = Space.gutter, top = 6.dp, bottom = Space.gutter)
                             // ONE inset modifier, not two. `navigationBarsPadding().imePadding()`
                             // chained is the documented way to wedge this: each consumes what it
                             // applies, the keyboard animation re-reports what is left, and the
@@ -963,24 +963,30 @@ class MainActivity : ComponentActivity() {
                                 catchUpOrders()
                             },
                         )
-                        Spacer(Modifier.height(14.dp))
+                        // The header is chrome rather than a section, so the balance sits
+                        // directly under it: 16, not the 40 between sections.
+                        Spacer(Modifier.height(16.dp))
 
                         when (val st = status) {
-                            is Status.Working -> { Banner("…", st.what, D.Quiet); Spacer(Modifier.height(10.dp)) }
+                            is Status.Working -> { Banner("…", st.what, D.Quiet); Spacer(Modifier.height(Space.inline)) }
                             is Status.Problem -> {
-                                Banner(st.title, st.detail, D.Danger, onDismiss = { status = Status.Idle })
-                                Spacer(Modifier.height(10.dp))
+                                // Ink, not red. Almost every Problem is "nothing was sent" —
+                                // offline, no wallet, a withdrawn request — and red is
+                                // reserved for a transaction the chain actually refused.
+                                Banner(st.title, st.detail, D.Black, onDismiss = { status = Status.Idle })
+                                Spacer(Modifier.height(Space.inline))
                             }
                             is Status.Sent -> {
                                 Banner("✓ Sent", st.signature, D.Blue, mono = true,
                                     onDismiss = { status = Status.Idle })
-                                Spacer(Modifier.height(10.dp))
+                                Spacer(Modifier.height(Space.inline))
                             }
                             Status.Idle -> Unit
                         }
                         paidSignature?.let { sig ->
-                            Banner("✓ Paid", sig, D.Blue, mono = true, onDismiss = { paidSignature = null })
-                            Spacer(Modifier.height(10.dp))
+                            // Paid is the success ink; Sent above is still only confirming.
+                            Banner("✓ Paid", sig, D.Success, mono = true, onDismiss = { paidSignature = null })
+                            Spacer(Modifier.height(Space.inline))
                         }
 
                         if (cards) {
@@ -1260,7 +1266,8 @@ class MainActivity : ComponentActivity() {
 
                         // §2d — the breakdown behind the one figure above.
                         if (holdings.isNotEmpty()) {
-                            Spacer(Modifier.height(18.dp))
+                            // Lead, not a section gap: these cards are what the balance is made of.
+                            Spacer(Modifier.height(Space.lead))
                             Tag("2d")
                             val rate by produceState<Double?>(initialValue = null) { value = Prices.solUsd() }
                             TokenBadges(holdings, rate, market) { mint ->
@@ -1271,7 +1278,7 @@ class MainActivity : ComponentActivity() {
                         }
 
                         if (contactCount > 0) {
-                            Spacer(Modifier.height(24.dp))
+                            Spacer(Modifier.height(Space.section))
                             Tag("3")
                             People(
                                 list = contacts.all(),
@@ -1288,11 +1295,10 @@ class MainActivity : ComponentActivity() {
                         }
 
                         if (shopSections.isNotEmpty()) {
-                            Spacer(Modifier.height(22.dp))
+                            Spacer(Modifier.height(Space.section))
                             Tag("4")
-                            Text("Pay a bill", color = D.Black, fontSize = 17.sp,
-                                fontWeight = FontWeight.Bold, modifier = Modifier.padding(vertical = 4.dp))
-                            Spacer(Modifier.height(10.dp))
+                            Text("Pay a bill", color = D.Black, style = Type.heading)
+                            Spacer(Modifier.height(Space.lead))
                             ShopTiles(shopSections) { sec ->
                                 shopSection = sec
                                 shopProduct = null
@@ -1300,10 +1306,10 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                         if (Rewards.enabled) {
-                            Spacer(Modifier.height(22.dp))
+                            Spacer(Modifier.height(Space.section))
                             Tag("5")
                             EarnStrip(rewardSummary) { tab = Tab.REWARDS }
-                            Spacer(Modifier.height(10.dp))
+                            Spacer(Modifier.height(Space.lead))
                             EarnTiles(
                                 onRewards = { tab = Tab.REWARDS },
                                 onOffers = { tab = Tab.OFFERS },
@@ -1315,7 +1321,7 @@ class MainActivity : ComponentActivity() {
                         }
 
                         if (history.isNotEmpty()) {
-                            Spacer(Modifier.height(22.dp))
+                            Spacer(Modifier.height(Space.section))
                             Tag("6")
                             HistoryStrip(
                                 list = history,
@@ -1333,7 +1339,7 @@ class MainActivity : ComponentActivity() {
 
                         // The log is ours, not theirs: it only exists while "check" is open.
                         if (checking) {
-                            Spacer(Modifier.height(16.dp))
+                            Spacer(Modifier.height(Space.section))
                             SectionLabel("EXCHANGE")
                             LogView(log)
                         }
@@ -1819,9 +1825,12 @@ class MainActivity : ComponentActivity() {
                 previous?.uncaughtException(thread, error)
             } else {
                 runOnUiThread {
+                    // Leads with what happened to the money, not with the machinery
+                    // (ui/PORT.md §7) — and "Nothing was sent" is one of the seven state
+                    // wordings, so a crash reads the same as every other no-money-moved end.
                     status = Status.Problem(
-                        "Something went wrong",
-                        "That step failed unexpectedly. Nothing was sent — try again from Requests.",
+                        "Nothing was sent",
+                        "That step stopped before anything left your wallet. Try again from Requests.",
                     )
                 }
             }
@@ -1853,7 +1862,13 @@ fun ago(at: Long, now: Long = System.currentTimeMillis()): String {
 }
 
 
-/** One shape for every piece of news the app has to deliver. */
+/**
+ * One shape for every piece of news the app has to deliver.
+ *
+ * No tinted well behind it (ui/PORT.md §1 rule 3). The headline in its tone's INK is what
+ * marks it; a wash is the one thing the palette forbids. The tone arrives as a FILL, so every
+ * word here takes `.ink` — a fill is never text, and "OK" used to be drawn in the raw fill.
+ */
 @Composable
 private fun Banner(
     title: String,
@@ -1863,22 +1878,23 @@ private fun Banner(
     onDismiss: (() -> Unit)? = null,
 ) {
     Row(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(tone.copy(alpha = .08f))
-            .padding(horizontal = 14.dp, vertical = 12.dp),
+        Modifier.fillMaxWidth().padding(vertical = Space.row),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(Modifier.weight(1f)) {
-            Text(title, color = tone.ink, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+            Text(title, color = tone.ink, style = Type.body)
             if (detail.isNotBlank()) {
-                Spacer(Modifier.height(2.dp))
-                Text(detail, color = D.Quiet, fontSize = if (mono) 10.sp else 13.sp,
-                    fontFamily = if (mono) FontFamily.Monospace else Ui, lineHeight = 17.sp)
+                Spacer(Modifier.height(Space.tight))
+                // A signature is read character by character; anything else is a sentence.
+                Text(detail, color = D.Quiet, style = if (mono) Type.mono else Type.caption)
             }
         }
         if (onDismiss != null) {
-            Text("OK", color = tone, fontSize = 14.sp, fontWeight = FontWeight.Bold,
-                modifier = Modifier.clip(RoundedCornerShape(10.dp)).clickable(onClick = onDismiss)
-                    .padding(horizontal = 10.dp, vertical = 6.dp))
+            Box(
+                Modifier.clip(RoundedCornerShape(10.dp)).clickable(onClick = onDismiss)
+                    .heightIn(min = 48.dp).padding(horizontal = 12.dp),
+                contentAlignment = Alignment.Center,
+            ) { Text("OK", color = tone.ink, style = Type.body) }
         }
     }
 }
@@ -1890,43 +1906,55 @@ private fun WalletRow(
     onDisconnect: () -> Unit,
     onConnect: () -> Unit,
 ) {
+    // No card behind it (no containers), and "No wallet connected" is INK rather than red:
+    // having no wallet is an ordinary starting point, not a transaction the chain refused.
     Row(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(D.Fill)
-            .padding(horizontal = 14.dp, vertical = 12.dp),
+        Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(vertical = Space.row),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        HIcon(R.drawable.hi_wallet, if (address == null) D.DangerInk else D.Quiet, 18.dp)
-        Spacer(Modifier.width(10.dp))
+        HiIcon(Hi.Wallet, D.Quiet, 20.dp)
+        Spacer(Modifier.width(Space.inline))
         Column(Modifier.weight(1f)) {
             Text(
                 address?.let { "${it.take(6)}…${it.takeLast(4)}" } ?: "No wallet connected",
-                color = if (address == null) D.DangerInk else D.Black,
-                fontSize = 14.sp, fontWeight = FontWeight.SemiBold, style = Figures,
+                color = D.Black,
+                // An address is an identifier and reads in mono; the sentence does not.
+                style = if (address == null) Type.body else MonoBody,
             )
         }
         if (address == null) {
             Box(
-                Modifier.clip(RoundedCornerShape(11.dp)).background(D.Blue)
+                Modifier.clip(RoundedCornerShape(12.dp)).background(D.Blue)
                     .clickable(enabled = !busy, onClick = onConnect)
-                    .padding(horizontal = 16.dp, vertical = 9.dp),
-            ) { Text(if (busy) "…" else "Connect", color = D.White, fontSize = 14.sp, fontWeight = FontWeight.Bold) }
+                    .heightIn(min = 48.dp).padding(horizontal = 16.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                // 19sp bold is the smallest size white on D.Blue passes at (3.30:1 counts only
+                // as large text). The old 14sp label failed.
+                Text(if (busy) "…" else "Connect", color = D.White, style = Type.heading)
+            }
         } else {
             // The escape hatch for a session the wallet no longer honours. Without it the only
             // cure for a stale token is reinstalling the app.
-            Text("Disconnect", color = D.Quiet, fontSize = 13.sp, fontWeight = FontWeight.Medium,
-                modifier = Modifier.clip(RoundedCornerShape(10.dp))
+            Box(
+                Modifier.clip(RoundedCornerShape(10.dp))
                     .clickable(enabled = !busy, onClick = onDisconnect)
-                    .padding(horizontal = 8.dp, vertical = 6.dp))
+                    .heightIn(min = 48.dp).padding(horizontal = 8.dp),
+                contentAlignment = Alignment.Center,
+            ) { Text("Disconnect", color = D.Quiet, style = Type.body) }
         }
     }
 }
 
 /**
- * The wallet, its balance, and the two things you can do with it.
+ * The wallet you are spending from, what it is worth, and the other linked wallets behind it.
  *
- * Left: active wallet name + address badge, Total balance label, large tabular numbers,
- * and pill actions (Send & Request).
- * Right: clean interactive multi-card stack with brand logos peeking out from the right edge.
+ * Start side: the wallet's logo and whatever identifies the ACCOUNT, the uppercase "total
+ * balance" label, and the figure. The Send and Request pills this comment used to promise are
+ * gone (see the note where they stood), and so is the grey chip that boxed the address.
+ *
+ * End side: the interactive card pile, brand logos showing on each card's lip, floating over
+ * the space the balance is not using.
  */
 @Composable
 private fun BalanceCard(
@@ -1976,51 +2004,37 @@ private fun BalanceCard(
                     // background, so a circle of the same colour underneath only showed as a
                     // ring of it poking out from behind the corners.
                     WalletLogo(wallet, 22.dp, 7.dp)
-                    Spacer(Modifier.width(8.dp))
+                    Spacer(Modifier.width(Space.inline))
                     // The icon already says which wallet this is, so the name beside it was
                     // saying it twice. What goes here instead is whatever identifies the
                     // ACCOUNT: the owner's name when the wallet reports one — Seeker Wallet
                     // gives its SNS domain — and the address when it does not.
+                    //
+                    // The grey chip behind it is gone (no containers). A username is caption
+                    // text; a bare address is caption MONO, because it is read character by
+                    // character and 0/O have to stay apart.
                     Text(
                         wallet.username ?: wallet.short,
                         color = if (wallet.username != null) D.Black else D.Quiet,
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        style = if (wallet.username == null) Figures else TextStyle.Default,
+                        style = if (wallet.username == null) Type.mono else Type.caption,
                         maxLines = 1,
-                        modifier = Modifier.clip(RoundedCornerShape(6.dp)).background(D.Fill)
-                            .padding(horizontal = 8.dp, vertical = 3.dp),
+                        overflow = TextOverflow.Ellipsis,
                     )
                 } else {
-                    Box(
-                        Modifier
-                            .size(20.dp)
-                            .clip(CircleShape)
-                            .background(D.Fill),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        HIcon(R.drawable.hi_wallet, D.Quiet, 12.dp)
-                    }
-                    Spacer(Modifier.width(7.dp))
-                    Text(
-                        "No wallet connected",
-                        color = D.Quiet,
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.SemiBold,
-                    )
+                    // No grey disc behind it: the mark at 16, the icon size that sits beside a
+                    // caption, and the words in the quiet ink — never red.
+                    HiIcon(Hi.Wallet, D.Quiet, 16.dp)
+                    Spacer(Modifier.width(Space.inline))
+                    Text("No wallet connected", color = D.Quiet, style = Type.caption)
                 }
             }
 
-            Spacer(Modifier.height(10.dp))
+            Spacer(Modifier.height(Space.inline))
 
-            Text(
-                "Total balance",
-                color = D.Quiet,
-                fontSize = 11.sp,
-                letterSpacing = 0.9.sp,
-                fontWeight = FontWeight.SemiBold,
-            )
-            Spacer(Modifier.height(2.dp))
+            // The scale's step for an uppercase label. Uppercased in code rather than in the
+            // string: it is a typographic treatment, not the words.
+            Text("Total balance".uppercase(), color = D.Quiet, style = Type.micro)
+            Spacer(Modifier.height(Space.tight))
             // In dollars, because "total balance" is a question about money and SOL is not an
             // answer to it for most people.
             //
@@ -2041,35 +2055,57 @@ private fun BalanceCard(
             // Worth it: DUFFLE_DESIGN.md asks for the amount to roll, and a figure that swaps
             // whole gives no sense that one balance BECAME another.
             val dollars = totalUsd ?: sol?.let { s0 -> rate?.let { s0 * it } }
-            val shown = when {
-                dollars != null -> Prices.money(dollars)
-                sol != null -> "%.4f".format(sol)
-                else -> "—"
-            }
+            // Money decides every part of this, symbol and side included. It used to be
+            // `Prices.money(dollars)` split on a literal '.', which broke twice: a dust balance
+            // came back "<0.01" and split into "<0" and ".01" (so the phone read "$ <0 .01"),
+            // and a locale whose decimal mark is ',' never split at all.
+            val parts = dollars?.let { Money.fiatParts(java.math.BigDecimal(it.toString()), "USD") }
+            // No price feed: SOL, at SOL's own precision. `"%.4f".format(sol)` was HALF_UP and
+            // claimed 0.0001 SOL that was not there.
+            val bare = if (parts == null && sol != null) Money.tokenAmount(java.math.BigDecimal(sol.toString()), "SOL") else null
+            // The balance is ONE fixed composition, not three steps on the scale. The figure
+            // is `Type.display`'s 60/800; the sign is half of it (30) and the cents are 26/60
+            // of it, so if the balance ever shrinks to fit they shrink with it. Those two
+            // sizes, and the bottom paddings that put the three runs on one optical baseline,
+            // belong to the shape — they are neither scale steps nor spacing.
+            //
+            // The face is `Figure` (Geist), which is what `Type.display` is set in; the
+            // currency symbol takes `CurrencyFace`, the Bricolage subset that answers for
+            // `$ ₹ €`. Both were Bricolage-the-display-face, which is the wordmark's font.
             Row(verticalAlignment = Alignment.Bottom) {
-                if (dollars != null) {
+                if (parts != null && parts.symbolFirst) {
                     Text(
-                        "$", color = D.Quiet, fontSize = 30.sp, fontWeight = FontWeight.Bold,
-                        fontFamily = Display, style = Figures,
+                        parts.symbol, color = D.Quiet, fontSize = 30.sp,
+                        fontWeight = FontWeight.Bold, fontFamily = CurrencyFace, style = Figures,
                         modifier = Modifier.padding(bottom = 10.dp, end = 3.dp),
                     )
                 }
                 FlowFigure(
-                    text = shown.substringBefore('.'),
+                    text = parts?.whole ?: bare ?: "—",
                     fontSize = 60.sp, color = D.Black,
-                    fontWeight = FontWeight.ExtraBold, fontFamily = Display,
+                    fontWeight = FontWeight.ExtraBold, fontFamily = Figure,
                 )
-                shown.substringAfter('.', "").takeIf { it.isNotEmpty() }?.let { frac ->
+                parts?.fraction?.takeIf { it.isNotEmpty() }?.let { frac ->
                     FlowFigure(
-                        text = ".$frac",
+                        text = frac,
                         fontSize = 26.sp, color = D.Quiet,
-                        fontWeight = FontWeight.Bold, fontFamily = Display,
+                        fontWeight = FontWeight.Bold, fontFamily = Figure,
                         modifier = Modifier.padding(bottom = 6.dp),
                     )
                 }
-                if (dollars == null && sol != null) {
+                // "2,84 €" — the locale puts it after the figures, so the app does too.
+                if (parts != null && !parts.symbolFirst) {
                     Text(
-                        " SOL", color = D.Quiet, fontSize = 14.sp, fontWeight = FontWeight.SemiBold,
+                        parts.symbol, color = D.Quiet, fontSize = 30.sp,
+                        fontWeight = FontWeight.Bold, fontFamily = CurrencyFace, style = Figures,
+                        modifier = Modifier.padding(bottom = 10.dp, start = 3.dp),
+                    )
+                }
+                if (parts == null && sol != null) {
+                    // A token code after the amount, at the nearest step rather than a fourth
+                    // hand-picked size.
+                    Text(
+                        " SOL", color = D.Quiet, style = Type.body,
                         modifier = Modifier.padding(bottom = 8.dp),
                     )
                 }
@@ -2189,10 +2225,10 @@ private fun TokenBadges(
     // put back inside the scroller, so the first and last card still sit on the gutter at rest.
     val screen = LocalConfiguration.current.screenWidthDp.dp
     Row(
-        Modifier.offset(x = (-20).dp).width(screen)
+        Modifier.offset(x = -Space.gutter).width(screen)
             .horizontalScroll(rememberScrollState())
-            .padding(horizontal = 20.dp, vertical = 4.dp),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
+            .padding(horizontal = Space.gutter, vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(Space.inline),
     ) {
         holdings.forEach { h ->
             // One price source for every token. The old rules priced SOL live, pinned a short
@@ -2224,7 +2260,7 @@ private fun TokenBadges(
                 // 16dp gap above; that read as two objects stacked rather than one head.
                 Box(
                     Modifier.fillMaxWidth().height(58.dp)
-                        .clip(RoundedCornerShape(24.dp)).background(Color(0xFF0E1013)),
+                        .clip(RoundedCornerShape(24.dp)).background(D.Night),
                 ) {
                     Box(Modifier.align(Alignment.TopStart)) {
                         TokenImage(h, 58.dp, RoundedCornerShape(14.dp))
@@ -2249,7 +2285,7 @@ private fun TokenBadges(
                             !h.name.equals(h.symbol, true) && !h.name.startsWith(h.symbol)
                         Text(
                             if (named) h.name else "Unnamed",
-                            color = D.Quiet, fontSize = 13.sp, fontWeight = FontWeight.Medium,
+                            color = D.Quiet, style = Type.caption,
                             maxLines = 1, modifier = Modifier.weight(1f, fill = false),
                         )
                         // What one of them costs, not what it did today. The day's move is
@@ -2258,11 +2294,10 @@ private fun TokenBadges(
                         if (unit != null) {
                             Spacer(Modifier.width(8.dp))
                             Text(
-                                "$" + unitShown(unit),
-                                color = D.White, fontSize = 11.sp, fontWeight = FontWeight.Bold,
-                                style = Figures, maxLines = 1,
+                                currencyStyled(Money.unitPrice(java.math.BigDecimal(unit.toString()), "USD")),
+                                color = D.White, style = Type.micro.figure(), maxLines = 1,
                                 modifier = Modifier.clip(RoundedCornerShape(999.dp))
-                                    .background(Color(0xFF0E1013))
+                                    .background(D.Night)
                                     .padding(horizontal = 8.dp, vertical = 2.dp),
                             )
                         }
@@ -2270,15 +2305,23 @@ private fun TokenBadges(
 
                     Spacer(Modifier.height(8.dp))
                     Text(
-                        "${h.shown} ${h.symbol}", color = D.Black, fontSize = 22.sp,
-                        fontWeight = FontWeight.ExtraBold, fontFamily = Display,
-                        style = Figures, maxLines = 1,
+                        "${h.shown} ${h.symbol}", color = D.Black,
+                        style = Type.title.figure(), maxLines = 1,
                     )
-                    Spacer(Modifier.height(2.dp))
+                    Spacer(Modifier.height(Space.tight))
                     Text(
-                        if (worth != null) "$${Prices.money(worth)}" else "No market price",
-                        color = D.Quiet, fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
-                        style = Figures, maxLines = 1,
+                        // The "$" used to be concatenated here, outside Money, so a dust
+                        // worth rendered "$<0.01" — the symbol on the wrong side of the
+                        // "less than". Money.fiat places it: "<$0.01".
+                        currencyStyled(
+                            if (worth != null) Money.fiat(java.math.BigDecimal(worth.toString()), "USD")
+                            else "No market price"
+                        ),
+                        color = D.Quiet,
+                        // A worth is money. "No market price" is a sentence, so it keeps the
+                        // words face — and it is never "$0.00", which would be a false claim.
+                        style = if (worth != null) Type.caption.figure() else Type.caption,
+                        maxLines = 1,
                     )
                 }
               }
@@ -2288,18 +2331,14 @@ private fun TokenBadges(
 }
 
 /**
- * A unit price for the pill on a token card.
+ * A day of prices as one line, with the last point marked. Drawn, not charted — no axes.
  *
- * Four places under a dollar, two above: "$118.58" and "$0.0042" are both readable, while two
- * places on a sub-cent token rounds every one of them to "$0.00".
+ * Rising is the success fill; falling is NEUTRAL grey. Red is only a transaction the chain
+ * refused, and a price going down is not an error.
  */
-private fun unitShown(usd: Double): String =
-    if (usd < 1.0) String.format("%,.4f", usd) else String.format("%,.2f", usd)
-
-/** A day of prices as one line, with the last point marked. Drawn, not charted — no axes. */
 @Composable
 private fun Sparkline(series: List<Double>, up: Boolean, modifier: Modifier) {
-    val stroke = if (up) D.Success else D.Danger
+    val stroke = if (up) D.Success else D.Neutral
     Canvas(modifier) {
         val lo = series.min()
         val hi = series.max()
@@ -2311,14 +2350,8 @@ private fun Sparkline(series: List<Double>, up: Boolean, modifier: Modifier) {
             moveTo(0f, y(series[0]))
             series.forEachIndexed { i, v -> if (i > 0) lineTo(i * dx, y(v)) }
         }
-        // A wash under the line, so the head reads as a chart rather than a scribble.
-        val under = Path().apply {
-            addPath(path)
-            lineTo(size.width, size.height)
-            lineTo(0f, size.height)
-            close()
-        }
-        drawPath(under, Brush.verticalGradient(listOf(stroke.copy(alpha = .28f), Color.Transparent)))
+        // The wash under the line is gone: it was a tint, and the shape of the day was always
+        // the whole claim.
         drawPath(path, stroke, style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round))
         drawCircle(stroke, radius = 3.dp.toPx(), center = Offset(size.width, y(series.last())))
     }
@@ -2433,65 +2466,68 @@ private fun WalletSheet(
     val checks = remember(w.address, w.token, w.pkg) { checksFor(context, w) }
 
     Tray(onClose = onClose) {
-        Spacer(Modifier.height(18.dp))
+        Spacer(Modifier.height(Space.lead))
 
         Row(verticalAlignment = Alignment.CenterVertically) {
             WalletLogo(w, 46.dp, 14.dp)
-            Spacer(Modifier.width(13.dp))
+            Spacer(Modifier.width(Space.inline))
             Column(Modifier.weight(1f)) {
-                Text(w.username ?: w.name, color = D.Black, fontSize = 19.sp,
-                    fontWeight = FontWeight.Bold, fontFamily = Display, maxLines = 1)
-                Spacer(Modifier.height(2.dp))
+                Text(w.username ?: w.name, color = D.Black, style = Type.heading, maxLines = 1)
+                Spacer(Modifier.height(Space.tight))
                 val copy = remember { MutableInteractionSource() }
                 // Short, and tappable. The full 44 characters wrap to two lines and are read by
                 // nobody; what people do with an address is paste it.
                 Text(
                     if (copied) "Copied" else w.short,
                     color = if (copied) D.SuccessInk else D.Quiet,
-                    fontSize = 12.5.sp, fontFamily = FontFamily.Monospace,
+                    // An address is an identifier; "Copied" is a word, so it drops the mono.
+                    style = if (copied) Type.caption else Type.mono,
                     modifier = Modifier.then(PressScale(copy)).clip(RoundedCornerShape(6.dp))
                         .clickable(copy, indication = null) {
                             clip.setText(AnnotatedString(w.address))
                             copied = true
                             Haptics.tick(context)
                         }
-                        .padding(vertical = 1.dp),
+                        .padding(vertical = 2.dp),
                 )
             }
-            Text("Linked ${whenLinked(w.addedAt)}", color = D.Quiet, fontSize = 11.sp,
+            Text("Linked ${whenLinked(w.addedAt)}", color = D.Quiet, style = Type.caption,
                 textAlign = TextAlign.End)
         }
 
         Spacer(Modifier.height(16.dp))
 
-        Column(
-            Modifier.fillMaxWidth().clip(RoundedCornerShape(Tray.INNER)).background(D.Fill)
-                .padding(horizontal = 14.dp, vertical = 4.dp),
-        ) {
+        // No grey well behind the checks (no containers): the marks carry them, and each
+        // check is a row with a hairline under it.
+        Column(Modifier.fillMaxWidth()) {
             checks.forEachIndexed { i, c ->
                 // Staggered, nearest the cause first. Nature is not synchronous.
                 var here by remember { mutableStateOf(false) }
                 LaunchedEffect(Unit) { delay(120L + i * 60L); here = true }
                 val fade by animateFloatAsState(if (here) 1f else 0f, Settle, label = "check")
                 Row(
-                    Modifier.padding(vertical = 9.dp)
+                    Modifier.heightIn(min = 48.dp).padding(vertical = Space.row)
                         .graphicsLayer { alpha = fade; translationY = (1f - fade) * 8.dp.toPx() },
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
+                    // A check that did not pass is not a transaction the chain refused, so it
+                    // is the quiet ink beside its alert mark rather than red.
                     HIcon(
                         if (c.ok) R.drawable.hi_tick else R.drawable.hi_alert,
-                        if (c.ok) D.SuccessInk else D.DangerInk, 16.dp,
+                        if (c.ok) D.SuccessInk else D.Quiet, 16.dp,
                     )
-                    Spacer(Modifier.width(10.dp))
+                    Spacer(Modifier.width(Space.inline))
                     Column(Modifier.weight(1f)) {
-                        Text(c.label, color = D.Black, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                        Text(c.label, color = D.Black, style = Type.body)
                         c.detail?.let {
-                            Text(it, color = D.Quiet, fontSize = 11.sp,
-                                fontFamily = if (it.contains('.')) FontFamily.Monospace else FontFamily.Default,
+                            // A package name is an identifier; the rest are sentences.
+                            Text(it, color = D.Quiet,
+                                style = if (it.contains('.')) Type.mono else Type.caption,
                                 maxLines = 1)
                         }
                     }
                 }
+                if (i < checks.lastIndex) RowLine()
             }
         }
 
@@ -2503,29 +2539,35 @@ private fun WalletSheet(
         // is not a property of the wallet. It is what this app does not do.
         Text(
             "AirPay never receives your key. Every payment is signed inside the wallet and handed back already signed.",
-            color = D.Quiet, fontSize = 11.5.sp, lineHeight = 16.sp,
+            color = D.Quiet, style = Type.caption,
         )
 
-        Spacer(Modifier.height(18.dp))
+        Spacer(Modifier.height(Space.section))
         // Two taps, because relinking means going back through the wallet. Nothing is spent
         // either way: this forgets a token, it does not touch the account.
         val remove = remember { MutableInteractionSource() }
-        Text(
-            if (confirming) "Tap again to remove" else "Remove wallet",
-            color = D.DangerInk, fontSize = 15.sp, fontWeight = FontWeight.Bold,
-            textAlign = TextAlign.Center,
-            modifier = Modifier.fillMaxWidth().then(PressScale(remove))
+        // An ink outline on white, not a red well. Removing a wallet forgets a token: nothing
+        // is spent and the chain refuses nothing, so it is not one of the red states. The
+        // weight is carried by the second tap and by the words, which is where it belongs.
+        Box(
+            Modifier.fillMaxWidth().then(PressScale(remove))
                 .clip(RoundedCornerShape(Tray.INNER))
-                .background(D.Danger.copy(alpha = if (confirming) .16f else .08f))
+                .border(1.5.dp, D.Black, RoundedCornerShape(Tray.INNER))
                 .clickable(remove, indication = null) {
                     if (confirming) onRemove() else {
                         confirming = true
                         Haptics.tick(context)
                     }
                 }
-                .padding(vertical = 15.dp),
-        )
-        Spacer(Modifier.height(10.dp))
+                .heightIn(min = 52.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                if (confirming) "Tap again to remove" else "Remove wallet",
+                color = D.Black, style = Type.heading, textAlign = TextAlign.Center,
+            )
+        }
+        Spacer(Modifier.height(Space.lead))
     }
 }
 
@@ -2544,35 +2586,40 @@ private fun whenLinked(at: Long): String {
 @Composable
 private fun WalletPicker(apps: List<WalletLink.App>, onPick: (WalletLink.App) -> Unit, onClose: () -> Unit) {
     Column(Modifier.fillMaxWidth()) {
-        Text("Add a wallet", color = D.Black, fontSize = 22.sp, fontWeight = FontWeight.ExtraBold, fontFamily = Display)
-        Spacer(Modifier.height(4.dp))
-        Text("AirPay never sees your keys — the wallet signs.", color = D.Quiet, fontSize = 13.5.sp)
-        Spacer(Modifier.height(16.dp))
+        Text("Add a wallet", color = D.Black, style = Type.title)
+        Spacer(Modifier.height(Space.tight))
+        Text("AirPay never sees your keys — the wallet signs.", color = D.Quiet, style = Type.caption)
+        Spacer(Modifier.height(Space.lead))
         if (apps.isEmpty()) {
-            Text("No wallet apps found on this phone.", color = D.Quiet, fontSize = 14.sp)
+            Text("No wallet apps found on this phone.", color = D.Quiet, style = Type.body)
         }
-        apps.forEach { app ->
+        // Rows now, not cards: space and a hairline instead of a grey body.
+        apps.forEachIndexed { i, app ->
             Row(
-                Modifier.fillMaxWidth().padding(vertical = 5.dp).clip(RoundedCornerShape(16.dp))
-                    .background(D.Fill).clickable { onPick(app) }
-                    .padding(horizontal = 14.dp, vertical = 13.dp),
+                Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable { onPick(app) }
+                    .padding(vertical = Space.row),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 val icon = remember(app.pkg) { app.icon?.let { runCatching { it.toBitmap().asImageBitmap() }.getOrNull() } }
                 if (icon != null) {
                     Image(BitmapPainter(icon), contentDescription = null, modifier = Modifier.size(34.dp).clip(CircleShape))
                 } else {
-                    Box(Modifier.size(34.dp).clip(CircleShape).background(D.Blue.copy(alpha = .15f)),
-                        contentAlignment = Alignment.Center) {
-                        HIcon(R.drawable.hi_wallet, D.BlueInk, 17.dp)
+                    // A white disc with a hairline, not a pale blue one: the tints are gone.
+                    Box(
+                        Modifier.size(34.dp).clip(CircleShape).background(D.White)
+                            .border(1.5.dp, D.Line, CircleShape),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        HiIcon(Hi.Wallet, D.BlueInk, 17.dp)
                     }
                 }
-                Spacer(Modifier.width(12.dp))
-                Text(app.label, color = D.Black, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-                HIcon(R.drawable.hi_arrow_up_right, D.Quiet, 18.dp)
+                Spacer(Modifier.width(Space.inline))
+                Text(app.label, color = D.Black, style = Type.body, modifier = Modifier.weight(1f))
+                HiIcon(Hi.ArrowUpRight, D.Quiet, 20.dp)
             }
+            if (i < apps.lastIndex) RowLine()
         }
-        Spacer(Modifier.height(14.dp))
+        Spacer(Modifier.height(Space.lead))
         SecondaryButton("Cancel", onClose, Modifier.fillMaxWidth())
     }
 }
@@ -2595,21 +2642,24 @@ private fun WalletsScreen(
     }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("Wallets", color = D.Black, fontSize = 30.sp, fontWeight = FontWeight.ExtraBold, fontFamily = Display)
+            Text("Wallets", color = D.Black, style = Type.title)
             Spacer(Modifier.weight(1f))
-            Text(if (busy) "…" else "Add wallet", color = D.Black, fontSize = 14.sp, fontWeight = FontWeight.Bold,
-                modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(D.Fill)
+            // A header action, not a button: blue ink in a 48dp hit area, no grey pill.
+            Box(
+                Modifier.clip(RoundedCornerShape(12.dp))
                     .clickable(enabled = !busy, onClick = onAdd)
-                    .padding(horizontal = 16.dp, vertical = 10.dp))
+                    .heightIn(min = 48.dp).padding(horizontal = 8.dp),
+                contentAlignment = Alignment.Center,
+            ) { Text(if (busy) "…" else "Add wallet", color = D.BlueInk, style = Type.body) }
         }
-        Spacer(Modifier.height(18.dp))
+        Spacer(Modifier.height(Space.lead))
         list.forEach { w ->
             val on = w.address == selected
             Column(
-                Modifier.fillMaxWidth().padding(bottom = 14.dp).height(150.dp)
+                Modifier.fillMaxWidth().padding(bottom = Space.inline).heightIn(min = 150.dp)
                     .clip(RoundedCornerShape(22.dp)).background(w.colour)
                     .clickable { onPick(w) }
-                    .padding(18.dp),
+                    .padding(20.dp),
             ) {
                 // Black on a light card, white on a dark one. The same brightness test the
                 // wallet name uses, applied to the card it is written on.
@@ -2620,56 +2670,53 @@ private fun WalletsScreen(
                     // understanding that every brand colour was light — true until Backpack
                     // became #212122, at which point its name, its address and its button all
                     // went invisible on their own card.
-                    Text(w.name, color = ink.copy(alpha = .8f), fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                    // Full strength, not 80% and 60%: the alphas were quietly spending the
+                    // contrast the brightness test above had just won.
+                    Text(w.name, color = ink, style = Type.body)
                     Spacer(Modifier.weight(1f))
-                    Text("•••• ${w.address.takeLast(4)}", color = ink.copy(alpha = .6f),
-                        fontSize = 15.sp, fontWeight = FontWeight.SemiBold, style = Figures)
+                    Text("•••• ${w.address.takeLast(4)}", color = ink, style = Type.body.figure())
                 }
                 Spacer(Modifier.weight(1f))
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(Modifier.size(34.dp).clip(CircleShape).background(ink.copy(alpha = .16f)),
-                        contentAlignment = Alignment.Center) {
-                        HIcon(R.drawable.hi_wallet, ink.copy(alpha = .75f), 17.dp)
-                    }
+                    // The mark on its own. The disc behind it was a tint of the card's ink.
+                    HiIcon(Hi.Wallet, ink, 24.dp)
                     Spacer(Modifier.weight(1f))
                     // What "selected" means, said rather than implied by a tick: this is the
                     // wallet a tap pays from.
                     if (on) {
                         Row(
                             Modifier.clip(RoundedCornerShape(999.dp)).background(D.White)
-                                .padding(horizontal = 12.dp, vertical = 7.dp),
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            HIcon(R.drawable.hi_tick, D.Black, 15.dp)
-                            Spacer(Modifier.width(5.dp))
-                            Text("Tapping with this", color = D.Black, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                            HiIcon(Hi.Tick, D.Black, 16.dp)
+                            Spacer(Modifier.width(Space.tight))
+                            Text("Tapping with this", color = D.Black, style = Type.caption)
                         }
                     } else {
-                        Text("Use this one", color = ink.copy(alpha = .7f), fontSize = 13.sp,
-                            fontWeight = FontWeight.SemiBold)
+                        Text("Use this one", color = ink, style = Type.caption)
                     }
                 }
             }
         }
         if (list.isEmpty()) {
-            Text("No wallets linked yet.", color = D.Quiet, fontSize = 14.sp)
+            Text("No wallets linked yet.", color = D.Quiet, style = Type.body)
         }
-        Spacer(Modifier.height(10.dp))
+        Spacer(Modifier.height(Space.lead))
         SecondaryButton("Done", onClose, Modifier.fillMaxWidth())
-        Spacer(Modifier.height(20.dp))
+        Spacer(Modifier.height(Space.gutter))
     }
 }
 
 /**
- * The people you can pay without tapping, as one dark pill across the top.
+ * The people you can pay without tapping.
  *
  * A tap is the fastest way to pay someone standing in front of you and the slowest way to pay
  * someone who isn't. These are the faces already met — one press opens the same sheet a tap
  * would, addressed to them.
  *
- * The faces overlap in the order they are listed, each ringed in the pill's own colour so they
- * read as a stack rather than a smear. The ring is the pill, not white: on a dark pill a white
- * ring would draw more than the faces do.
+ * The dark pill they used to sit in, and the overlapping fan of faces inside it, are gone: they
+ * are a plain row of avatars on the page now (see [People]).
  */
 /**
  * Someone's phone, or their initial when we don't know it.
@@ -2768,7 +2815,6 @@ private fun rememberCalled(contact: Contact): Called {
 @Composable
 private fun NameLine(
     called: Called,
-    size: TextUnit,
     modifier: Modifier = Modifier,
     centred: Boolean = false,
 ) {
@@ -2777,18 +2823,22 @@ private fun NameLine(
         horizontalArrangement = if (centred) Arrangement.Center else Arrangement.Start,
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        // The fourth tier is not a name at all, it is an address: mono, like every other
+        // address in the app, so the FACE is a fifth thing saying which tier this is. The
+        // size is the caption step for all four — it was 12, below the scale.
+        val anonymous = called.kind == Called.Kind.Anonymous
         Text(
             called.shown,
-            color = if (called.kind == Called.Kind.Claimed || called.kind == Called.Kind.Anonymous) D.Quiet else D.Black,
-            fontSize = size,
-            fontWeight = FontWeight.Medium,
+            color = if (called.kind == Called.Kind.Claimed || anonymous) D.Quiet else D.Black,
+            style = if (anonymous) Type.mono else Type.caption,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f, fill = false),
         )
         if (called.verified) {
-            Spacer(Modifier.width(3.dp))
-            HIcon(R.drawable.hi_verified, D.BlueInk, size.value.dp + 3.dp)
+            Spacer(Modifier.width(Space.tight))
+            // 16 is the icon size beside a caption, so the tick carries the line's own weight.
+            HiIcon(Hi.Verified, D.BlueInk, 16.dp)
         }
     }
 }
@@ -2796,18 +2846,23 @@ private fun NameLine(
 @Composable
 private fun People(list: List<Contact>, waiting: (String) -> Int, onAll: (() -> Unit)?, onPick: (Contact) -> Unit) {
     Column(Modifier.fillMaxWidth()) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text("PEOPLE", color = D.Quiet, fontSize = 11.sp, letterSpacing = 1.5.sp, fontWeight = FontWeight.SemiBold)
+        Row(
+            Modifier.fillMaxWidth().heightIn(min = 48.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("PEOPLE", color = D.Quiet, style = Type.micro)
             Spacer(Modifier.weight(1f))
             // Anything whose payer or payee this phone never learned cannot be filed under a
             // person, so the flat list stays reachable — but only when it holds something.
             onAll?.let {
-                Text("All activity", color = D.BlueInk, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable(onClick = it)
-                        .padding(horizontal = 6.dp, vertical = 2.dp))
+                Box(
+                    Modifier.clip(RoundedCornerShape(8.dp)).clickable(onClick = it)
+                        .heightIn(min = 48.dp).padding(horizontal = 8.dp),
+                    contentAlignment = Alignment.Center,
+                ) { Text("All activity", color = D.BlueInk, style = Type.caption) }
             }
         }
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(Space.lead))
         Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
             list.take(5).forEach { c ->
                 val called = rememberCalled(c)
@@ -2820,12 +2875,23 @@ private fun People(list: List<Contact>, waiting: (String) -> Int, onAll: (() -> 
                     Box(Modifier.size(54.dp), contentAlignment = Alignment.Center) {
                         // The initial, because there is no picture of a person to show and a
                         // stock silhouette would only pretend there was.
+                        //
+                        // A white disc with a hairline, and a 2dp blue ring for a verified
+                        // Seeker — the ring IS the Seeker mark now, which is why the corner
+                        // badge that used to sit below it is gone: one fact, one mark. The
+                        // letter is 0.38 of the disc, a fraction of the shape and not a step.
                         Box(
-                            Modifier.fillMaxSize().clip(CircleShape).background(D.Fill),
+                            Modifier.fillMaxSize().clip(CircleShape).background(D.White)
+                                .border(
+                                    if (c.seeker) 2.dp else 1.5.dp,
+                                    if (c.seeker) D.Blue else D.Line,
+                                    CircleShape,
+                                ),
                             contentAlignment = Alignment.Center,
                         ) {
-                            Text(called.shown.take(1).uppercase(), color = D.Quiet,
-                                fontSize = 21.sp, fontWeight = FontWeight.Bold, fontFamily = Display)
+                            Text(called.shown.take(1).uppercase(),
+                                color = if (c.seeker) D.Black else D.Quiet,
+                                fontSize = (54 * 0.38f).sp, fontWeight = FontWeight.Bold)
                         }
                         // Their phone, small, in the corner: it says whose it is without
                         // competing with the initial for the middle of the circle.
@@ -2844,30 +2910,25 @@ private fun People(list: List<Contact>, waiting: (String) -> Int, onAll: (() -> 
                                 }
                             }
                         }
-                        if (c.seeker) {
-                            Box(
-                                Modifier.align(Alignment.BottomEnd).size(19.dp).clip(CircleShape)
-                                    .background(D.White),
-                                contentAlignment = Alignment.Center,
-                            ) { HIcon(R.drawable.hi_verified, D.BlueInk, 17.dp) }
-                        }
                         // What is outstanding with this person, on this person. The home page
                         // used to carry one "12 waiting" row for everybody, which said how much
                         // was open and never with whom.
                         val open = waiting(c.address)
                         if (open > 0) {
+                            // On ink, not on blue: an 11sp white number on #008FFF is 3.30:1
+                            // and fails; on ink it is 12.46:1.
                             Box(
-                                Modifier.align(Alignment.BottomStart).size(19.dp).clip(CircleShape)
-                                    .background(D.Blue),
+                                Modifier.align(Alignment.BottomStart).defaultMinSize(19.dp, 19.dp)
+                                    .clip(CircleShape).background(D.Black)
+                                    .padding(horizontal = 4.dp),
                                 contentAlignment = Alignment.Center,
                             ) {
-                                Text(if (open > 9) "9+" else "$open", color = D.White, fontSize = 10.sp,
-                                    fontWeight = FontWeight.Bold, style = Figures)
+                                Text(if (open > 9) "9+" else "$open", color = D.White, style = CountStyle)
                             }
                         }
                     }
-                    Spacer(Modifier.height(7.dp))
-                    NameLine(called, 12.sp, Modifier.fillMaxWidth(), centred = true)
+                    Spacer(Modifier.height(8.dp))
+                    NameLine(called, Modifier.fillMaxWidth(), centred = true)
                 }
             }
         }
@@ -2936,47 +2997,50 @@ private fun Thread(
     }
 
     Column(Modifier.fillMaxSize()) {
-        Row(Modifier.fillMaxWidth().padding(bottom = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.fillMaxWidth().padding(bottom = Space.row), verticalAlignment = Alignment.CenterVertically) {
+            // 24 in a 48dp hit area, on the page rather than in a grey disc — and named,
+            // because an icon-only control has to say what it does.
             Box(
-                Modifier.size(38.dp).clip(CircleShape).background(D.Fill).clickable(onClick = onBack),
+                Modifier.size(48.dp).clip(CircleShape).clickable(onClick = onBack)
+                    .semantics { contentDescription = "Back" },
                 contentAlignment = Alignment.Center,
-            ) { HIcon(R.drawable.hi_arrow_left, D.Black, 19.dp) }
-            Spacer(Modifier.width(10.dp))
-            Face(who, 44.dp)
-            Spacer(Modifier.width(12.dp))
+            ) { HiIcon(Hi.ArrowLeft, D.Black, 24.dp) }
+            Spacer(Modifier.width(Space.tight))
+            Face(who, 42.dp)
+            Spacer(Modifier.width(Space.inline))
             Column(
                 Modifier.weight(1f).clip(RoundedCornerShape(10.dp))
                     .clickable { renaming = true }.padding(horizontal = 4.dp, vertical = 2.dp),
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        called.shown, color = D.Black, fontSize = 19.sp,
-                        fontWeight = FontWeight.Bold, fontFamily = Display, maxLines = 1,
+                        called.shown, color = D.Black, style = Type.heading, maxLines = 1,
                         overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false),
                     )
                     // The tick belongs to the name the chain confirmed, and to nothing else.
                     // The Seeker badge is a separate claim about their hardware and is spelled
                     // out below rather than given a second identical tick beside this one.
                     if (called.verified) {
-                        Spacer(Modifier.width(5.dp))
-                        HIcon(R.drawable.hi_verified, D.BlueInk, 16.dp)
+                        Spacer(Modifier.width(Space.tight))
+                        HiIcon(Hi.Verified, D.BlueInk, 16.dp)
                     }
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     // When you have renamed somebody who owns a domain, their real name still
                     // shows here — your label is for recognising them, not for hiding this.
                     if (called.kind == Called.Kind.Yours && called.domain != null) {
-                        Text(called.domain, color = D.BlueInk, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
-                        Text(" · ", color = D.Quiet, fontSize = 11.sp)
+                        Text(called.domain, color = D.BlueInk, style = Type.caption)
+                        Text(" · ", color = D.Quiet, style = Type.caption)
                     }
-                    Text(who.short, color = D.Quiet, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                    // An address, so the mono face — read character by character.
+                    Text(who.short, color = D.Quiet, style = Type.mono)
                     // Said out loud, because it is a different claim: the name belongs to a
                     // wallet that vouched for this one, not to this address.
                     if (called.borrowed) {
-                        Text(" · linked wallet", color = D.Quiet, fontSize = 11.sp)
+                        Text(" · linked wallet", color = D.Quiet, style = Type.caption)
                     }
                     if (who.seeker) {
-                        Text(" · Seeker", color = D.BlueInk, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                        Text(" · Seeker", color = D.BlueInk, style = Type.caption)
                     }
                 }
             }
@@ -2989,16 +3053,16 @@ private fun Thread(
         LazyColumn(
             Modifier.weight(1f).fillMaxWidth(),
             reverseLayout = true,
-            verticalArrangement = Arrangement.spacedBy(10.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             // One Column, because a lazy item lays its children out on top of each other.
             if (lines.isEmpty()) item {
                 Column {
-                    Spacer(Modifier.height(30.dp))
-                    Text("Nothing between you yet", color = D.Black, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
-                    Spacer(Modifier.height(5.dp))
+                    Spacer(Modifier.height(Space.section))
+                    Text("Nothing between you yet", color = D.Black, style = Type.body)
+                    Spacer(Modifier.height(Space.tight))
                     Text("Say hello, ask ${who.label} for money, or tap phones to pay them.",
-                        color = D.Quiet, fontSize = 13.sp)
+                        color = D.Quiet, style = Type.caption)
                 }
             }
             items(lines.asReversed()) { line ->
@@ -3021,22 +3085,26 @@ private fun Thread(
                         },
                     ) {
                         if (line.payable) {
-                            Spacer(Modifier.height(10.dp))
+                            Spacer(Modifier.height(Space.tight))
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 Button(
                                     onClick = { onPay(line) },
                                     enabled = paying == null,
-                                    contentPadding = PaddingValues(horizontal = 20.dp, vertical = 6.dp),
+                                    contentPadding = PaddingValues(horizontal = 20.dp, vertical = 10.dp),
                                     colors = ButtonDefaults.buttonColors(containerColor = D.Blue, contentColor = D.White),
                                 ) {
+                                    // Every button label is the heading step, and white on
+                                    // D.Blue passes only as large text.
                                     Text(if (paying == line.request.reference) "…" else "Pay",
-                                        fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                                        style = Type.heading)
                                 }
+                                // Saying no is not a chain refusal — nothing was sent — so
+                                // Decline is ink rather than red.
                                 TextButton(
                                     onClick = { onDecline(line) },
                                     enabled = paying == null,
-                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                                ) { Text("Decline", color = D.DangerInk, fontSize = 14.sp, fontWeight = FontWeight.SemiBold) }
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp),
+                                ) { Text("Decline", color = D.Black, style = Type.body) }
                             }
                         }
                     }
@@ -3047,7 +3115,7 @@ private fun Thread(
                         at = line.paidAt ?: line.withdrawnAt ?: line.createdAt,
                         state = when {
                             line.paid -> "They paid you"
-                            line.rejected -> "${line.rejectedBy} declined"
+                            line.rejected -> "${line.rejectedBy} declined · nothing was paid"
                             line.withdrawn -> "You took this back"
                             line.pending -> "${line.deferredBy} will pay later"
                             else -> "Waiting for them"
@@ -3062,14 +3130,14 @@ private fun Thread(
                         // Only while it can still be paid. A request they declined, or one
                         // already taken back, has nothing left to take back.
                         if (line.live && !line.rejected) {
-                            Spacer(Modifier.height(8.dp))
-                            Text(
-                                "Take it back",
-                                color = D.White.copy(alpha = .85f), fontSize = 13.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                modifier = Modifier.clip(RoundedCornerShape(8.dp))
-                                    .clickable { onWithdraw(line) }.padding(horizontal = 4.dp, vertical = 2.dp),
-                            )
+                            // On the page now, under the bubble, so it is blue INK rather than
+                            // faded white on blue — which was 13sp on a 3.30:1 ground.
+                            Box(
+                                Modifier.clip(RoundedCornerShape(8.dp))
+                                    .clickable { onWithdraw(line) }
+                                    .heightIn(min = 48.dp).padding(horizontal = 4.dp),
+                                contentAlignment = Alignment.Center,
+                            ) { Text("Take it back", color = D.BlueInk, style = Type.body) }
                         }
                     }
                 }
@@ -3083,44 +3151,48 @@ private fun Thread(
         // reading 44 base58 characters off a screen — which nobody does.
         var draft by remember(who.address) { mutableStateOf("") }
         val sendable = draft.isNotBlank()
-        Row(Modifier.fillMaxWidth().padding(top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.fillMaxWidth().padding(top = Space.inline), verticalAlignment = Alignment.CenterVertically) {
+            // A 1.5dp ring on white instead of a grey body — ink while in use, the hairline
+            // while empty — so the field is findable without a container behind it.
             Box(
-                Modifier.weight(1f).clip(RoundedCornerShape(22.dp)).background(D.Fill)
+                Modifier.weight(1f).clip(RoundedCornerShape(22.dp))
+                    .border(1.5.dp, if (draft.isEmpty()) D.Line else D.Black, RoundedCornerShape(22.dp))
+                    .heightIn(min = 48.dp)
                     .padding(horizontal = 16.dp, vertical = 12.dp),
             ) {
                 if (draft.isEmpty()) {
-                    Text("Message ${who.label}", color = D.Quiet, fontSize = 14.sp, maxLines = 1)
+                    Text("Message ${who.label}", color = D.Quiet, style = Type.body, maxLines = 1)
                 }
                 BasicTextField(
                     value = draft,
                     // Capped where the server caps it, so nothing is typed that cannot be sent.
                     onValueChange = { if (it.length <= Messages.MAX_BODY) draft = it },
-                    textStyle = TextStyle(color = D.Black, fontSize = 14.sp, fontFamily = Ui),
+                    textStyle = Type.body.copy(color = D.Black),
                     cursorBrush = SolidColor(D.Blue),
                     maxLines = 4,
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
-            Spacer(Modifier.width(8.dp))
+            Spacer(Modifier.width(Space.tight))
             Box(
-                Modifier.size(44.dp).clip(CircleShape).background(if (sendable) D.Blue else D.Fill)
-                    .clickable(enabled = sendable) { onSay(draft.trim()); draft = "" },
+                Modifier.size(48.dp).clip(CircleShape).background(if (sendable) D.Blue else D.Line)
+                    .clickable(enabled = sendable) { onSay(draft.trim()); draft = "" }
+                    .semantics { contentDescription = "Send message" },
                 contentAlignment = Alignment.Center,
-            ) { HIcon(R.drawable.hi_arrow_up_right, if (sendable) D.White else D.Quiet, 20.dp) }
+            ) { HiIcon(Hi.ArrowUpRight, if (sendable) D.White else D.Quiet, 24.dp) }
         }
 
         // One button, because the sheet it opens is one screen: a Pay form with "Request
         // instead" on it. Two buttons here would promise two destinations and deliver one.
-        PrimaryButton("Pay or ask", onClick = onOpen, modifier = Modifier.fillMaxWidth().padding(top = 10.dp))
+        PrimaryButton("Pay or ask", onClick = onOpen, modifier = Modifier.fillMaxWidth().padding(top = Space.lead))
     }
 }
 
 /**
- * One item in a thread. Ours on the right in blue, theirs on the left in grey — the arrangement
- * everybody already reads without being taught it.
- *
- * The corner nearest the speaker is squared off, which is what makes a stack of these read as
- * two voices rather than a list of cards.
+ * Ours at the end, theirs at the start — the arrangement everybody already reads without being
+ * taught it. The grey body and the blue ground are both gone (see [Say] and [Bubble]); what is
+ * left saying which voice this is, is the side it sits on and the corner nearest the speaker,
+ * squared off so a stack of these reads as two voices rather than a list of cards.
  */
 /**
  * A line of text in a thread. No amount, no state, no check — a message is only ever said.
@@ -3130,27 +3202,48 @@ private fun Thread(
  */
 @Composable
 private fun Say(note: Messages.Note) {
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = if (note.mine) Arrangement.End else Arrangement.Start) {
-        Column(
-            Modifier.widthIn(max = 260.dp)
-                .clip(RoundedCornerShape(
-                    topStart = 18.dp, topEnd = 18.dp,
-                    bottomStart = if (note.mine) 18.dp else 5.dp,
-                    bottomEnd = if (note.mine) 5.dp else 18.dp,
-                ))
-                .background(if (note.mine) D.Blue else D.Fill)
-                .padding(horizontal = 15.dp, vertical = 10.dp),
+    val corner = RoundedCornerShape(
+        topStart = 18.dp, topEnd = 18.dp,
+        bottomStart = if (note.mine) 18.dp else 5.dp,
+        bottomEnd = if (note.mine) 5.dp else 18.dp,
+    )
+    // Both sides are a hairline outline on white now: no grey body, and no blue ground. Blue
+    // carries only large text in this app, and a sentence is never large text — 15sp white on
+    // #008FFF is 3.30:1. Mine takes the ink outline and theirs the quiet one, and the squared
+    // corner is still what says which voice it is. The time moved out onto the page with it.
+    Column(
+        Modifier.fillMaxWidth(),
+        horizontalAlignment = if (note.mine) Alignment.End else Alignment.Start,
+    ) {
+        Box(
+            Modifier.widthIn(max = 260.dp).clip(corner)
+                .border(1.5.dp, if (note.mine) D.Black else D.Line, corner)
+                .padding(horizontal = 16.dp, vertical = 12.dp),
         ) {
-            Text(note.body, color = if (note.mine) D.White else D.Black, fontSize = 15.sp)
-            Spacer(Modifier.height(2.dp))
-            Text(ago(note.at), color = if (note.mine) D.White.copy(alpha = .7f) else D.Quiet, fontSize = 10.sp)
+            Text(note.body, color = D.Black, style = Type.body)
         }
+        Text(ago(note.at), color = D.Quiet, style = Type.caption,
+            modifier = Modifier.padding(top = Space.tight))
     }
 }
 
 /** How a row ended, which is the only thing that decides how it is coloured. */
 private enum class Mood { OPEN, DONE, REFUSED, DROPPED }
 
+/**
+ * One item in a thread.
+ *
+ * **Only the amount sits on the blue.** It is `Type.title` — 24 bold, past the 19sp floor
+ * white on #008FFF needs — and everything else moved OUT of the bubble onto the white page
+ * under it, because "Asked · 1d ago" was an 11sp white-at-80% line on blue and failed
+ * outright. On white the state word can also take its own ink, which it never could on a
+ * coloured ground.
+ *
+ * A declined ask is **neutral**: a struck-through amount and quiet words. Red is only a
+ * transaction the chain refused, and a person saying no is not one — so the red well this
+ * bubble used to sit in is gone, and the grey one with it (no containers). Theirs is a
+ * hairline outline; mine keeps the blue, because blue is the app's "you" colour on the pay bar.
+ */
 @Composable
 private fun Bubble(
     mine: Boolean,
@@ -3160,76 +3253,75 @@ private fun Bubble(
     mood: Mood,
     extra: @Composable ColumnScope.() -> Unit,
 ) {
-    // Blue is only ever "ours, and still alive". A refusal is red on both sides — whoever said
-    // no, the row means the same thing — and something taken back is grey, because nothing
-    // happened and nothing will.
-    val ground = when {
-        mood == Mood.REFUSED -> D.Danger.copy(alpha = .10f)
-        mood == Mood.DROPPED -> D.Fill
-        mine -> D.Blue
-        else -> D.Fill
-    }
+    // Refused and dropped both mean nothing happened and nothing will, so they read the same:
+    // struck through, quiet, and off the blue.
+    val settled = mood == Mood.REFUSED || mood == Mood.DROPPED
     val ink = when {
-        mood == Mood.REFUSED -> D.DangerInk
-        mood == Mood.DROPPED -> D.Quiet
+        settled -> D.Quiet
         mine -> D.White
         else -> D.Black
     }
-    val faint = when {
-        mood == Mood.REFUSED -> D.Danger.copy(alpha = .75f)
-        mood == Mood.DROPPED -> D.Quiet
-        mine -> D.White.copy(alpha = .8f)
-        else -> D.Quiet
-    }
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = if (mine) Arrangement.End else Arrangement.Start) {
-        Column(
-            Modifier.widthIn(max = 260.dp)
-                .clip(RoundedCornerShape(
-                    topStart = 18.dp, topEnd = 18.dp,
-                    bottomStart = if (mine) 18.dp else 5.dp,
-                    bottomEnd = if (mine) 5.dp else 18.dp,
-                ))
-                .background(ground)
-                .padding(horizontal = 15.dp, vertical = 12.dp),
+    val corner = RoundedCornerShape(
+        topStart = 18.dp, topEnd = 18.dp,
+        bottomStart = if (mine) 18.dp else 5.dp,
+        bottomEnd = if (mine) 5.dp else 18.dp,
+    )
+    Column(
+        Modifier.fillMaxWidth(),
+        horizontalAlignment = if (mine) Alignment.End else Alignment.Start,
+    ) {
+        Box(
+            Modifier.widthIn(max = 260.dp).clip(corner)
+                .then(
+                    if (mine && !settled) Modifier.background(D.Blue)
+                    else Modifier.border(1.5.dp, D.Line, corner)
+                )
+                .padding(horizontal = 16.dp, vertical = 12.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(amount, color = ink, fontSize = 21.sp, fontWeight = FontWeight.Bold,
-                    fontFamily = Display, style = Figures,
-                    textDecoration = if (mood == Mood.DROPPED) TextDecoration.LineThrough else null)
+                Text(amount, color = ink, style = Type.title.figure(),
+                    textDecoration = if (settled) TextDecoration.LineThrough else null)
                 if (mood == Mood.DONE) {
-                    Spacer(Modifier.width(7.dp))
-                    HIcon(R.drawable.hi_verified, if (mine) D.White else D.SuccessInk, 16.dp)
+                    Spacer(Modifier.width(Space.tight))
+                    HiIcon(Hi.Verified, if (mine) D.White else D.SuccessInk, 20.dp)
                 }
             }
-            Spacer(Modifier.height(3.dp))
-            Text("$state · ${ago(at)}", color = faint, fontSize = 11.sp)
-            extra()
         }
+        // The state, under the bubble on white: the paid ink for something that landed, the
+        // quiet ink for everything else.
+        Text(
+            "$state · ${ago(at)}",
+            color = if (mood == Mood.DONE) D.SuccessInk else D.Quiet,
+            style = Type.caption,
+            modifier = Modifier.padding(top = Space.tight),
+        )
+        extra()
     }
 }
 
+/**
+ * Somebody's face: their initial in a white disc with a ring.
+ *
+ * One avatar for you and for everybody else, so "this is them" is said in the same terms as
+ * "this is you". The ring carries the claim — **2dp blue for a verified Seeker**, a hairline
+ * for everyone else — replacing the tinted disc it used to sit in.
+ *
+ * The phone maker's artwork no longer stands in for a person. It survives as a small corner
+ * chip in [People], where it is one fact beside the name rather than the whole picture of them.
+ * The letter is 0.38 of the disc: a fraction of the shape, not a step on the type scale.
+ */
 @Composable
 private fun Face(c: Contact, size: Dp, ring: Color? = null) {
-    val look = Brand.look(c.brand)
-    val tint = if (c.seeker) D.Blue else D.Quiet
     Box(
         Modifier.size(size).clip(CircleShape)
             .then(if (ring != null) Modifier.background(ring).padding(2.dp) else Modifier),
         contentAlignment = Alignment.Center,
     ) {
-        Box(
-            Modifier.fillMaxSize().clip(CircleShape)
-                .background(look?.colour ?: tint.copy(alpha = .16f)),
-            contentAlignment = Alignment.Center,
-        ) {
-            when {
-                look == null -> Text(c.label.take(1).uppercase(), color = tint.ink,
-                    fontSize = size.value.times(0.38f).sp, fontWeight = FontWeight.Bold, fontFamily = Display)
-                look.picture -> Image(painterResource(look.drawable), contentDescription = null,
-                    modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
-                else -> HIcon(look.drawable, D.White, size * 0.5f)
-            }
-        }
+        // The disc is `Initial` (Design.kt). `Face` stays because it knows what a Contact is
+        // — which letter, whether it is a Seeker, and the outer ring a caller can put behind
+        // it — but it no longer redraws the disc. Five places drew that disc, and they had
+        // drifted apart on the letter's weight.
+        Initial(c.label.take(1).uppercase(), size, seeker = c.seeker, modifier = Modifier.fillMaxSize())
     }
 }
 
@@ -3252,19 +3344,21 @@ private fun Header(
             // "this is you, in the same terms as them". It is also the only picture of
             // somebody the app is ever entitled to — nobody uploaded a photo.
             val avatar = remember { MutableInteractionSource() }
-            Box(
-                Modifier.then(PressScale(avatar)).size(38.dp).clip(CircleShape).background(D.Fill)
-                    .clickable(avatar, indication = null, onClick = onProfile),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(me.take(1).uppercase().ifBlank { "Y" }, color = D.Quiet, fontSize = 16.sp,
-                    fontWeight = FontWeight.Bold, fontFamily = Display)
-            }
-            Spacer(Modifier.width(11.dp))
+            // A white disc with a hairline, not a grey one: the same avatar everybody else
+            // gets, which is the whole point. The letter is 0.38 of the disc.
+            Initial(
+                me.take(1).uppercase().ifBlank { "Y" }, 38.dp,
+                modifier = Modifier.then(PressScale(avatar))
+                    .clickable(avatar, indication = null, onClick = onProfile)
+                    .semantics { contentDescription = "You" },
+            )
+            Spacer(Modifier.width(Space.inline))
             // Long-press the wordmark for diagnostics and the exchange log. The status line
             // that used to carry them is gone, and they are a builder's tool, not a user's —
             // but they are how every NFC problem in this app has been read, so they keep a
             // door. An invisible one, which is the right size for the audience.
+            // 30sp in Bricolage is the LOGO's own size, not a step on the type scale — the
+            // wordmark is a fixed composition and is exempt (ui/PORT.md §3).
             Text("AirPay", color = D.Black, fontSize = 30.sp, fontWeight = FontWeight.ExtraBold,
                 fontFamily = Display, letterSpacing = (-0.5).sp,
                 modifier = Modifier.clip(RoundedCornerShape(10.dp)).combinedClickable(
@@ -3274,23 +3368,31 @@ private fun Header(
             Spacer(Modifier.weight(1f))
             val interaction = remember { MutableInteractionSource() }
             Box(contentAlignment = Alignment.TopEnd) {
+                // 24 in a 48dp hit area: 24 is the action size, 48 the touch minimum. Named
+                // with its count, because that is what it has to say out loud.
                 Box(
-                    Modifier.then(PressScale(interaction)).size(42.dp).clip(CircleShape)
-                        .clickable(interaction, indication = null, onClick = onAlerts),
+                    Modifier.then(PressScale(interaction)).size(48.dp).clip(CircleShape)
+                        .clickable(interaction, indication = null, onClick = onAlerts)
+                        .semantics {
+                            contentDescription =
+                                if (unread > 0) "Notifications, $unread unread" else "Notifications"
+                        },
                     contentAlignment = Alignment.Center,
-                ) { HIcon(R.drawable.hi_bell, D.Black, 23.dp) }
+                ) { HiIcon(Hi.Bell, D.Black, 24.dp) }
                 // A count, not a dot: "three things happened" is worth opening, "something
                 // happened" is what a dot says and it says it identically for one and for ten.
                 if (unread > 0) {
+                    // On ink, not on blue: an 11sp white number on #008FFF is 3.30:1 and
+                    // fails; on ink it is 12.46:1. The 2dp white rim is what holds the badge
+                    // off the bell's own stroke.
                     Box(
                         Modifier.padding(top = 3.dp, end = 1.dp).defaultMinSize(18.dp, 18.dp)
                             .clip(CircleShape).background(D.White).padding(2.dp)
-                            .clip(CircleShape).background(D.Blue)
+                            .clip(CircleShape).background(D.Black)
                             .padding(horizontal = 5.dp),
                         contentAlignment = Alignment.Center,
                     ) {
-                        Text(if (unread > 9) "9+" else "$unread", color = D.White, fontSize = 10.sp,
-                            fontWeight = FontWeight.Bold, style = Figures)
+                        Text(if (unread > 9) "9+" else "$unread", color = D.White, style = CountStyle)
                     }
                 }
             }
@@ -3301,18 +3403,23 @@ private fun Header(
 @Composable
 private fun ModeButton(label: String, active: Boolean, enabled: Boolean, m: Modifier, onClick: () -> Unit) {
     val interaction = remember { MutableInteractionSource() }
-    val bg = when {
-        !enabled -> D.Fill
+    // Active is the blue fill. Inactive is an ink outline on white rather than a grey body
+    // (no containers), and disabled is the hairline, so a dead control cannot be mistaken for
+    // a live one that happens to be pale.
+    val bg = if (enabled && active) D.Blue else Color.Transparent
+    val edge = when {
+        !enabled -> D.Line
         active -> D.Blue
-        else -> D.Fill
+        else -> D.Black
     }
     Box(
-        m.then(PressScale(interaction)).height(56.dp).clip(RoundedCornerShape(16.dp)).background(bg)
+        m.then(PressScale(interaction)).heightIn(min = 56.dp).clip(RoundedCornerShape(16.dp))
+            .background(bg).border(1.5.dp, edge, RoundedCornerShape(16.dp))
             .clickable(interaction, indication = null, enabled = enabled, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
         Text(label, color = if (active && enabled) D.White else if (enabled) D.Black else D.Quiet,
-            fontSize = 16.sp, fontWeight = FontWeight.Bold, style = Figures)
+            style = Type.heading)
     }
 }
 
@@ -3320,19 +3427,24 @@ private fun ModeButton(label: String, active: Boolean, enabled: Boolean, m: Modi
 private fun LogView(log: List<String>) {
     val state = rememberLazyListState()
     LaunchedEffect(log.size) { if (log.isNotEmpty()) state.animateScrollToItem(log.size - 1) }
+    // A hairline box rather than a grey well: the log is still a bounded thing, but the
+    // boundary is drawn, not filled.
     LazyColumn(
         state = state,
-        modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(14.dp)).background(D.Fill).padding(14.dp),
+        modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(14.dp))
+            .border(1.5.dp, D.Line, RoundedCornerShape(14.dp)).padding(16.dp),
     ) {
         items(log) { line ->
             Text(line,
                 color = when {
                     line.startsWith("✓") -> D.SuccessInk
+                    // A failed step in the exchange log IS the chain or the radio refusing,
+                    // which is the one thing the danger ink is for.
                     line.startsWith("✗") -> D.DangerInk
                     else -> D.Quiet
                 },
-                fontSize = 11.sp, fontFamily = FontFamily.Monospace,
-                modifier = Modifier.padding(vertical = 1.dp))
+                style = Type.mono,
+                modifier = Modifier.padding(vertical = 2.dp))
         }
     }
 }
@@ -3349,31 +3461,36 @@ private fun ConfirmSheet(
         // Tapping outside is "later", never "gone": the request is already saved.
         onDismissRequest = onLater,
         containerColor = D.White,
-        title = { Text("Pay ${req.label}?", color = D.Black) },
+        title = { Text("Pay ${req.label}?", color = D.Black, style = Type.title) },
         text = {
             Column {
-                Text("${req.amount} ${req.token}", color = D.BlueInk,
-                    fontSize = 30.sp, fontWeight = FontWeight.Bold)
-                Spacer(Modifier.height(8.dp))
+                // The amount on a sheet is the `amount` step, and it is INK: the amount is the
+                // thing being read, not a link.
+                Text("${req.amount} ${req.token}", color = D.Black, style = Type.amount.figure())
+                Spacer(Modifier.height(Space.tight))
                 Text("to ${req.recipient.take(8)}…${req.recipient.takeLast(6)}",
-                    color = D.Quiet, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
+                    color = D.Quiet, style = Type.mono)
                 if (req.genesis != null) {
-                    Spacer(Modifier.height(6.dp))
-                    Text("✓ Verified Seeker", color = D.BlueInk, fontSize = 12.sp)
+                    Spacer(Modifier.height(Space.tight))
+                    Text("✓ Verified Seeker", color = D.BlueInk, style = Type.caption)
                 }
-                Spacer(Modifier.height(10.dp))
-                Text("No rush — this stays in Requests until you pay it.", color = D.Quiet, fontSize = 11.sp)
+                Spacer(Modifier.height(Space.inline))
+                Text("No rush — this stays in Requests until you pay it.",
+                    color = D.Quiet, style = Type.caption)
             }
         },
         confirmButton = {
             TextButton(onClick = onPay, enabled = !busy) {
-                Text(if (busy) "…" else "Pay", color = D.BlueInk, fontWeight = FontWeight.Bold)
+                Text(if (busy) "…" else "Pay", color = D.BlueInk, style = Type.heading)
             }
         },
         dismissButton = {
             Row {
-                TextButton(onClick = onDecline, enabled = !busy) { Text("Decline", color = D.DangerInk) }
-                TextButton(onClick = onLater) { Text("Later", color = D.Quiet) }
+                // Declining is not a chain refusal: nothing was sent, so nothing is red.
+                TextButton(onClick = onDecline, enabled = !busy) {
+                    Text("Decline", color = D.Black, style = Type.body)
+                }
+                TextButton(onClick = onLater) { Text("Later", color = D.Quiet, style = Type.body) }
             }
         },
     )
@@ -3383,11 +3500,12 @@ private fun ConfirmSheet(
 private fun BackHeader(title: String, onBack: () -> Unit) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Box(
-            Modifier.size(38.dp).clip(CircleShape).background(D.Fill).clickable(onClick = onBack),
+            Modifier.size(48.dp).clip(CircleShape).clickable(onClick = onBack)
+                .semantics { contentDescription = "Back" },
             contentAlignment = Alignment.Center,
-        ) { HIcon(R.drawable.hi_arrow_left, D.Black, 19.dp) }
-        Spacer(Modifier.width(12.dp))
-        Text(title, color = D.Black, fontSize = 24.sp, fontWeight = FontWeight.ExtraBold, fontFamily = Display)
+        ) { HiIcon(Hi.ArrowLeft, D.Black, 24.dp) }
+        Spacer(Modifier.width(Space.tight))
+        Text(title, color = D.Black, style = Type.title)
     }
 }
 
@@ -3407,20 +3525,23 @@ private fun PageStrip(
     onOpen: () -> Unit,
 ) {
     val interaction = remember { MutableInteractionSource() }
+    // A row split by space and a hairline, not a grey slab, and the mark sits on the page
+    // rather than in a tinted disc of its own colour. The tint arrives as a FILL, so the mark
+    // takes its ink.
     Row(
-        Modifier.fillMaxWidth().then(PressScale(interaction)).clip(RoundedCornerShape(16.dp))
-            .background(D.Fill).clickable(interaction, indication = null, onClick = onOpen)
-            .padding(horizontal = 14.dp, vertical = 13.dp),
+        Modifier.fillMaxWidth().then(PressScale(interaction)).heightIn(min = 48.dp)
+            .clickable(interaction, indication = null, onClick = onOpen)
+            .padding(vertical = Space.row),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(Modifier.size(34.dp).clip(CircleShape).background(tint.copy(alpha = .14f)),
-            contentAlignment = Alignment.Center) { HIcon(icon, tint, 17.dp) }
-        Spacer(Modifier.width(12.dp))
+        Box(Modifier.size(40.dp), contentAlignment = Alignment.Center) { HIcon(icon, tint.ink, 24.dp) }
+        Spacer(Modifier.width(Space.inline))
         Column(Modifier.weight(1f)) {
-            Text(title, color = D.Black, fontSize = 15.sp, fontWeight = FontWeight.Bold)
-            Text(detail, color = D.Quiet, fontSize = 12.5.sp)
+            Text(title, color = D.Black, style = Type.body)
+            Text(detail, color = D.Quiet, style = Type.caption,
+                modifier = Modifier.padding(top = Space.tight))
         }
-        HIcon(R.drawable.hi_arrow_up_right, D.Quiet, 17.dp)
+        HiIcon(Hi.ArrowUpRight, D.Quiet, 20.dp)
     }
 }
 
@@ -3433,10 +3554,7 @@ private fun PageStrip(
  */
 @Composable
 private fun EarnStrip(summary: Rewards.Summary?, onOpen: () -> Unit) {
-    Text(
-        "Offers and rewards", color = D.Black, fontSize = 17.sp, fontWeight = FontWeight.Bold,
-        modifier = Modifier.padding(vertical = 4.dp),
-    )
+    Text("Offers and rewards", color = D.Black, style = Type.heading)
 }
 
 /**
@@ -3449,9 +3567,12 @@ private fun EarnStrip(summary: Rewards.Summary?, onOpen: () -> Unit) {
  */
 @Composable
 private fun EarnTiles(onRewards: () -> Unit, onOffers: () -> Unit, onReferrals: () -> Unit) {
+    // 20, not 10. With the tile's grey body gone, the gap is the only thing saying where one
+    // tile ends: 8 inside against 20 outside is x2.5, clear of the x2 the eye needs before it
+    // groups a label with its own mark instead of the one below it.
     Row(
         Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        horizontalArrangement = Arrangement.spacedBy(20.dp),
     ) {
         EarnTile("Rewards", Mark.Coins, Modifier.weight(1f), onRewards)
         EarnTile("Offers", Mark.Ticket, Modifier.weight(1f), onOffers)
@@ -3459,7 +3580,7 @@ private fun EarnTiles(onRewards: () -> Unit, onOffers: () -> Unit, onReferrals: 
     }
 }
 
-private enum class Mark { Coins, Ticket, Rings, Signal, Screen, Receipt, Basket, Plane, Cup, Game, Dots, Play, Cinema }
+internal enum class Mark { Coins, Ticket, Rings, Signal, Screen, Receipt, Basket, Plane, Cup, Game, Dots, Play, Cinema }
 
 /**
  * Recharging a phone, which is a different job from buying a gift card.
@@ -3505,9 +3626,8 @@ private fun RechargeSection(
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
         MainnetNote()
 
-        Text("Mobile number", color = D.Quiet, fontSize = 11.sp, letterSpacing = 1.sp,
-            fontWeight = FontWeight.SemiBold)
-        Spacer(Modifier.height(8.dp))
+        Text("MOBILE NUMBER", color = D.Quiet, style = Type.micro)
+        Spacer(Modifier.height(Space.lead))
         OutlinedTextField(
             value = number,
             onValueChange = { v -> onNumber(v.filter { it.isDigit() }.take(12)) },
@@ -3539,7 +3659,7 @@ private fun RechargeSection(
         }
         if (finding) {
             Spacer(Modifier.height(12.dp))
-            Text("Checking which network…", color = D.Quiet, fontSize = 12.sp)
+            Text("Checking which network…", color = D.Quiet, style = Type.caption)
         }
 
         // Once the network is known it is a FACT, not a question, so it stops being a row of
@@ -3559,10 +3679,12 @@ private fun RechargeSection(
             // with the one way to disagree. It carries the number as well as the network —
             // this is the last thing between a tap and real money leaving, and the number is
             // the half that cannot be checked afterwards.
-            Spacer(Modifier.height(18.dp))
+            Spacer(Modifier.height(Space.section))
+            // A row with a hairline under it, not a grey card. The disc stays: it is a drawn
+            // mark carrying a white letter at 19sp bold, which is the smallest size white on
+            // D.Blue passes at.
             Row(
-                Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(D.Fill)
-                    .padding(14.dp),
+                Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(bottom = Space.row),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 val mark = chosen.name.removeSuffix(" India").removeSuffix(" Bundles")
@@ -3570,46 +3692,55 @@ private fun RechargeSection(
                     Modifier.size(42.dp).clip(CircleShape).background(D.Blue),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Text(mark.take(1).uppercase(), color = D.White, fontSize = 19.sp,
-                        fontWeight = FontWeight.ExtraBold, fontFamily = Display)
+                    Text(mark.take(1).uppercase(), color = D.White, style = Type.heading)
                 }
-                Spacer(Modifier.width(12.dp))
+                Spacer(Modifier.width(Space.inline))
                 Column(Modifier.weight(1f)) {
-                    Text(mark.uppercase(), color = D.Black, fontSize = 15.sp,
-                        fontWeight = FontWeight.ExtraBold, fontFamily = Display)
-                    Spacer(Modifier.height(1.dp))
-                    Text("+91 $number", color = D.Quiet, fontSize = 12.5.sp, style = Figures)
+                    Text(mark.uppercase(), color = D.Black, style = Type.body)
+                    Spacer(Modifier.height(Space.tight))
+                    // The number is the half that cannot be checked afterwards, so it is set
+                    // to be read character by character.
+                    Text("+91 $number", color = D.Quiet, style = Type.mono)
                 }
-                Spacer(Modifier.width(10.dp))
-                Text(
-                    "Change", color = D.BlueInk, fontSize = 12.5.sp, fontWeight = FontWeight.Bold,
-                    modifier = Modifier.clip(RoundedCornerShape(10.dp))
-                        .clickable { picking = true }.padding(horizontal = 8.dp, vertical = 6.dp),
-                )
+                Spacer(Modifier.width(Space.tight))
+                Box(
+                    Modifier.clip(RoundedCornerShape(10.dp))
+                        .clickable { picking = true }
+                        .heightIn(min = 48.dp).padding(horizontal = 8.dp),
+                    contentAlignment = Alignment.Center,
+                ) { Text("Change", color = D.BlueInk, style = Type.body) }
             }
+            RowLine()
         } else if (picking || (found != null && !finding && chosen == null)) {
             // Either the lookup could not tell, or somebody disagreed with it.
-            Spacer(Modifier.height(18.dp))
+            Spacer(Modifier.height(Space.section))
+            // Ink: the lookup could not say, and being asked to choose is not an error.
             found?.takeIf { chosen == null }?.let {
-                Text(it, color = D.Quiet, fontSize = 12.sp, lineHeight = 16.sp)
-                Spacer(Modifier.height(10.dp))
+                Text(it, color = D.Black, style = Type.body)
+                Spacer(Modifier.height(Space.lead))
             }
-            Text("Network", color = D.Quiet, fontSize = 11.sp, letterSpacing = 1.sp,
-                fontWeight = FontWeight.SemiBold)
-            Spacer(Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp),
+            Text("NETWORK", color = D.Quiet, style = Type.micro)
+            Spacer(Modifier.height(Space.lead))
+            Row(horizontalArrangement = Arrangement.spacedBy(Space.tight),
                 modifier = Modifier.horizontalScroll(rememberScrollState())) {
                 operators.forEach { p ->
                     val on = chosen?.id == p.id
-                    Text(
-                        p.name.removeSuffix(" India").removeSuffix(" Bundles"),
-                        color = if (on) D.White else D.Black,
-                        fontSize = 13.sp, fontWeight = FontWeight.Bold,
-                        modifier = Modifier.clip(RoundedCornerShape(999.dp))
-                            .background(if (on) D.Blue else D.Fill)
+                    // Outline chips on white rather than grey ones, and the chosen one is the
+                    // INK fill: white on ink is 12.46:1 at any size, where white on D.Blue
+                    // would need 19sp bold for a chip this small.
+                    Box(
+                        Modifier.clip(RoundedCornerShape(999.dp))
+                            .background(if (on) D.Black else Color.Transparent)
+                            .border(1.5.dp, if (on) D.Black else D.Line, RoundedCornerShape(999.dp))
                             .clickable { onOperator(p); picking = false }
-                            .padding(horizontal = 14.dp, vertical = 9.dp),
-                    )
+                            .heightIn(min = 48.dp).padding(horizontal = 20.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            p.name.removeSuffix(" India").removeSuffix(" Bundles"),
+                            color = if (on) D.White else D.Black, style = Type.body,
+                        )
+                    }
                 }
             }
         }
@@ -3619,21 +3750,21 @@ private fun RechargeSection(
             // whole instruction — a "pick a network" prompt above an empty field is a second
             // question asked before the first one has been answered.
             if (found != null && !finding) {
-                Spacer(Modifier.height(20.dp))
-                Text("Pick a network to see what it sells.", color = D.Quiet, fontSize = 13.sp)
+                Spacer(Modifier.height(Space.section))
+                Text("Pick a network to see what it sells.", color = D.Black, style = Type.body)
             }
         } else {
-            Spacer(Modifier.height(20.dp))
+            Spacer(Modifier.height(Space.section))
             val plans = remember(chosen.id) {
                 chosen.packages.ifEmpty { chosen.values.map { Shop.Package(it, it.toIntOrNull() ?: 0) } }
                     .sortedBy { it.amount }
             }
             Text(
-                if (chosen.sellsPlans) "Plans" else "Top-up",
-                color = D.Quiet, fontSize = 11.sp, letterSpacing = 1.sp, fontWeight = FontWeight.SemiBold,
+                if (chosen.sellsPlans) "PLANS" else "TOP-UP",
+                color = D.Quiet, style = Type.micro,
             )
             if (!chosen.sellsPlans) {
-                Spacer(Modifier.height(6.dp))
+                Spacer(Modifier.height(Space.lead))
                 // Two things said plainly rather than left to be discovered.
                 //
                 // The first is that there is no plan list here — for some operators the shop
@@ -3649,17 +3780,17 @@ private fun RechargeSection(
                 Text(
                     "${chosen.name.removeSuffix(" India")} sells credit here, not plans — it " +
                         "goes to the number's main balance.",
-                    color = D.Quiet, fontSize = 12.sp, lineHeight = 16.sp,
+                    color = D.Quiet, style = Type.caption,
                 )
-                Spacer(Modifier.height(6.dp))
+                Spacer(Modifier.height(Space.tight))
                 Text(
                     "What lands as talktime is less than what you pay: tax and the operator's " +
                         "fee come off first, and neither is published here. Credit on its own " +
                         "does not add validity — a plan does that.",
-                    color = D.Quiet, fontSize = 12.sp, lineHeight = 16.sp,
+                    color = D.Quiet, style = Type.caption,
                 )
             }
-            Spacer(Modifier.height(10.dp))
+            Spacer(Modifier.height(Space.lead))
 
             // What you chose for THIS number last time.
             //
@@ -3673,40 +3804,42 @@ private fun RechargeSection(
             }
             if (last != null) {
                 val again = plans.firstOrNull { it.value == last.value }
+                // A row with a hairline under it, not a pale blue card: the tints are gone,
+                // and the label is what marks it.
                 Row(
-                    Modifier.fillMaxWidth().padding(bottom = 12.dp)
-                        .clip(RoundedCornerShape(16.dp)).background(D.Blue.copy(alpha = .08f))
+                    Modifier.fillMaxWidth().heightIn(min = 48.dp)
                         .clickable(enabled = again != null && e164 != null) {
                             again?.let { onBuy(chosen, it.value, e164!!) }
                         }
-                        .padding(14.dp),
+                        .padding(vertical = Space.row),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Column(Modifier.weight(1f)) {
-                        Text("LAST TIME", color = D.BlueInk, fontSize = 10.sp, letterSpacing = 1.sp,
-                            fontWeight = FontWeight.ExtraBold)
-                        Spacer(Modifier.height(3.dp))
+                        Text("LAST TIME", color = D.Quiet, style = Type.micro)
+                        Spacer(Modifier.height(Space.tight))
                         Text(
                             if (again != null && again.amount > 0)
                                 "${symbolFor(chosen.currency)}${again.amount} · ${last.value}"
                             else last.value,
-                            color = D.Black, fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold,
-                            lineHeight = 18.sp,
+                            color = D.Black, style = Type.body,
                         )
-                        Spacer(Modifier.height(2.dp))
+                        Spacer(Modifier.height(Space.tight))
                         Text(
                             if (again == null) "No longer sold — pick another below."
                             else "You recharged this number ${ago(last.at)}.",
-                            color = D.Quiet, fontSize = 11.sp,
+                            color = D.Quiet, style = Type.caption,
                         )
                     }
                     if (again != null) {
-                        Spacer(Modifier.width(10.dp))
-                        Text("Again", color = D.White, fontSize = 13.sp, fontWeight = FontWeight.Bold,
-                            modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(D.Blue)
-                                .padding(horizontal = 16.dp, vertical = 9.dp))
+                        Spacer(Modifier.width(Space.tight))
+                        Box(
+                            Modifier.clip(RoundedCornerShape(999.dp)).background(D.Blue)
+                                .heightIn(min = 48.dp).padding(horizontal = 16.dp),
+                            contentAlignment = Alignment.Center,
+                        ) { Text("Again", color = D.White, style = Type.heading) }
                     }
                 }
+                RowLine()
             }
 
             // Searching a list of fifty is not a nicety. It is also matched against the price,
@@ -3717,7 +3850,7 @@ private fun RechargeSection(
                     onValueChange = { query = it },
                     singleLine = true,
                     placeholder = { Text("Search — 349, or 28 days", color = D.Quiet) },
-                    leadingIcon = { HIcon(R.drawable.hi_search, D.Quiet, 17.dp) },
+                    leadingIcon = { HiIcon(Hi.Search, D.Quiet, 17.dp) },
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Spacer(Modifier.height(12.dp))
@@ -3738,15 +3871,16 @@ private fun RechargeSection(
                 ) {
                     tabs.forEach { t ->
                         val on = shelf == t
-                        Text(
-                            t.label,
-                            color = if (on) D.White else D.Black,
-                            fontSize = 12.5.sp, fontWeight = FontWeight.Bold,
-                            modifier = Modifier.clip(RoundedCornerShape(999.dp))
-                                .background(if (on) D.Black else D.Fill)
+                        Box(
+                            Modifier.clip(RoundedCornerShape(999.dp))
+                                .background(if (on) D.Black else Color.Transparent)
+                                .border(1.5.dp, if (on) D.Black else D.Line, RoundedCornerShape(999.dp))
                                 .clickable { shelf = t }
-                                .padding(horizontal = 13.dp, vertical = 8.dp),
-                        )
+                                .heightIn(min = 48.dp).padding(horizontal = 16.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(t.label, color = if (on) D.White else D.Black, style = Type.body)
+                        }
                     }
                 }
             }
@@ -3759,41 +3893,43 @@ private fun RechargeSection(
                 Text(
                     if (query.isBlank()) "Nothing on this shelf."
                     else "Nothing matches “$query”.",
-                    color = D.Quiet, fontSize = 13.sp,
+                    color = D.Black, style = Type.body,
                 )
             }
             val symbol = symbolFor(chosen.currency)
-            shown.forEach { pack ->
+            // Rows split by a hairline, not grey cards; the whole row is still the target.
+            shown.forEachIndexed { i, pack ->
                 val detail = remember(pack.value) { Plans.of(pack.value) }
                 Column(
-                    Modifier.fillMaxWidth().padding(bottom = 8.dp).clip(RoundedCornerShape(18.dp))
-                        .background(D.Fill)
+                    Modifier.fillMaxWidth().heightIn(min = 48.dp)
                         .clickable(enabled = ready) { onBuy(chosen, pack.value, e164!!) }
-                        .padding(14.dp),
+                        .padding(vertical = Space.row),
                 ) {
                     // 5G is the one badge worth carrying: it is stated in the line rather than
                     // inferred, and it is what people filter on.
                     if (detail.fast) {
+                        // The highlight marker, which is what replaced the tints: lime behind
+                        // ink text at 10.83:1. Green was saying "this succeeded", and 5G is
+                        // not a success — it is a fact about the plan.
                         Text(
-                            "5G", color = D.SuccessInk, fontSize = 10.sp, fontWeight = FontWeight.ExtraBold,
-                            modifier = Modifier.clip(RoundedCornerShape(6.dp))
-                                .background(D.Success.copy(alpha = .12f))
-                                .padding(horizontal = 6.dp, vertical = 2.dp),
+                            "5G", color = D.Black, style = Type.micro,
+                            modifier = Modifier.clip(RoundedCornerShape(5.dp))
+                                .background(D.Highlight)
+                                .padding(horizontal = 8.dp, vertical = 2.dp),
                         )
-                        Spacer(Modifier.height(8.dp))
+                        Spacer(Modifier.height(Space.tight))
                     }
                     Row(verticalAlignment = Alignment.Top) {
                         Column(Modifier.width(96.dp)) {
                             Text(
-                                "$symbol${pack.price}",
+                                currencyStyled("$symbol${pack.price}"),
                                 color = if (ready) D.Black else D.Quiet,
-                                fontSize = 21.sp, fontWeight = FontWeight.ExtraBold,
-                                fontFamily = Display, style = Figures,
+                                style = Type.heading.figure(),
                             )
                             // What it works out to per day, which is the only way a 28-day plan
                             // and an 84-day one can be compared at a glance.
                             Plans.perDay(pack.amount, detail.days, symbol)?.let {
-                                Text(it, color = D.Quiet, fontSize = 11.sp, style = Figures)
+                                Text(currencyStyled(it), color = D.Quiet, style = Type.caption.figure())
                             }
                         }
                         // Validity and data as their own columns. Three numbers side by side are
@@ -3802,26 +3938,27 @@ private fun RechargeSection(
                             detail.validity?.let { Labelled("Validity", it, Modifier.width(82.dp)) }
                             detail.data?.let { Labelled("Data", it, Modifier.weight(1f)) }
                         } else if (chosen.sellsPlans) {
-                            Text(pack.value, color = D.Quiet, fontSize = 12.5.sp,
-                                lineHeight = 17.sp, modifier = Modifier.weight(1f))
+                            Text(pack.value, color = D.Quiet, style = Type.caption,
+                                modifier = Modifier.weight(1f))
                         } else {
                             Spacer(Modifier.weight(1f))
                         }
-                        HIcon(R.drawable.hi_arrow_up_right, if (ready) D.BlueInk else D.Quiet, 17.dp)
+                        HiIcon(Hi.ArrowUpRight, if (ready) D.BlueInk else D.Quiet, 20.dp)
                     }
                     // The full line underneath, when the columns did not carry all of it —
                     // "+ JioHotstar" and "+ Netflix Basic" are half the reason to pick a plan.
                     if (chosen.sellsPlans && (detail.validity != null || detail.data != null)) {
-                        Spacer(Modifier.height(8.dp))
-                        Text(pack.value, color = D.Quiet, fontSize = 11.5.sp, lineHeight = 15.sp)
+                        Spacer(Modifier.height(Space.tight))
+                        Text(pack.value, color = D.Quiet, style = Type.caption)
                     }
                 }
+                if (i < shown.lastIndex) RowLine()
             }
             if (!ready) {
-                Text("Enter a number to recharge.", color = D.Quiet, fontSize = 12.sp)
+                Text("Enter a number to recharge.", color = D.Quiet, style = Type.caption)
             }
         }
-        Spacer(Modifier.height(24.dp))
+        Spacer(Modifier.height(Space.section))
     }
 }
 
@@ -3829,10 +3966,9 @@ private fun RechargeSection(
 @Composable
 private fun Labelled(label: String, value: String, modifier: Modifier = Modifier) {
     Column(modifier.padding(end = 8.dp)) {
-        Text(label, color = D.Quiet, fontSize = 10.sp, fontWeight = FontWeight.SemiBold)
-        Spacer(Modifier.height(1.dp))
-        Text(value, color = D.Black, fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
-            lineHeight = 17.sp)
+        Text(label.uppercase(), color = D.Quiet, style = Type.micro)
+        Spacer(Modifier.height(Space.tight))
+        Text(value, color = D.Black, style = Type.body)
     }
 }
 
@@ -3846,29 +3982,30 @@ private fun Labelled(label: String, value: String, modifier: Modifier = Modifier
  */
 @Composable
 private fun EmailRow(email: String?, onEdit: () -> Unit) {
+    // A setting, drawn as a row with a hairline under it rather than a grey slab.
     Row(
-        Modifier.fillMaxWidth().padding(bottom = 14.dp).clip(RoundedCornerShape(14.dp))
-            .background(D.Fill).clickable(onClick = onEdit)
-            .padding(horizontal = 12.dp, vertical = 10.dp),
+        Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable(onClick = onEdit)
+            .padding(vertical = Space.row),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(Modifier.weight(1f)) {
             Text(
                 if (email == null) "Codes are shown here only" else "Codes also emailed to",
-                color = D.Quiet, fontSize = 11.sp, fontWeight = FontWeight.SemiBold,
+                color = D.Quiet, style = Type.caption,
             )
-            Spacer(Modifier.height(2.dp))
+            Spacer(Modifier.height(Space.tight))
             Text(
                 email ?: "Add an email for a copy",
                 color = if (email == null) D.BlueInk else D.Black,
-                fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1,
+                style = Type.body, maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
         }
-        Spacer(Modifier.width(8.dp))
-        Text(if (email == null) "Add" else "Change", color = D.BlueInk, fontSize = 12.sp,
-            fontWeight = FontWeight.Bold)
+        Spacer(Modifier.width(Space.inline))
+        Text(if (email == null) "Add" else "Change", color = D.BlueInk, style = Type.body)
     }
+    RowLine()
+    Spacer(Modifier.height(Space.row))
 }
 
 /** Collecting it. Blank clears, because "no email" has to stay reachable once one is set. */
@@ -3879,15 +4016,15 @@ private fun EmailDialog(current: String, onDismiss: () -> Unit, onSave: (String)
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = D.White,
-        title = { Text("Email for codes", color = D.Black) },
+        title = { Text("Email for codes", color = D.Black, style = Type.title) },
         text = {
             Column {
                 Text(
                     "Gift-card codes are shown in this app when they arrive. An email is a " +
                         "second copy, in case you close the app before reading one.",
-                    color = D.Quiet, fontSize = 13.sp, lineHeight = 18.sp,
+                    color = D.Quiet, style = Type.caption,
                 )
-                Spacer(Modifier.height(12.dp))
+                Spacer(Modifier.height(Space.lead))
                 OutlinedTextField(
                     value = text,
                     onValueChange = { text = it.trim() },
@@ -3908,10 +4045,12 @@ private fun EmailDialog(current: String, onDismiss: () -> Unit, onSave: (String)
         },
         confirmButton = {
             TextButton(onClick = { onSave(text) }, enabled = !bad) {
-                Text("Save", color = D.BlueInk, fontWeight = FontWeight.Bold)
+                Text("Save", color = D.BlueInk, style = Type.heading)
             }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel", color = D.Quiet) } },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel", color = D.Quiet, style = Type.body) }
+        },
     )
 }
 
@@ -3930,45 +4069,47 @@ private fun EmailDialog(current: String, onDismiss: () -> Unit, onSave: (String)
 private fun CodeSheet(order: Orders.Order, onClose: () -> Unit) {
     val r = remember(order.code) { Shop.Redemption.of(order.code) }
     Tray(onClose = onClose) {
-        Spacer(Modifier.height(18.dp))
-        Text(order.name.removeSuffix(" India"), color = D.Black, fontSize = 20.sp,
-            fontWeight = FontWeight.ExtraBold, fontFamily = Display)
-        Spacer(Modifier.height(2.dp))
-        Text("${order.value} · paid ${order.paid}", color = D.Quiet, fontSize = 12.5.sp)
-        Spacer(Modifier.height(18.dp))
+        Spacer(Modifier.height(Space.lead))
+        Text(order.name.removeSuffix(" India"), color = D.Black, style = Type.title)
+        Spacer(Modifier.height(Space.tight))
+        // A face value and what was paid for it: tabular, so the two line up, but still a
+        // sentence rather than an amount standing on its own.
+        Text("${order.value} · paid ${order.paid}", color = D.Quiet,
+            style = Type.caption.copy(fontFeatureSettings = "tnum"))
+        Spacer(Modifier.height(Space.section))
 
         if (r == null) {
             Text(
                 "Delivered. This one returns no code — the value went straight to the " +
                     "recipient.",
-                color = D.Quiet, fontSize = 13.sp, lineHeight = 18.sp,
+                color = D.Quiet, style = Type.caption,
             )
         } else {
             r.code?.let { CodeRow("Card number", it) }
             r.pin?.let { CodeRow("PIN", it) }
             r.link?.let { CodeRow("Redeem at", it, mono = false) }
             r.instructions?.let {
-                Spacer(Modifier.height(10.dp))
-                Text(it, color = D.Quiet, fontSize = 12.sp, lineHeight = 17.sp)
+                Spacer(Modifier.height(Space.lead))
+                Text(it, color = D.Quiet, style = Type.caption)
             }
             r.raw?.let {
-                Spacer(Modifier.height(10.dp))
-                Text(it, color = D.Quiet, fontSize = 11.5.sp, lineHeight = 16.sp)
+                Spacer(Modifier.height(Space.lead))
+                Text(it, color = D.Quiet, style = Type.caption)
             }
             r.expires?.let {
-                Spacer(Modifier.height(12.dp))
-                Text("Valid until ${it.take(10)}", color = D.Quiet, fontSize = 12.sp)
+                Spacer(Modifier.height(Space.lead))
+                Text("Valid until ${it.take(10)}", color = D.Quiet, style = Type.caption)
             }
         }
 
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(Space.row))
         Text(
             "Kept in your history. It is also emailed to whoever the order named.",
-            color = D.Quiet, fontSize = 11.5.sp, lineHeight = 16.sp,
+            color = D.Quiet, style = Type.caption,
         )
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(Space.row))
         PrimaryButton("Done", onClick = onClose)
-        Spacer(Modifier.height(10.dp))
+        Spacer(Modifier.height(Space.lead))
     }
 }
 
@@ -3977,41 +4118,43 @@ private fun CodeSheet(order: Orders.Order, onClose: () -> Unit) {
 private fun CodeRow(label: String, value: String, mono: Boolean = true) {
     val clip = LocalClipboardManager.current
     var copied by remember(value) { mutableStateOf(false) }
-    Column(
-        Modifier.fillMaxWidth().padding(bottom = 10.dp).clip(RoundedCornerShape(Tray.INNER))
-            .background(D.Fill).clickable {
-                clip.setText(AnnotatedString(value)); copied = true
-            }
-            .padding(14.dp),
+    // A row split by a hairline, not a grey field. A code, a PIN and a redeem link are all
+    // identifiers rather than money, so none of them is an amount and all of them are mono.
+    // The copy control is named, because "Copy" three times over says nothing about which.
+    Row(
+        Modifier.fillMaxWidth().heightIn(min = 48.dp)
+            .clickable { clip.setText(AnnotatedString(value)); copied = true }
+            .padding(vertical = Space.row)
+            .semantics { contentDescription = "Copy $label" },
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(label, color = D.Quiet, fontSize = 11.sp, fontWeight = FontWeight.SemiBold,
-                letterSpacing = 0.8.sp, modifier = Modifier.weight(1f))
-            Text(if (copied) "Copied" else "Copy", color = D.BlueInk, fontSize = 12.sp,
-                fontWeight = FontWeight.Bold)
+        Column(Modifier.weight(1f)) {
+            Text(label, color = D.Quiet, style = Type.caption)
+            Spacer(Modifier.height(Space.tight))
+            Text(value, color = D.Black, style = if (mono) MonoBody else Type.body)
         }
-        Spacer(Modifier.height(4.dp))
-        Text(
-            value, color = D.Black, fontSize = if (mono) 19.sp else 14.sp,
-            fontWeight = FontWeight.Bold,
-            fontFamily = if (mono) FontFamily.Monospace else FontFamily.Default,
-            lineHeight = 24.sp,
-        )
+        Spacer(Modifier.width(Space.inline))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            HiIcon(Hi.Copy, D.BlueInk, 16.dp)
+            Spacer(Modifier.width(Space.tight))
+            Text(if (copied) "Copied" else "Copy", color = D.BlueInk, style = Type.caption)
+        }
     }
+    RowLine()
 }
 
 /** The one line that has to be on every shop screen: this is the real-money corner of the app. */
 @Composable
 private fun MainnetNote() {
+    // No tinted box any more: the mark and the words in blue INK are enough to be noticed
+    // without a wash behind them. 16 is the icon size that sits beside a caption.
     Row(
-        Modifier.fillMaxWidth().padding(bottom = 14.dp).clip(RoundedCornerShape(14.dp))
-            .background(D.Blue.copy(alpha = .08f)).padding(horizontal = 12.dp, vertical = 10.dp),
+        Modifier.fillMaxWidth().padding(bottom = Space.row),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        HIcon(R.drawable.hi_info, D.BlueInk, 17.dp)
-        Spacer(Modifier.width(8.dp))
-        Text("Real money on Solana mainnet.",
-            color = D.BlueInk, fontSize = 12.5.sp, fontWeight = FontWeight.Medium)
+        HiIcon(Hi.Info, D.BlueInk, 16.dp)
+        Spacer(Modifier.width(Space.tight))
+        Text("Real money on Solana mainnet.", color = D.BlueInk, style = Type.caption)
     }
 }
 
@@ -4032,16 +4175,10 @@ private fun ShopSection(
     onBuy: (Shop.Product, String) -> Unit,
 ) {
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-        Row(
-            Modifier.fillMaxWidth().padding(bottom = 14.dp).clip(RoundedCornerShape(14.dp))
-                .background(D.Blue.copy(alpha = .08f)).padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            HIcon(R.drawable.hi_info, D.BlueInk, 17.dp)
-            Spacer(Modifier.width(8.dp))
-            Text("Real money on Solana mainnet.",
-                color = D.BlueInk, fontSize = 12.5.sp, fontWeight = FontWeight.Medium)
-        }
+        // This was a second, hand-copied version of [MainnetNote] — the same eight lines, so
+        // the two could drift apart while both claiming to be the one line every shop screen
+        // has to carry. One of them now.
+        MainnetNote()
         // A short shelf opens itself. Four subscription services behind four taps is a list
         // pretending to be a menu; sixty-three shopping brands genuinely need collapsing.
         val alwaysOpen = section.products.size <= 6
@@ -4053,12 +4190,13 @@ private fun ShopSection(
         if (section.products.any { it.recipient == "none" }) {
             EmailRow(email, onEmail)
         }
-        section.products.forEach { p ->
+        // Rows split by a hairline, not grey cards.
+        section.products.forEachIndexed { i, p ->
             val open = alwaysOpen || picked?.id == p.id
             Column(
-                Modifier.fillMaxWidth().padding(bottom = 8.dp).clip(RoundedCornerShape(16.dp))
-                    .background(D.Fill).clickable { onPick(if (open) null else p) }
-                    .padding(horizontal = 14.dp, vertical = 13.dp),
+                Modifier.fillMaxWidth().heightIn(min = 48.dp)
+                    .clickable { onPick(if (open) null else p) }
+                    .padding(vertical = Space.row),
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     // The brand's own mark. A list of subscription services with no logos is a
@@ -4067,8 +4205,11 @@ private fun ShopSection(
                         val logo by produceState<androidx.compose.ui.graphics.ImageBitmap?>(null, url) {
                             value = LogoCache.get(url) ?: withContext(Dispatchers.IO) { LogoCache.load(url) }
                         }
+                        // A white tile with a hairline: on a white page a white box with no
+                        // edge is not a tile at all.
                         Box(
-                            Modifier.size(40.dp).clip(RoundedCornerShape(11.dp)).background(D.White),
+                            Modifier.size(40.dp).clip(RoundedCornerShape(11.dp)).background(D.White)
+                                .border(1.5.dp, D.Line, RoundedCornerShape(11.dp)),
                             contentAlignment = Alignment.Center,
                         ) {
                             logo?.let {
@@ -4076,11 +4217,11 @@ private fun ShopSection(
                                     contentScale = ContentScale.Fit)
                             }
                         }
-                        Spacer(Modifier.width(12.dp))
+                        Spacer(Modifier.width(Space.inline))
                     }
                     Column(Modifier.weight(1f)) {
-                        Text(p.name.removeSuffix(" India"), color = D.Black, fontSize = 15.sp,
-                            fontWeight = FontWeight.SemiBold, maxLines = 1)
+                        Text(p.name.removeSuffix(" India"), color = D.Black, style = Type.body,
+                            maxLines = 1)
                         Text(
                             // WHERE it can be spent, which is the thing that decides whether
                             // a voucher is any use. Twenty-five of the sixty-three shopping
@@ -4107,10 +4248,11 @@ private fun ShopSection(
                                 // itself.
                                 if (p.currency != "INR") append(" · priced in ${p.currency}")
                             },
-                            color = D.Quiet, fontSize = 12.sp,
+                            color = D.Quiet, style = Type.caption,
+                            modifier = Modifier.padding(top = Space.tight),
                         )
                     }
-                    HIcon(if (open) R.drawable.hi_arrow_down else R.drawable.hi_arrow_up_right, D.Quiet, 17.dp)
+                    HIcon(if (open) R.drawable.hi_arrow_down else R.drawable.hi_arrow_up_right, D.Quiet, 20.dp)
                 }
                 // What this is and what to do with the code, in the brand's own words.
                 //
@@ -4121,21 +4263,21 @@ private fun ShopSection(
                 if (open) {
                     val info by produceState<Shop.Details?>(null, p.id) { value = Shop.details(p.id) }
                     info?.takeIf { !it.empty }?.let { d ->
-                        Spacer(Modifier.height(10.dp))
+                        Spacer(Modifier.height(Space.lead))
                         d.about?.let {
-                            Text(it, color = D.Quiet, fontSize = 11.5.sp, lineHeight = 16.sp)
+                            Text(it, color = D.Quiet, style = Type.caption)
                         }
                         d.terms?.let {
-                            if (d.about != null) Spacer(Modifier.height(8.dp))
-                            Text(it, color = D.Quiet, fontSize = 11.5.sp, lineHeight = 16.sp)
+                            if (d.about != null) Spacer(Modifier.height(Space.tight))
+                            Text(it, color = D.Quiet, style = Type.caption)
                         }
                     }
                 }
                 // The denominations only appear for the row that was opened, because 156
                 // products with every price showing is a list nobody reads.
                 AnimatedVisibility(visible = open) {
-                    Column(Modifier.padding(top = 12.dp)) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    Column(Modifier.padding(top = Space.lead)) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(Space.inline),
                             modifier = Modifier.horizontalScroll(rememberScrollState())) {
                             val opts = p.packages.ifEmpty { p.values.map { Shop.Package(it, 0) } }
                             opts.forEach { pack ->
@@ -4145,16 +4287,24 @@ private fun ShopSection(
                                 // buy a ₹399 subscription read "₹Amazon Prime Subscription 3M".
                                 val price = "${symbolFor(p.currency)}${pack.price}"
                                 val what = packageLabel(pack, p.name)
-                                Column(
-                                    Modifier.clip(RoundedCornerShape(if (what == null) 999.dp else 16.dp))
-                                        .background(D.Blue).clickable { onBuy(p, pack.value) }
-                                        .padding(horizontal = 15.dp, vertical = 9.dp),
-                                    horizontalAlignment = Alignment.CenterHorizontally,
-                                ) {
-                                    Text(price, color = D.White, fontSize = 14.sp,
-                                        fontWeight = FontWeight.Bold, style = Figures)
+                                // The price grew to the heading step: 14sp white on #008FFF
+                                // is 3.30:1 and passes only as large text.
+                                //
+                                // What the price BUYS moved off the blue and under the button.
+                                // It was a 10.5sp white-at-80% line on the fill, the worst
+                                // pairing on the screen — and it is the line that says
+                                // whether ₹399 is three months of Prime or twelve, so it could
+                                // not simply be dropped.
+                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Box(
+                                        Modifier.clip(RoundedCornerShape(999.dp))
+                                            .background(D.Blue).clickable { onBuy(p, pack.value) }
+                                            .heightIn(min = 48.dp).padding(horizontal = 20.dp),
+                                        contentAlignment = Alignment.Center,
+                                    ) { Text(currencyStyled(price), color = D.White, style = Type.heading.figure()) }
                                     what?.let {
-                                        Text(it, color = D.White.copy(alpha = .8f), fontSize = 10.5.sp)
+                                        Text(it, color = D.Quiet, style = Type.caption,
+                                            modifier = Modifier.padding(top = Space.tight))
                                     }
                                 }
                             }
@@ -4162,8 +4312,9 @@ private fun ShopSection(
                     }
                 }
             }
+            if (i < section.products.lastIndex) RowLine()
         }
-        Spacer(Modifier.height(20.dp))
+        Spacer(Modifier.height(Space.gutter))
     }
 }
 
@@ -4210,11 +4361,13 @@ private fun ShopTiles(sections: List<Shop.Section>, onOpen: (Shop.Section) -> Un
     // Twelve, not eight. Splitting the old TV shelf took the count past eight, and a cap that
     // silently drops the last shelves is how a whole category disappears without a trace.
     val shown = sections.filter { it.products.isNotEmpty() }.take(12)
-    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    // 20 on both axes, for the reason [EarnTiles] gives: the gap is what groups a tile now
+    // that no box does.
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(20.dp)) {
         // Four to a row, and the last row padded with empty weights rather than stretched —
         // three wide tiles beside four narrow ones is the giveaway that a grid is faked.
         shown.chunked(4).forEach { row ->
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(20.dp)) {
                 row.forEach { sec ->
                     EarnTile(
                         label = when (sec.title) {
@@ -4237,12 +4390,26 @@ private fun ShopTiles(sections: List<Shop.Section>, onOpen: (Shop.Section) -> Un
  * the same shape. Everything inside is sized from the canvas width, so it scales.
  */
 @Composable
-private fun MarkCanvas(mark: Mark, side: Dp) {
+/**
+ * A drawn mark.
+ *
+ * `internal`, and [notch] and [tint] are parameters, because three screens were copying this
+ * geometry rather than calling it — the ticket, the rings and the coins each had a second,
+ * slightly wrong version living in another file, which is the drift PARITY.md keeps a record
+ * of. They could not call it: it was private, and it hard-coded a white notch and a blue mark,
+ * neither of which is right on a blue poster.
+ *
+ * [notch] is whatever sits BEHIND the mark. The marks that punch holes — the ticket's bites,
+ * the receipt's torn edge, the controller's thumb buttons — are drawn in it, so it has to be
+ * told: white on the page, `D.Blue` on a poster. Get it wrong and the holes either fill with
+ * grey bites or vanish into the card.
+ */
+internal fun MarkCanvas(mark: Mark, side: Dp, notch: Color = D.White, tint: Color = D.Blue) {
     // `side`, not `size`: inside a Canvas, `size` is the draw scope's own and shadowing it
     // turns every `size.width` below into a Dp.
     Canvas(Modifier.size(side)) {
             val w = size.width
-            val blue = D.Blue
+            val blue = tint
             when (mark) {
                 // Three discs seen from the side: a balance, stacked.
                 Mark.Coins -> repeat(3) { i ->
@@ -4275,7 +4442,7 @@ private fun MarkCanvas(mark: Mark, side: Dp) {
                     drawRoundRect(blue, Offset(w * .18f, w * .12f), Size(w * .64f, w * .62f),
                         CornerRadius(w * .08f))
                     repeat(4) { i ->
-                        drawCircle(D.Fill, radius = w * .07f,
+                        drawCircle(notch, radius = w * .07f,
                             center = Offset(w * (.24f + i * .17f), w * .76f))
                     }
                 }
@@ -4291,8 +4458,8 @@ private fun MarkCanvas(mark: Mark, side: Dp) {
                 Mark.Ticket -> {
                     drawRoundRect(blue, Offset(w * .08f, w * .22f), Size(w * .84f, w * .56f),
                         CornerRadius(w * .14f))
-                    drawCircle(D.Fill, radius = w * .12f, center = Offset(w * .08f, w * .5f))
-                    drawCircle(D.Fill, radius = w * .12f, center = Offset(w * .92f, w * .5f))
+                    drawCircle(notch, radius = w * .12f, center = Offset(w * .08f, w * .5f))
+                    drawCircle(notch, radius = w * .12f, center = Offset(w * .92f, w * .5f))
                 }
                 // Two rings meeting, the way the avatars meet when phones touch.
                 Mark.Rings -> {
@@ -4333,8 +4500,8 @@ private fun MarkCanvas(mark: Mark, side: Dp) {
                 Mark.Game -> {
                     drawRoundRect(blue, Offset(w * .08f, w * .30f), Size(w * .84f, w * .40f),
                         CornerRadius(w * .18f))
-                    drawCircle(D.Fill, radius = w * .08f, center = Offset(w * .31f, w * .50f))
-                    drawCircle(D.Fill, radius = w * .08f, center = Offset(w * .69f, w * .50f))
+                    drawCircle(notch, radius = w * .08f, center = Offset(w * .31f, w * .50f))
+                    drawCircle(notch, radius = w * .08f, center = Offset(w * .69f, w * .50f))
                 }
                 // A strip of film: sprocket holes down both edges. Distinct from Ticket, which
                 // is the Offers mark, and from Play, which is streaming — three neighbours that
@@ -4344,9 +4511,9 @@ private fun MarkCanvas(mark: Mark, side: Dp) {
                         CornerRadius(w * .12f))
                     repeat(4) { i ->
                         val y = w * (.22f + i * .18f)
-                        drawRoundRect(D.Fill, Offset(w * .20f, y), Size(w * .09f, w * .09f),
+                        drawRoundRect(notch, Offset(w * .20f, y), Size(w * .09f, w * .09f),
                             CornerRadius(w * .02f))
-                        drawRoundRect(D.Fill, Offset(w * .71f, y), Size(w * .09f, w * .09f),
+                        drawRoundRect(notch, Offset(w * .71f, y), Size(w * .09f, w * .09f),
                             CornerRadius(w * .02f))
                     }
                 }
@@ -4361,7 +4528,7 @@ private fun MarkCanvas(mark: Mark, side: Dp) {
                             moveTo(w * .40f, w * .34f); lineTo(w * .70f, w * .50f)
                             lineTo(w * .40f, w * .66f); close()
                         },
-                        D.Fill,
+                        notch,
                     )
                 }
                 // Three dots: everything that did not need a shape of its own.
@@ -4376,19 +4543,29 @@ private fun MarkCanvas(mark: Mark, side: Dp) {
     }
 }
 
+/**
+ * One tile: a mark, a label, and space around them. Also the shop's tiles.
+ *
+ * The grey body is gone, and the padding that held it out went with it (ui/PORT.md §9) —
+ * **the mark carries the tile** now, which is why it keeps the blue FILL: a drawn mark is one
+ * of the three places a fill still belongs, and here it is the only colour in the grid. The
+ * 18dp corner stays even with nothing to fill, because it is the shape the press scales.
+ *
+ * The height is the content — 34 + 8 + one 18sp caption line — which clears the 48dp touch
+ * minimum on its own, so there is nothing left to pad.
+ */
 @Composable
-private fun EarnTile(label: String, mark: Mark, modifier: Modifier, onClick: () -> Unit) {  // also the shop's tiles
+private fun EarnTile(label: String, mark: Mark, modifier: Modifier, onClick: () -> Unit) {
     val interaction = remember { MutableInteractionSource() }
     Column(
-        modifier.then(PressScale(interaction)).clip(RoundedCornerShape(18.dp)).background(D.Fill)
-            .clickable(interaction, indication = null, onClick = onClick)
-            .padding(vertical = 16.dp),
+        modifier.then(PressScale(interaction)).clip(RoundedCornerShape(18.dp))
+            .clickable(interaction, indication = null, onClick = onClick),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
         MarkCanvas(mark, 34.dp)
-        Spacer(Modifier.height(10.dp))
-        Text(label, color = D.Black, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.height(8.dp))
+        Text(label, color = D.Black, style = Type.caption)
     }
 }
 
@@ -4416,10 +4593,11 @@ private fun RequestsTab(
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
         if (openToPay.isEmpty() && openOwed.isEmpty() && history.isEmpty()) {
-            Spacer(Modifier.height(40.dp))
-            Text("Nothing here yet", color = D.Black, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
-            Spacer(Modifier.height(6.dp))
-            Text("Requests you tap land here, and stay until they're paid.", color = D.Quiet, fontSize = 13.sp)
+            Spacer(Modifier.height(Space.section))
+            Text("Nothing here yet", color = D.Black, style = Type.body)
+            Spacer(Modifier.height(Space.tight))
+            Text("Requests you tap land here, and stay until they're paid.",
+                color = D.Quiet, style = Type.caption)
             return@Column
         }
 
@@ -4433,37 +4611,48 @@ private fun RequestsTab(
                 Row(RowStyle, verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("${item.request.amount} ${item.request.symbol}", color = if (gone) D.Quiet else D.Black,
-                                fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                            Text("${item.request.amount} ${item.request.symbol}",
+                                color = if (gone) D.Quiet else D.Black,
+                                style = Type.body.figure(),
+                                textDecoration = if (gone) TextDecoration.LineThrough else null)
                             if (gone) {
-                                Spacer(Modifier.width(8.dp))
-                                Text("WITHDRAWN BY ${item.request.label.uppercase()}", color = D.DangerInk,
-                                    fontSize = 8.sp, letterSpacing = 1.sp, fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.background(D.Danger.copy(alpha = .12f), RoundedCornerShape(4.dp))
-                                        .padding(horizontal = 6.dp, vertical = 2.dp))
+                                // Taken back means nothing happened and nothing will: quiet
+                                // words, no red well. The chain refused nothing here, and the
+                                // line below already names who took it back.
+                                Spacer(Modifier.width(Space.tight))
+                                Text("WITHDRAWN", color = D.Quiet, style = Type.micro)
                             } else if (item.request.genesis != null) {
-                                Spacer(Modifier.width(6.dp))
-                                Text("SEEKER", color = D.BlueInk, fontSize = 8.sp, letterSpacing = 1.sp, fontWeight = FontWeight.Bold)
+                                // A fact about them, so it sits on the highlight marker.
+                                Spacer(Modifier.width(Space.tight))
+                                Text("SEEKER", color = D.Black, style = Type.micro,
+                                    modifier = Modifier.clip(RoundedCornerShape(5.dp))
+                                        .background(D.Highlight)
+                                        .padding(horizontal = 8.dp, vertical = 2.dp))
                             }
                         }
                         Text(
-                            if (gone) "${item.request.label} took this back"
+                            if (gone) "${item.request.label} took this back · nothing was paid"
                             else "${item.request.label} · tapped ${ago(item.readAt)}",
-                            color = D.Quiet, fontSize = 11.sp,
+                            color = D.Quiet, style = Type.caption,
+                            modifier = Modifier.padding(top = Space.tight),
                         )
                     }
                     TextButton(onClick = { onDismissToPay(item) }, enabled = paying == null) {
-                        Text("Remove", color = D.Quiet, fontSize = 12.sp)
+                        Text("Remove", color = D.Quiet, style = Type.body)
                     }
                     if (!gone) {
                         Button(
                             onClick = { onPay(item) }, enabled = paying == null,
                             colors = ButtonDefaults.buttonColors(containerColor = D.Blue, contentColor = D.White),
-                        ) { Text(if (paying == item.request.reference) "…" else "Pay", fontWeight = FontWeight.SemiBold) }
+                        ) {
+                            Text(if (paying == item.request.reference) "…" else "Pay",
+                                style = Type.heading)
+                        }
                     }
                 }
+                RowLine()
             }
-            Spacer(Modifier.height(16.dp))
+            Spacer(Modifier.height(Space.section))
         }
 
         if (openOwed.isNotEmpty()) {
@@ -4479,44 +4668,60 @@ private fun RequestsTab(
                 Row(RowStyle, verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("${e.amount} ${e.symbol}", color = if (no) D.Quiet else D.Black, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                            Text("${e.amount} ${e.symbol}", color = if (no) D.Quiet else D.Black,
+                                style = Type.body.figure(),
+                                textDecoration = if (no) TextDecoration.LineThrough else null)
                             if (no || later) {
-                                val tag = if (no) "DECLINED BY ${e.rejectedBy!!.uppercase()}" else "PENDING"
-                                val tone = if (no) D.Danger else D.Blue
-                                Spacer(Modifier.width(8.dp))
-                                Text(tag, color = tone.ink, fontSize = 8.sp,
-                                    letterSpacing = 1.sp, fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.background(tone.copy(alpha = .12f), RoundedCornerShape(4.dp))
-                                        .padding(horizontal = 6.dp, vertical = 2.dp))
+                                // A person saying no is not a chain refusal, so DECLINED is
+                                // the quiet ink with no well behind it. PENDING is a blue-ink
+                                // outline: the highlight marks things, it does not describe
+                                // waiting.
+                                Spacer(Modifier.width(Space.tight))
+                                if (no) {
+                                    Text("DECLINED", color = D.Quiet, style = Type.micro)
+                                } else {
+                                    Text("PENDING", color = D.BlueInk, style = Type.micro,
+                                        modifier = Modifier
+                                            .border(1.5.dp, D.BlueInk, RoundedCornerShape(5.dp))
+                                            .padding(horizontal = 8.dp, vertical = 2.dp))
+                                }
                             }
                         }
                         Text(
                             when {
-                                no -> "${e.rejectedBy} said no · nothing was paid"
+                                no -> "${e.rejectedBy} declined · nothing was paid"
                                 later -> "${e.deferredBy} will pay later · still watching for it"
                                 else -> "requested ${ago(e.createdAt)} · ${e.reference.take(8)}…"
                             },
-                            color = D.Quiet, fontSize = 11.sp,
-                            fontFamily = if (no || later) FontFamily.Default else FontFamily.Monospace,
+                            color = D.Quiet,
+                            // The waiting line carries a reference, which is an identifier.
+                            style = if (no || later) Type.caption else Type.mono,
+                            modifier = Modifier.padding(top = Space.tight),
                         )
                     }
-                    TextButton(onClick = { onDismissOwed(e) }) { Text("Remove", color = D.Quiet, fontSize = 12.sp) }
+                    TextButton(onClick = { onDismissOwed(e) }) {
+                        Text("Remove", color = D.Quiet, style = Type.body)
+                    }
                 }
+                RowLine()
             }
-            Spacer(Modifier.height(16.dp))
+            Spacer(Modifier.height(Space.section))
         }
 
         if (history.isNotEmpty()) {
             SectionLabel("DONE")
-            history.forEach { (at, what, sig) ->
-                Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text("✓", color = D.BlueInk, fontSize = 13.sp)
-                    Spacer(Modifier.width(10.dp))
+            history.forEachIndexed { i, (at, what, sig) ->
+                Row(RowStyle, verticalAlignment = Alignment.CenterVertically) {
+                    // The PAID ink, because that is what these are: money that landed.
+                    HiIcon(Hi.Tick, D.SuccessInk, 20.dp)
+                    Spacer(Modifier.width(Space.inline))
                     Column(Modifier.weight(1f)) {
-                        Text(what, color = D.Black, fontSize = 13.sp)
-                        Text("${ago(at)} · ${sig.take(10)}…", color = D.Quiet, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                        Text(what, color = D.Black, style = Type.body)
+                        Text("${ago(at)} · ${sig.take(10)}…", color = D.Quiet, style = Type.mono,
+                            modifier = Modifier.padding(top = Space.tight))
                     }
                 }
+                if (i < history.lastIndex) RowLine()
             }
         }
     }
@@ -4553,7 +4758,7 @@ private fun PayBar(modifier: Modifier, onTap: () -> Unit, onScan: () -> Unit) {
         // No floor and no backdrop: the capsule floats and the page runs under it. It used to
         // sit on a white strip with a gradient above it, which stopped content showing through
         // — at the cost of a white slab across the bottom of every screenshot.
-        Row(Modifier.fillMaxWidth().padding(start = 20.dp)) { Tag("7") }
+        Row(Modifier.fillMaxWidth().padding(start = Space.gutter)) { Tag("7") }
 
         // A white ring around the capsule, under a soft shadow. On a white page the ring is
         // invisible as a colour and does its work as a gap: it holds the dark shape off the
@@ -4576,8 +4781,8 @@ private fun PayBar(modifier: Modifier, onTap: () -> Unit, onScan: () -> Unit) {
                 }
             }
             val needed = with(LocalDensity.current) {
-                // Each half: 16dp + icon 26 + gap 10 + label + 16dp. Plus the seam and the ring.
-                (2 * ((16 + 26 + 10 + 16).dp.roundToPx() + widest) +
+                // Each half: 16dp + icon 24 + gap 12 + label + 16dp. Plus the seam and the ring.
+                (2 * ((16 + 24 + 12 + 16).dp.roundToPx() + widest) +
                     PayBarGap.roundToPx() + 2 * PayBarRing.roundToPx()).toDp()
             }
             // Against the page's content width, not the screen. The bar floats over a page
@@ -4605,7 +4810,8 @@ private fun PayBar(modifier: Modifier, onTap: () -> Unit, onScan: () -> Unit) {
             )
         }
         }
-        Spacer(Modifier.height(14.dp))
+        // 16, on the scale — it was 14.
+        Spacer(Modifier.height(16.dp))
     }
 }
 
@@ -4619,13 +4825,13 @@ private val PayBarRadius = PayBarHeight / 2 + PayBarRing
 /**
  * The label, defined once because it is both measured and drawn.
  *
- * 19sp, not 17: white on `D.Blue` is 3.30:1, which passes only as large text — so the label on
- * the blue half has to BE large text. If these two uses ever drift the bar measures one thing
- * and draws another.
+ * It is `Type.heading` — 19/24 bold. 19, not 17, because white on `D.Blue` is 3.30:1 and
+ * passes only as large text, so the label on the blue half has to BE large text; and the step
+ * rather than a hand-built copy of it, because a bar with its own TextStyle is a seventh size
+ * on a six-size scale. Two lines of 24 are 48 inside the 72 bar, 12 to spare above and below.
+ * If the measured and the drawn label ever drift, the bar measures one thing and draws another.
  */
-private val PayBarLabel = TextStyle(
-    fontFamily = Ui, fontSize = 19.sp, lineHeight = 21.sp, fontWeight = FontWeight.Bold,
-)
+private val PayBarLabel = Type.heading
 
 /**
  * The corners where the two halves meet.
@@ -4669,7 +4875,7 @@ private fun PayChoice(
         Modifier.heightIn(min = PayBarHeight).clip(shape).background(fill)
             .clickable(interaction, indication = null, onClick = onClick)
             .padding(horizontal = 16.dp),
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        horizontalArrangement = Arrangement.spacedBy(Space.inline),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         // Pressing dims the half rather than scaling it. A scale would shrink one end of a
@@ -4679,12 +4885,13 @@ private fun PayChoice(
             if (pressed) D.White.copy(alpha = .55f) else D.White,
             spring(Snap.dampingRatio, Snap.stiffness), label = "ink",
         )
-        if (iconFirst) HIcon(icon, ink, 26.dp)
+        // 24 is the action size on the icon scale — it was 26, which is not a size on it.
+        if (iconFirst) HIcon(icon, ink, 24.dp)
         Column {
             Text(first, color = ink, style = PayBarLabel, maxLines = 1)
             if (second != null) Text(second, color = ink, style = PayBarLabel, maxLines = 1)
         }
-        if (!iconFirst) HIcon(icon, ink, 26.dp)
+        if (!iconFirst) HIcon(icon, ink, 24.dp)
     }
 }
 
@@ -4710,25 +4917,28 @@ private fun markFor(t: History.Txn): Mark? = when {
 @Composable
 private fun TxnRow(t: History.Txn, onOpen: () -> Unit) {
     Row(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).clickable(onClick = onOpen)
-            .padding(vertical = 9.dp, horizontal = 4.dp),
+        Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable(onClick = onOpen)
+            .padding(vertical = Space.row),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(
-            Modifier.size(40.dp).clip(CircleShape).background(D.Fill),
-            contentAlignment = Alignment.Center,
-        ) {
-            val mark = markFor(t)
-            when {
-                mark != null -> MarkCanvas(mark, 21.dp)
-                t.incoming -> HIcon(R.drawable.hi_arrow_down, D.SuccessInk, 19.dp)
-                else -> HIcon(R.drawable.hi_arrow_up_right, D.Black, 19.dp)
+        // A received payment wears the state's disc — a success fill carrying a white tick,
+        // which is one of the three places a fill still belongs. Everything else is a bare
+        // mark on the white page: the shelf a purchase came off, or the direction the money
+        // went. All three sit in the same 40dp box, so the titles line up down the column and
+        // the grey disc that used to be behind every one of them is gone.
+        val mark = markFor(t)
+        if (t.incoming) {
+            IconDisc(R.drawable.hi_tick, D.White, D.Success, size = 40.dp, icon = 20.dp)
+        } else {
+            Box(Modifier.size(40.dp), contentAlignment = Alignment.Center) {
+                if (mark != null) MarkCanvas(mark, 24.dp)
+                else HiIcon(Hi.ArrowUpRight, D.Black, 24.dp)
             }
         }
-        Spacer(Modifier.width(12.dp))
+        Spacer(Modifier.width(Space.inline))
         Column(Modifier.weight(1f)) {
-            Text(t.title, color = D.Black, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
-            Spacer(Modifier.height(1.dp))
+            Text(t.title, color = D.Black, style = Type.body, maxLines = 1)
+            Spacer(Modifier.height(Space.tight))
             // A code is the one thing on this row somebody needs to USE, so it is monospaced,
             // and tapping it copies rather than opening the row. A code you cannot get out of
             // the app is barely delivered.
@@ -4736,24 +4946,24 @@ private fun TxnRow(t: History.Txn, onOpen: () -> Unit) {
                 // A summary, not the code itself. Cramming a card number and a PIN onto one
                 // ellipsized line showed neither properly and copied both as one blob; the
                 // row opens the sheet where each part is labelled and separately copyable.
-                Text(
-                    "Tap for the code", color = D.BlueInk, fontSize = 12.sp, maxLines = 1,
-                    fontWeight = FontWeight.SemiBold,
-                )
+                Text("Tap for the code", color = D.BlueInk, style = Type.caption, maxLines = 1)
             } else {
                 Text(t.note ?: t.category, color = if (t.note != null) D.BlueInk else D.Quiet,
-                    fontSize = 12.sp, maxLines = 1)
+                    style = Type.caption, maxLines = 1)
             }
         }
-        Spacer(Modifier.width(10.dp))
+        Spacer(Modifier.width(Space.inline))
         Column(horizontalAlignment = Alignment.End) {
+            // Money in is the success ink. Money out is INK, never red — spending is not an
+            // error, and the sign is what is being scanned for.
             Text(
                 (if (t.incoming) "+" else "−") + t.amount,
                 color = if (t.incoming) D.SuccessInk else D.Black,
-                fontSize = 14.sp, fontWeight = FontWeight.Bold, style = Figures, maxLines = 1,
+                style = Type.body.figure(), maxLines = 1,
             )
-            Spacer(Modifier.height(1.dp))
-            Text(ago(t.at), color = D.Quiet, fontSize = 10.sp, style = Figures)
+            Spacer(Modifier.height(Space.tight))
+            Text(ago(t.at), color = D.Quiet,
+                style = Type.caption.copy(fontFeatureSettings = "tnum"))
         }
     }
 }
@@ -4762,15 +4972,25 @@ private fun TxnRow(t: History.Txn, onOpen: () -> Unit) {
 @Composable
 private fun HistoryStrip(list: List<History.Txn>, onViewAll: () -> Unit, onOpen: (History.Txn) -> Unit) {
     Column(Modifier.fillMaxWidth()) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text("Transaction history", color = D.Black, fontSize = 17.sp, fontWeight = FontWeight.Bold)
+        Row(
+            Modifier.fillMaxWidth().heightIn(min = 48.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("Transaction history", color = D.Black, style = Type.heading)
             Spacer(Modifier.weight(1f))
-            Text("View all", color = D.BlueInk, fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
-                modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable(onClick = onViewAll)
-                    .padding(horizontal = 6.dp, vertical = 4.dp))
+            Box(
+                Modifier.clip(RoundedCornerShape(8.dp)).clickable(onClick = onViewAll)
+                    .heightIn(min = 48.dp).padding(horizontal = 8.dp),
+                contentAlignment = Alignment.Center,
+            ) { Text("View all", color = D.BlueInk, style = Type.body) }
         }
-        Spacer(Modifier.height(6.dp))
-        list.take(3).forEach { TxnRow(it) { onOpen(it) } }
+        Spacer(Modifier.height(Space.lead))
+        // Split by a hairline rather than boxed, and no trailing line under the last row.
+        val rows = list.take(3)
+        rows.forEachIndexed { i, t ->
+            TxnRow(t) { onOpen(t) }
+            if (i < rows.lastIndex) RowLine()
+        }
     }
 }
 
@@ -4801,35 +5021,37 @@ private fun HistoryTab(
 
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Chevron(R.drawable.hi_arrow_left, older != null) { older?.let(onMonth) }
+            Chevron(R.drawable.hi_arrow_left, older != null, "Previous month") { older?.let(onMonth) }
             Text(
                 month.format(MONTH),
-                color = D.Black, fontSize = 17.sp, fontWeight = FontWeight.Bold, fontFamily = Display,
+                color = D.Black, style = Type.heading,
                 textAlign = TextAlign.Center,
                 modifier = Modifier.weight(1f).clip(RoundedCornerShape(10.dp))
-                    .clickable { picking = true }.padding(vertical = 8.dp),
+                    .clickable { picking = true }.heightIn(min = 48.dp).padding(vertical = 12.dp),
             )
             // Mirrored, because there is no right chevron in the set and it is the same arrow.
-            Chevron(R.drawable.hi_arrow_left, newer != null, flip = true) { newer?.let(onMonth) }
+            Chevron(R.drawable.hi_arrow_left, newer != null, "Next month", flip = true) { newer?.let(onMonth) }
         }
 
         if (rows.isEmpty()) {
-            Spacer(Modifier.height(34.dp))
-            Text("Nothing in ${month.format(MONTH)}", color = D.Black, fontSize = 15.sp,
-                fontWeight = FontWeight.SemiBold)
-            Spacer(Modifier.height(5.dp))
+            Spacer(Modifier.height(Space.section))
+            Text("Nothing in ${month.format(MONTH)}", color = D.Black, style = Type.body)
+            Spacer(Modifier.height(Space.tight))
             Text("Payments, requests you were paid, and anything you bought will show up here.",
-                color = D.Quiet, fontSize = 13.sp)
+                color = D.Quiet, style = Type.caption)
         } else {
             // Counted, not summed: the rows carry several tokens and a single figure adding
             // SOL to USDC to rupees would be a number that means nothing.
             Text(
-                "${rows.size} transaction${if (rows.size == 1) "" else "s"}",
-                color = D.Quiet, fontSize = 11.sp, letterSpacing = 1.sp, fontWeight = FontWeight.SemiBold,
-                modifier = Modifier.padding(top = 6.dp, bottom = 8.dp),
+                "${rows.size} transaction${if (rows.size == 1) "" else "s"}".uppercase(),
+                color = D.Quiet, style = Type.micro,
+                modifier = Modifier.padding(top = Space.tight, bottom = Space.lead),
             )
             LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
-                items(rows) { t -> TxnRow(t) { onOpen(t) } }
+                itemsIndexed(rows) { i, t ->
+                    TxnRow(t) { onOpen(t) }
+                    if (i < rows.lastIndex) RowLine()
+                }
             }
         }
     }
@@ -4840,13 +5062,22 @@ private fun HistoryTab(
 }
 
 @Composable
-private fun Chevron(@DrawableRes icon: Int, enabled: Boolean, flip: Boolean = false, onClick: () -> Unit) {
+private fun Chevron(
+    @DrawableRes icon: Int,
+    enabled: Boolean,
+    /** Said out loud: an arrow on its own says nothing about which way it walks. */
+    label: String,
+    flip: Boolean = false,
+    onClick: () -> Unit,
+) {
+    // 24 in a 48dp hit area, on the page rather than in a grey disc.
     Box(
-        Modifier.size(38.dp).clip(CircleShape).background(if (enabled) D.Fill else Color.Transparent)
-            .clickable(enabled = enabled, onClick = onClick),
+        Modifier.size(48.dp).clip(CircleShape)
+            .clickable(enabled = enabled, onClick = onClick)
+            .semantics { contentDescription = label },
         contentAlignment = Alignment.Center,
     ) {
-        HIcon(icon, if (enabled) D.Black else D.Line, 18.dp,
+        HIcon(icon, if (enabled) D.Black else D.Line, 24.dp,
             if (flip) Modifier.graphicsLayer { rotationZ = 180f } else Modifier)
     }
 }
@@ -4861,29 +5092,29 @@ private fun MonthSheet(
     onClose: () -> Unit,
 ) {
     ModalBottomSheet(onDismissRequest = onClose, containerColor = D.White, dragHandle = null) {
-        Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 18.dp)) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = Space.gutter, vertical = 20.dp)) {
             Box(Modifier.align(Alignment.CenterHorizontally).size(36.dp, 4.dp).background(D.Line, CircleShape))
             Spacer(Modifier.height(16.dp))
-            Text("Jump to a month", color = D.Black, fontSize = 19.sp, fontWeight = FontWeight.Bold,
-                fontFamily = Display)
-            Spacer(Modifier.height(12.dp))
+            Text("Jump to a month", color = D.Black, style = Type.title)
+            Spacer(Modifier.height(Space.lead))
             LazyColumn(Modifier.heightIn(max = 380.dp)) {
                 items(months) { m ->
                     val on = m == current
+                    // The pale blue wash behind the current month is gone: the blue INK and
+                    // the tick say which one it is, and the tick says it without colour.
                     Row(
-                        Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
-                            .background(if (on) D.Blue.copy(alpha = .1f) else Color.Transparent)
-                            .clickable { onPick(m) }.padding(horizontal = 14.dp, vertical = 13.dp),
+                        Modifier.fillMaxWidth().heightIn(min = 48.dp)
+                            .clickable { onPick(m) }.padding(vertical = Space.row),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text(m.format(MONTH), color = if (on) D.BlueInk else D.Black, fontSize = 14.sp,
-                            fontWeight = if (on) FontWeight.Bold else FontWeight.Medium)
+                        Text(m.format(MONTH), color = if (on) D.BlueInk else D.Black,
+                            style = Type.body)
                         Spacer(Modifier.weight(1f))
-                        if (on) HIcon(R.drawable.hi_tick, D.BlueInk, 16.dp)
+                        if (on) HiIcon(Hi.Tick, D.BlueInk, 20.dp)
                     }
                 }
             }
-            Spacer(Modifier.height(10.dp))
+            Spacer(Modifier.height(Space.lead))
         }
     }
 }
@@ -4902,57 +5133,95 @@ private fun MonthSheet(
 @Composable
 private fun AlertsTab(list: List<Alerts.Alert>, seenAt: Long, onOpen: (Alerts.Alert) -> Unit) {
     if (list.isEmpty()) {
-        Column(Modifier.fillMaxWidth().padding(top = 40.dp)) {
-            Text("Nothing new", color = D.Black, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
-            Spacer(Modifier.height(6.dp))
+        Column(Modifier.fillMaxWidth().padding(top = Space.section)) {
+            Text("Nothing new", color = D.Black, style = Type.body)
+            Spacer(Modifier.height(Space.tight))
             Text("Requests, replies, messages and anything you've bought show up here.",
-                color = D.Quiet, fontSize = 13.sp)
+                color = D.Quiet, style = Type.caption)
         }
         return
     }
-    LazyColumn(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        items(list) { a ->
+    LazyColumn(Modifier.fillMaxSize()) {
+        itemsIndexed(list) { i, a ->
             val look = alertLook(a.kind)
             val fresh = a.at > seenAt
             Row(
-                Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp))
-                    .clickable { onOpen(a) }.padding(vertical = 10.dp, horizontal = 4.dp),
+                Modifier.fillMaxWidth().heightIn(min = 48.dp)
+                    .clickable { onOpen(a) }.padding(vertical = Space.row),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Box(
-                    Modifier.size(38.dp).clip(CircleShape).background(look.second.copy(alpha = .12f)),
-                    contentAlignment = Alignment.Center,
-                ) { HIcon(look.first, look.second.ink, 19.dp) }
-                Spacer(Modifier.width(12.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(a.title, color = D.Black, fontSize = 14.sp,
-                        fontWeight = if (fresh) FontWeight.Bold else FontWeight.SemiBold, maxLines = 2)
-                    Spacer(Modifier.height(1.dp))
-                    Text(a.detail, color = D.Quiet, fontSize = 12.sp, maxLines = 2)
+                // A payment state wears its disc — a bright fill carrying a white icon, and
+                // never without the icon, because all five fills share one brightness and the
+                // shape is what a colour-blind eye reads. Anything that is not a payment
+                // state is a bare mark on the page; the tinted disc behind every icon is gone.
+                if (look.disc) {
+                    IconDisc(look.icon, D.White, look.fill, size = 40.dp, icon = 20.dp)
+                } else {
+                    Box(Modifier.size(40.dp), contentAlignment = Alignment.Center) {
+                        HIcon(look.icon, D.BlueInk, 20.dp)
+                    }
                 }
-                Spacer(Modifier.width(10.dp))
+                Spacer(Modifier.width(Space.inline))
+                Column(Modifier.weight(1f)) {
+                    // Unread no longer washes the row blue (no tints): the title sits on the
+                    // highlight, which is what a marker pen is for, at 10.83:1.
+                    Text(
+                        a.title, color = D.Black, style = Type.body, maxLines = 2,
+                        modifier = if (fresh) {
+                            Modifier.clip(RoundedCornerShape(4.dp)).background(D.Highlight)
+                                .padding(horizontal = 4.dp)
+                        } else Modifier,
+                    )
+                    Spacer(Modifier.height(Space.tight))
+                    Text(a.detail, color = look.words, style = Type.caption, maxLines = 2)
+                }
+                Spacer(Modifier.width(Space.inline))
                 Column(horizontalAlignment = Alignment.End) {
-                    Text(ago(a.at), color = D.Quiet, fontSize = 10.sp, style = Figures)
+                    Text(ago(a.at), color = D.Quiet,
+                        style = Type.caption.copy(fontFeatureSettings = "tnum"))
                     if (fresh) {
-                        Spacer(Modifier.height(5.dp))
-                        Box(Modifier.size(7.dp).clip(CircleShape).background(D.Blue))
+                        Spacer(Modifier.height(Space.tight))
+                        // The dot stays as a graphic, so "new" is not told by colour alone —
+                        // the marker behind the title says it too.
+                        Box(
+                            Modifier.size(8.dp).clip(CircleShape).background(D.Blue)
+                                .semantics { contentDescription = "Unread" },
+                        )
                     }
                 }
             }
+            if (i < list.lastIndex) RowLine()
         }
     }
 }
 
-/** The icon and colour for each kind. Money in is green, a refusal is red, the rest are calm. */
-private fun alertLook(kind: Alerts.Kind): Pair<Int, Color> = when (kind) {
-    Alerts.Kind.ASKED -> R.drawable.hi_exchange to D.Blue
-    Alerts.Kind.DECLINED -> R.drawable.hi_cancel to D.Danger
-    Alerts.Kind.LATER -> R.drawable.hi_clock to D.Blue
-    Alerts.Kind.RECEIVED -> R.drawable.hi_tick to D.Success
-    Alerts.Kind.WITHDRAWN -> R.drawable.hi_cancel to D.Quiet
-    Alerts.Kind.MESSAGE -> R.drawable.hi_info to D.Blue
-    Alerts.Kind.OFFER -> R.drawable.hi_gift to D.Blue
-    Alerts.Kind.ORDER -> R.drawable.hi_wallet to D.Blue
+/**
+ * What each kind of alert looks like.
+ *
+ * A payment state gets a **status disc**: a bright fill carrying a thick white icon, which is
+ * one of the three places a fill belongs. Everything else is not a payment state at all — an
+ * offer, an order, a message — so it is a bare mark in blue ink on the white page.
+ *
+ * A decline and a withdrawal are the NEUTRAL disc, not the red one: a person saying no is not
+ * the chain refusing a transaction, and in both cases nothing moved.
+ */
+private data class AlertLook(@DrawableRes val icon: Int, val fill: Color, val disc: Boolean) {
+    /**
+     * The words beside it. `D.Neutral` has no ink of its own, because "nothing happened" is
+     * the quiet ink rather than a hue; and a row that is not a payment state is quiet too.
+     */
+    val words: Color get() = if (!disc || fill == D.Neutral) D.Quiet else fill.ink
+}
+
+private fun alertLook(kind: Alerts.Kind): AlertLook = when (kind) {
+    Alerts.Kind.RECEIVED -> AlertLook(R.drawable.hi_tick, D.Success, disc = true)
+    Alerts.Kind.DECLINED -> AlertLook(R.drawable.hi_cancel, D.Neutral, disc = true)
+    Alerts.Kind.WITHDRAWN -> AlertLook(R.drawable.hi_cancel, D.Neutral, disc = true)
+    Alerts.Kind.LATER -> AlertLook(R.drawable.hi_clock, D.Blue, disc = true)
+    Alerts.Kind.ASKED -> AlertLook(R.drawable.hi_exchange, D.Blue, disc = false)
+    Alerts.Kind.MESSAGE -> AlertLook(R.drawable.hi_info, D.Blue, disc = false)
+    Alerts.Kind.OFFER -> AlertLook(R.drawable.hi_gift, D.Blue, disc = false)
+    Alerts.Kind.ORDER -> AlertLook(R.drawable.hi_wallet, D.Blue, disc = false)
 }
 
 /**
@@ -4968,24 +5237,55 @@ private fun alertLook(kind: Alerts.Kind): Pair<Int, Color> = when (kind) {
 @Composable
 private fun Tag(n: String) {
     if (!BuildConfig.DEBUG) return
+    // Ink, not blue. An 11sp white label on #008FFF is 3.30:1 and fails as small text — and a
+    // debug tag has no business teaching the screen a colour pairing the palette forbids.
+    // `Type.micro` with its tracking taken off: micro is a tracked uppercase LABEL, and "§2d"
+    // is an identifier, so it takes micro's size and weight but not its letter-spacing.
     Text(
-        "§$n", color = D.White, fontSize = 10.sp, fontWeight = FontWeight.Bold, style = Figures,
+        "§$n", color = D.White, style = CountStyle,
         modifier = Modifier.padding(top = 2.dp)
-            .clip(RoundedCornerShape(5.dp)).background(D.Blue)
+            .clip(RoundedCornerShape(5.dp)).background(D.Black)
             .padding(horizontal = 5.dp, vertical = 1.dp),
     )
 }
 
 @Composable
 private fun SectionLabel(text: String) {
-    Text(text, color = D.Quiet, fontSize = 11.sp, letterSpacing = 1.5.sp, fontWeight = FontWeight.SemiBold)
+    // `Type.micro` IS 11/14/700 at +1.5 tracking — this was the same thing spelled out by
+    // hand, which is how a step drifts from the scale without anyone touching the scale.
+    Text(text, color = D.Quiet, style = Type.micro)
     Spacer(Modifier.height(8.dp))
 }
 
-private val RowStyle = Modifier.fillMaxWidth().padding(vertical = 4.dp)
-    .clip(RoundedCornerShape(14.dp))
-    .background(D.Fill)
-    .padding(horizontal = 14.dp, vertical = 12.dp)
+/**
+ * A list row, now that the grey body is gone (ui/PORT.md §9).
+ *
+ * The box is what used to say "these belong together"; with no containers that job goes to
+ * space and a [RowLine] under the row. `Space.row` top and bottom makes a one-line row 52dp,
+ * clear of the 48dp touch minimum, and `heightIn` keeps it clear when text grows to 2x.
+ */
+private val RowStyle = Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(vertical = Space.row)
+
+/** The hairline that replaced the row box. Decorative — never the only boundary. */
+@Composable
+private fun RowLine() = Box(Modifier.fillMaxWidth().height(1.dp).background(D.Line))
+
+/**
+ * An amount: the figure face with tabular figures, at whatever step the caller chose.
+ *
+ * The one place "is this money?" is answered, so it is not re-decided on every call site. An
+ * amount inside a sentence is NOT one of these — switching face mid-sentence reads as a
+ * rendering fault.
+ */
+
+/** An identifier at body size — a card number, a redeem link: read character by character. */
+private val MonoBody = Type.body.monospaced()
+
+/**
+ * A count on a badge. Tabular, so 9 → 10 does not shift the disc, and without micro's label
+ * tracking, which pushes a lone digit off centre.
+ */
+private val CountStyle = Type.micro.copy(letterSpacing = 0.sp, fontFeatureSettings = "tnum")
 
 /**
  * The name this wallet carries, and how it got one.
@@ -5013,28 +5313,25 @@ private fun WalletIdentity(w: Linked, linking: Boolean, onLink: () -> Unit) {
         Identity.named(context, Wallets(context).all().map { it.address }.filter { it != w.address })
     }
 
-    Column(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(Tray.INNER))
-            .background(if (mine != null || link != null) D.Blue.copy(alpha = .07f) else D.Fill)
-            .padding(14.dp),
-    ) {
-        Text("SEEN AS", color = D.Quiet, fontSize = 10.sp, letterSpacing = 1.2.sp,
-            fontWeight = FontWeight.SemiBold)
-        Spacer(Modifier.height(6.dp))
+    // No well behind it, tinted or grey: the label, the name and the tick carry this block,
+    // and a pale blue wash for the verified case was the last thing on the sheet saying
+    // "verified" in colour alone.
+    Column(Modifier.fillMaxWidth()) {
+        Text("SEEN AS", color = D.Quiet, style = Type.micro)
+        Spacer(Modifier.height(Space.tight))
 
         when {
             mine != null -> {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(mine, color = D.Black, fontSize = 17.sp, fontWeight = FontWeight.Bold,
-                        fontFamily = Display, maxLines = 1)
-                    Spacer(Modifier.width(5.dp))
-                    HIcon(R.drawable.hi_verified, D.BlueInk, 15.dp)
+                    Text(mine, color = D.Black, style = Type.heading, maxLines = 1)
+                    Spacer(Modifier.width(Space.tight))
+                    HiIcon(Hi.Verified, D.BlueInk, 20.dp)
                 }
-                Spacer(Modifier.height(4.dp))
+                Spacer(Modifier.height(Space.tight))
                 Text(
                     "This wallet owns the name, so everyone you tap sees it. It can also lend " +
                         "it to your other wallets.",
-                    color = D.Quiet, fontSize = 11.5.sp, lineHeight = 16.sp,
+                    color = D.Quiet, style = Type.caption,
                 )
             }
 
@@ -5042,31 +5339,30 @@ private fun WalletIdentity(w: Linked, linking: Boolean, onLink: () -> Unit) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
                         Identity.domain(context, link.owner) ?: link.owner.take(6) + "…",
-                        color = D.Black, fontSize = 17.sp, fontWeight = FontWeight.Bold,
-                        fontFamily = Display, maxLines = 1,
+                        color = D.Black, style = Type.heading, maxLines = 1,
                     )
-                    Spacer(Modifier.width(5.dp))
-                    HIcon(R.drawable.hi_verified, D.BlueInk, 15.dp)
+                    Spacer(Modifier.width(Space.tight))
+                    HiIcon(Hi.Verified, D.BlueInk, 20.dp)
                 }
-                Spacer(Modifier.height(4.dp))
+                Spacer(Modifier.height(Space.tight))
                 Text(
                     "Lent to this wallet by ${link.owner.take(4)}…${link.owner.takeLast(4)}, " +
                         "and signed — the other phone checks it rather than taking our word. " +
                         "Good until ${link.expiresOn}.",
-                    color = D.Quiet, fontSize = 11.5.sp, lineHeight = 16.sp,
+                    color = D.Quiet, style = Type.caption,
                 )
             }
 
             owner != null -> {
-                Text(w.short, color = D.Quiet, fontSize = 15.sp, fontFamily = FontFamily.Monospace)
-                Spacer(Modifier.height(4.dp))
+                Text(w.short, color = D.Quiet, style = MonoBody)
+                Spacer(Modifier.height(Space.tight))
                 Text(
                     "Just an address right now. ${owner.second} can vouch for it, so people " +
                         "you tap from this wallet see your name instead. One approval in that " +
                         "wallet, nothing spent.",
-                    color = D.Quiet, fontSize = 11.5.sp, lineHeight = 16.sp,
+                    color = D.Quiet, style = Type.caption,
                 )
-                Spacer(Modifier.height(12.dp))
+                Spacer(Modifier.height(Space.lead))
                 PrimaryButton(
                     if (linking) "Waiting for ${owner.second}…" else "Use ${owner.second} here",
                     enabled = !linking,
@@ -5076,13 +5372,13 @@ private fun WalletIdentity(w: Linked, linking: Boolean, onLink: () -> Unit) {
             }
 
             else -> {
-                Text(w.short, color = D.Quiet, fontSize = 15.sp, fontFamily = FontFamily.Monospace)
-                Spacer(Modifier.height(4.dp))
+                Text(w.short, color = D.Quiet, style = MonoBody)
+                Spacer(Modifier.height(Space.tight))
                 Text(
                     "Just an address. None of your wallets owns a .skr or .sol yet — every " +
                         "Seeker comes with a .skr, and any wallet that has one can lend it to " +
                         "the rest.",
-                    color = D.Quiet, fontSize = 11.5.sp, lineHeight = 16.sp,
+                    color = D.Quiet, style = Type.caption,
                 )
             }
         }
@@ -5104,28 +5400,29 @@ private fun WalletIdentity(w: Linked, linking: Boolean, onLink: () -> Unit) {
 @Composable
 private fun HowYouLook(domain: String?, borrowed: Boolean, username: String, onEdit: () -> Unit) {
     val verified = domain != null
+    // No card behind it: neither a pale blue one for the verified case nor a grey one for the
+    // rest. The tick is what marks the difference, which is the whole point of this block.
     Row(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
-            .background(if (verified) D.Blue.copy(alpha = .07f) else D.Fill)
-            .clickable(onClick = onEdit).padding(horizontal = 12.dp, vertical = 10.dp),
+        Modifier.fillMaxWidth().heightIn(min = 48.dp)
+            .clickable(onClick = onEdit).padding(vertical = Space.row),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(Modifier.weight(1f)) {
-            Text("They will see", color = D.Quiet, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
-            Spacer(Modifier.height(3.dp))
+            Text("They will see", color = D.Quiet, style = Type.caption)
+            Spacer(Modifier.height(Space.tight))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     domain ?: username.ifBlank { "your address" },
                     color = if (verified || username.isNotBlank()) D.Black else D.Quiet,
-                    fontSize = 15.sp, fontWeight = FontWeight.Bold, maxLines = 1,
+                    style = Type.body, maxLines = 1,
                     overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false),
                 )
                 if (verified) {
-                    Spacer(Modifier.width(4.dp))
-                    HIcon(R.drawable.hi_verified, D.BlueInk, 14.dp)
+                    Spacer(Modifier.width(Space.tight))
+                    HiIcon(Hi.Verified, D.BlueInk, 20.dp)
                 }
             }
-            Spacer(Modifier.height(2.dp))
+            Spacer(Modifier.height(Space.tight))
             Text(
                 when {
                     // A borrowed name is just as checkable and is not the same claim, so it
@@ -5135,12 +5432,12 @@ private fun HowYouLook(domain: String?, borrowed: Boolean, username: String, onE
                     username.isNotBlank() -> "No tick: they only have your word for this name."
                     else -> "Nobody will know who asked. Tap to pick a name."
                 },
-                color = D.Quiet, fontSize = 11.sp,
+                color = D.Quiet, style = Type.caption,
             )
         }
         if (!verified) {
-            Spacer(Modifier.width(8.dp))
-            Text("Change", color = D.BlueInk, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.width(Space.inline))
+            Text("Change", color = D.BlueInk, style = Type.body)
         }
     }
 }
@@ -5168,29 +5465,29 @@ private fun ContactNameDialog(
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = D.White,
-        title = { Text("Name this person", color = D.Black) },
+        title = { Text("Name this person", color = D.Black, style = Type.title) },
         text = {
             Column {
                 // What everyone else would see, so it is clear what is being overridden.
                 if (called.domain != null) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(called.domain, color = D.Black, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
-                        Spacer(Modifier.width(4.dp))
-                        HIcon(R.drawable.hi_verified, D.BlueInk, 14.dp)
+                        Text(called.domain, color = D.Black, style = Type.body)
+                        Spacer(Modifier.width(Space.tight))
+                        HiIcon(Hi.Verified, D.BlueInk, 20.dp)
                     }
-                    Spacer(Modifier.height(6.dp))
+                    Spacer(Modifier.height(Space.tight))
                     Text(
                         "Their name on chain. Yours is just for you — this one still shows " +
                             "underneath.",
-                        color = D.Quiet, fontSize = 12.sp,
+                        color = D.Quiet, style = Type.caption,
                     )
                 } else {
                     Text(
                         "Kept on this phone, and only you see it.",
-                        color = D.Quiet, fontSize = 13.sp,
+                        color = D.Quiet, style = Type.caption,
                     )
                 }
-                Spacer(Modifier.height(12.dp))
+                Spacer(Modifier.height(Space.lead))
                 OutlinedTextField(
                     value = text,
                     onValueChange = { if (it.length <= Username.MAX) text = it },
@@ -5208,10 +5505,12 @@ private fun ContactNameDialog(
         },
         confirmButton = {
             TextButton(onClick = { onSave(text) }, enabled = problem == null) {
-                Text("Save", color = D.BlueInk, fontWeight = FontWeight.Bold)
+                Text("Save", color = D.BlueInk, style = Type.heading)
             }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel", color = D.Quiet) } },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel", color = D.Quiet, style = Type.body) }
+        },
     )
 }
 
@@ -5243,28 +5542,30 @@ private fun NameDialog(
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = D.White,
-        title = { Text(if (domain != null) "Your name" else "Pick a name", color = D.Black) },
+        title = {
+            Text(if (domain != null) "Your name" else "Pick a name",
+                color = D.Black, style = Type.title)
+        },
         text = {
             Column {
                 if (domain != null) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(domain, color = D.Black, fontSize = 20.sp,
-                            fontWeight = FontWeight.Bold, fontFamily = Display)
-                        Spacer(Modifier.width(5.dp))
-                        HIcon(R.drawable.hi_verified, D.BlueInk, 17.dp)
+                        Text(domain, color = D.Black, style = Type.heading)
+                        Spacer(Modifier.width(Space.tight))
+                        HiIcon(Hi.Verified, D.BlueInk, 20.dp)
                     }
-                    Spacer(Modifier.height(8.dp))
+                    Spacer(Modifier.height(Space.tight))
                     Text(
                         "This is yours on chain, so everyone you tap sees it with the tick. " +
                             "Nothing to set up.",
-                        color = D.Quiet, fontSize = 13.sp,
+                        color = D.Quiet, style = Type.caption,
                     )
                 } else {
                     Text(
                         "Shown on the other phone when you tap someone.",
-                        color = D.Quiet, fontSize = 13.sp,
+                        color = D.Quiet, style = Type.caption,
                     )
-                    Spacer(Modifier.height(12.dp))
+                    Spacer(Modifier.height(Space.lead))
                     OutlinedTextField(
                         value = text,
                         onValueChange = { if (it.length <= Username.MAX) text = it },
@@ -5278,7 +5579,7 @@ private fun NameDialog(
                         },
                         modifier = Modifier.fillMaxWidth(),
                     )
-                    Spacer(Modifier.height(10.dp))
+                    Spacer(Modifier.height(Space.lead))
                     // The nudge, stated as what it actually buys rather than as "security":
                     // a username only exists inside this app, and a domain does not.
                     Text(
@@ -5286,23 +5587,27 @@ private fun NameDialog(
                             "for it. A .skr or .sol is yours on chain: it can't be copied, it " +
                             "works in every Solana app, and people can pay you by name from " +
                             "anywhere. Every Seeker comes with a .skr.",
-                        color = D.Quiet, fontSize = 12.sp,
+                        color = D.Quiet, style = Type.caption,
                     )
                 }
             }
         },
         confirmButton = {
             if (domain != null) {
-                TextButton(onClick = onDismiss) { Text("Done", color = D.BlueInk, fontWeight = FontWeight.Bold) }
+                TextButton(onClick = onDismiss) {
+                    Text("Done", color = D.BlueInk, style = Type.heading)
+                }
             } else {
                 TextButton(
                     onClick = { onSave(text) },
                     enabled = problem == null && Username.clean(text) != null,
-                ) { Text("Save", color = D.BlueInk, fontWeight = FontWeight.Bold) }
+                ) { Text("Save", color = D.BlueInk, style = Type.heading) }
             }
         },
         dismissButton = {
-            if (domain == null) TextButton(onClick = onDismiss) { Text("Cancel", color = D.Quiet) }
+            if (domain == null) {
+                TextButton(onClick = onDismiss) { Text("Cancel", color = D.Quiet, style = Type.body) }
+            }
         },
     )
 }

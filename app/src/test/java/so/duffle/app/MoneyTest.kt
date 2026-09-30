@@ -56,6 +56,29 @@ class MoneyTest {
         assertFalse(Money.cutsToZero(BigDecimal("0.01"), 2))
     }
 
+    // -- a price is not a balance ------------------------------------------------------
+
+    /**
+     * The rule behind [Money.unitPrice]. The formatting is ICU and is checked on the phone;
+     * the choice of how many decimals a price gets is here, because getting it wrong is what
+     * costs: at two decimals a $0.0195 token prices at $0.01 — off by half — and every
+     * sub-cent token on the screen reads $0.00.
+     */
+    @Test fun `a sub-dollar price keeps four decimals and a dollar price keeps two`() {
+        assertEquals(2, Money.priceDecimals(BigDecimal("120.49")))
+        assertEquals(2, Money.priceDecimals(BigDecimal("1")))
+        assertEquals(4, Money.priceDecimals(BigDecimal("0.9999")))
+        assertEquals(4, Money.priceDecimals(BigDecimal("0.0195")))
+        // Sign does not decide precision; magnitude does.
+        assertEquals(2, Money.priceDecimals(BigDecimal("-120.49")))
+    }
+
+    /** Below four decimals even a price is dust, and says so rather than pricing at zero. */
+    @Test fun `a price under a hundredth of a cent is dust`() {
+        assertTrue(Money.cutsToZero(BigDecimal("0.00001"), 4))
+        assertFalse(Money.cutsToZero(BigDecimal("0.0195"), 4))
+    }
+
     // -- the minus ---------------------------------------------------------------------
 
     /**

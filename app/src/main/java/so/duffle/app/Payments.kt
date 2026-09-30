@@ -76,11 +76,19 @@ object Payments {
         stage("Sending…")
         val signature = when (val sent = withContext(Dispatchers.IO) { Chain.submit(bytes) }) {
             is Chain.Submitted.Ok -> sent.signature
-            is Chain.Submitted.Rejected -> return PayResult.Failed(
-                "Transaction failed",
-                if (sent.why.contains("blockhash", true)) "It took too long in your wallet and expired. Nothing was sent — try again."
-                else "The network refused it: ${sent.why}",
-            )
+            // An expired blockhash is NOT a failure: the transaction never reached the chain,
+            // so nothing was sent and nothing can land later. It was returning `Failed` — the
+            // red "the chain refused it" shape — while its own text said "Nothing was sent",
+            // which is the one confusion that makes somebody pay twice.
+            is Chain.Submitted.Rejected ->
+                return if (sent.why.contains("blockhash", true)) {
+                    PayResult.Error(
+                        "Nothing was sent",
+                        "It took too long in your wallet and expired. Tap again.",
+                    )
+                } else {
+                    PayResult.Failed("The chain refused it", "It went out and didn't land. Nothing left your wallet.")
+                }
             Chain.Submitted.Offline -> return PayResult.Error("You're offline", "It was signed but never sent. Try again.")
         }
         log("✓ SENT — $signature")
@@ -88,13 +96,14 @@ object Payments {
         stage("Confirming on Solana…")
         return when (val c = Chain.confirm(signature, req.reference, req.recipient, units, req.mint)) {
             Chain.Confirmation.Confirmed -> PayResult.Sent(signature)
-            is Chain.Confirmation.Failed -> PayResult.Failed("Transaction failed", "It reached Solana but ${c.why}.", signature)
+            is Chain.Confirmation.Failed ->
+                PayResult.Failed("The chain refused it", "It went out and didn't land. Nothing left your wallet.", signature)
             // Submitted, and we could not get an answer — usually the public RPC refusing us,
             // not a failed payment. Say that, rather than implying it went wrong.
             Chain.Confirmation.Unknown -> PayResult.Failed(
                 "Sent, still confirming",
-                if (Chain.rateLimited) "Solana's public node is rate-limiting us. The payment is very likely fine — check the explorer."
-                else "It was sent but we couldn't confirm it yet. Check the explorer before paying again.",
+                if (Chain.rateLimited) "Sent — we just can't get an answer right now. It is very likely fine; check the explorer."
+                else "Sent — we couldn't confirm it yet. Check the explorer before paying again.",
                 signature,
             )
         }

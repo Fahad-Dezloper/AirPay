@@ -2,6 +2,7 @@ package so.duffle.app
 
 import android.icu.number.NumberFormatter
 import android.icu.number.Precision
+import android.icu.text.DecimalFormatSymbols
 import android.icu.text.NumberFormat
 import android.icu.util.Currency
 import java.math.BigDecimal
@@ -111,6 +112,120 @@ object Money {
             .toString()
             .replace("-", MINUS)
     }
+
+    /**
+     * A fiat value in the person's currency, split for display.
+     *
+     * The balance sets each run at its own size — the figures at 60, the symbol at 30, the cents
+     * at 26 — and it cannot do that from one string. The split is taken back OUT of a formatted
+     * figure rather than assembled by hand, so the locale still decides which side the symbol
+     * goes on, how the digits group and what the decimal mark is.
+     *
+     * [symbol] carries every affix, the minus included: it is one run on screen, so a negative
+     * value reads "−$3.09" with the sign and the symbol at the same size rather than a hyphen
+     * orphaned at the figures' size.
+     *
+     * Dust is folded in here rather than left to the caller. `$0.00` on a balance that holds
+     * something is the false claim this whole file exists to stop, and a caller that has to
+     * remember to ask [cutsToZero] first will one day forget — the sandbox's version did, and
+     * rendered exactly that.
+     */
+    data class FiatParts(
+        /** The currency symbol with any sign, e.g. "$", "€", "<$", "−$". */
+        val symbol: String,
+        /** Whether it goes before the figures. "$3.09" is true; "2,84 €" is false. */
+        val symbolFirst: Boolean,
+        /** The whole part, grouped: "12,34,567". */
+        val whole: String,
+        /** The decimal mark and the digits after it: ".09", ",84" — empty for a whole currency. */
+        val fraction: String,
+    )
+
+    fun fiatParts(
+        value: BigDecimal,
+        currency: String,
+        locale: Locale = Locale.getDefault(),
+    ): FiatParts {
+        val cur = Currency.getInstance(currency)
+        val d = cur.defaultFractionDigits.coerceAtLeast(0)
+        val dust = cutsToZero(value, d)
+        // Dust shows the smallest step it COULD have shown, marked "<". Formatting the real
+        // value would give 0.00, which is the claim being avoided.
+        val shown = if (dust) BigDecimal.ONE.movePointLeft(d) else value.setScale(d, RoundingMode.DOWN)
+        val text = NumberFormatter.withLocale(locale)
+            .unit(cur)
+            .precision(Precision.fixedFraction(d))
+            .roundingMode(RoundingMode.DOWN)
+            .format(shown)
+            .toString()
+
+        // The digits locate themselves. Anything outside the first and last of them is affix —
+        // which is true of "$3.09", "2,84 €" and "US$ 3.09" alike, and needs no table of
+        // symbols per locale and no second format to diff against.
+        val first = text.indexOfFirst { it.isDigit() }
+        val last = text.indexOfLast { it.isDigit() }
+        if (first < 0) return FiatParts("", true, text, "")
+        val before = text.substring(0, first)
+        val after = text.substring(last + 1)
+        val number = text.substring(first, last + 1)
+
+        val mark = DecimalFormatSymbols.getInstance(locale).decimalSeparator
+        val at = number.lastIndexOf(mark)
+        val whole = if (at < 0) number else number.substring(0, at)
+        val fraction = if (at < 0) "" else number.substring(at)
+
+        val symbolFirst = before.isNotBlank() || after.isBlank()
+        val affix = (if (symbolFirst) before else after).trim()
+        return FiatParts(
+            symbol = if (dust) (if (symbolFirst) "<$affix" else affix) else affix,
+            symbolFirst = symbolFirst,
+            // With the symbol trailing there is nowhere in front of it to put the "<", so it
+            // goes in front of the figures: "<2,84 €".
+            whole = if (dust && !symbolFirst) "<$whole" else whole,
+            fraction = fraction,
+        )
+    }
+
+    /**
+     * What ONE of a token costs: "$120.49", "$0.9999", "$0.0195", "<$0.0001".
+     *
+     * A price is not a balance. Two decimals cut a real sub-dollar price to nothing — $0.0195
+     * becomes $0.01, which is off by half — so under a dollar this keeps up to four. Still cut,
+     * never rounded: a price that reads high is a price somebody acts on.
+     */
+    fun unitPrice(
+        value: BigDecimal,
+        currency: String,
+        locale: Locale = Locale.getDefault(),
+    ): String {
+        if (priceDecimals(value) == 2) return fiat(value, currency, locale)
+        val cur = Currency.getInstance(currency)
+        if (cutsToZero(value, 4)) return "<" + NumberFormatter.withLocale(locale)
+            .unit(cur)
+            .precision(Precision.fixedFraction(4))
+            .format(BigDecimal.ONE.movePointLeft(4))
+            .toString()
+        return NumberFormatter.withLocale(locale)
+            .unit(cur)
+            // Min 2 so "$0.50" does not come back "$0.5", max 4 so the trailing zeros of
+            // "$0.5000" do not either.
+            .precision(Precision.minMaxFraction(2, 4))
+            .roundingMode(RoundingMode.DOWN)
+            .format(value)
+            .toString()
+            .replace("-", MINUS)
+    }
+
+    /**
+     * How many decimals a unit PRICE gets: two at a dollar and above, four below.
+     *
+     * Split out so the rule is testable without ICU, which is the whole reason [cut] and
+     * [cutsToZero] are internal too. The rule is the load-bearing part: at two decimals a
+     * $0.0195 token prices at $0.01, which is off by half, and every sub-cent token on the
+     * screen prices at $0.00.
+     */
+    internal fun priceDecimals(value: BigDecimal): Int =
+        if (value.abs() >= BigDecimal.ONE) 2 else 4
 
     /**
      * Is this a non-zero amount that cuts to zero at `d` decimals?

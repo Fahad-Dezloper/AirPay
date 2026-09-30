@@ -100,13 +100,21 @@ class ScanActivity : ComponentActivity() {
                             Modifier.align(Alignment.TopStart).statusBarsPadding()
                                 .padding(horizontal = 22.dp, vertical = 18.dp),
                         ) {
-                            Text("Scan any QR", color = Color.White, fontSize = 22.sp,
-                                fontWeight = FontWeight.ExtraBold, fontFamily = Display)
-                            Spacer(Modifier.height(4.dp))
+                            // On the scale (ui/PORT.md §3): this is a screen title, so
+                            // `Type.title`. It was 22sp in `Display` — both wrong. 22 is
+                            // between two steps, and §2 makes Bricolage the wordmark's face
+                            // alone; a screen heading borrowing it made this look like a
+                            // second logo.
+                            Text("Scan any QR", color = Color.White, style = Type.title)
+                            Spacer(Modifier.height(Space.tight))
                             Text(
                                 problem ?: "Point it at a Solana Pay code or a wallet address.",
-                                color = if (problem != null) Color(0xFFFF8A80) else Color(0xCCFFFFFF),
-                                fontSize = 13.sp,
+                                // D.Danger is the FILL, and on this ground that is right: the
+                                // inks are darkened to carry on WHITE and would disappear over
+                                // a camera picture. #FF8A80 was an invented colour in neither
+                                // layer of the palette.
+                                color = if (problem != null) D.Danger else Color(0xCCFFFFFF),
+                                style = Type.caption,
                             )
                         }
 
@@ -120,11 +128,15 @@ class ScanActivity : ComponentActivity() {
                             // would settle perfectly and send the shop nothing.
                             Text(
                                 "AirPay pays on devnet. A real shop's code settles on mainnet — it would not reach them.",
-                                color = Color(0x99FFFFFF), fontSize = 11.sp, textAlign = TextAlign.Center,
+                                // 11sp is `Type.micro`, which is a tracked uppercase LABEL and
+                                // not a sentence. There is no seventh-and-a-half step, so the
+                                // warning takes the nearest real one and reads better for it.
+                                color = Color(0x99FFFFFF), style = Type.caption, textAlign = TextAlign.Center,
                             )
                             Spacer(Modifier.height(14.dp))
                             Text(
-                                "Cancel", color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.SemiBold,
+                                // Every button label is `Type.heading` (§3).
+                                "Cancel", color = Color.White, style = Type.heading,
                                 modifier = Modifier.clip(RoundedCornerShape(14.dp))
                                     .background(Color(0x26FFFFFF))
                                     .clickable { finish() }
@@ -185,7 +197,7 @@ class ScanActivity : ComponentActivity() {
                                             // saw. Still logged, so a real bug stays visible.
                                             runCatching { onCode(raw) }.onFailure { e ->
                                                 Log.e(TAG, "reading that code failed", e)
-                                                problem = "Something went wrong reading that code."
+                                                problem = "That code didn't read. Try again, or ask for the address."
                                             }
                                         }
                                     }

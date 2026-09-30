@@ -268,8 +268,9 @@ class TapPopupActivity : ComponentActivity() {
                     lifecycleScope.launch { delay(1_400); earned = Rewards.Earned(300, listOf("first_payment", "per_payment")) }
                     Phase.Success("Sent", "$amount SOL to ${payload.label}", "67WKe2RHq4Z8vY1pXbT5mN3cJdedqWM5")
                 }
-                "error" -> Phase.Error("Nothing was sent", "You closed the wallet before approving. Tap again when you're ready.")
-                "failed" -> Phase.Failed("Payment failed", "Solana refused the transaction. Your SOL is still in your wallet.", "67WKe2RHq4Z8vY1pXbT5mN3cJdedqWM5")
+                "error" -> Phase.Error("Nothing was sent", "The approval window closed — tap again.")
+                // The §7 wording, so the preview shows what ships rather than its own phrasing.
+                "failed" -> Phase.Failed("The chain refused it", "It went out and didn't land. Nothing left your wallet.", "67WKe2RHq4Z8vY1pXbT5mN3cJdedqWM5")
                 "connect" -> { address = null; Phase.Ready }
                 else -> Phase.Ready
             }
@@ -364,7 +365,10 @@ class TapPopupActivity : ComponentActivity() {
             val result = try {
                 Payments.pay(wallet, payer, req, stage = { phase = Phase.Working(it) }, log = { Log.i(TAG, it) })
             } catch (e: Exception) {
-                PayResult.Error("Something went wrong", "Nothing was sent. ${e.message ?: ""}".trim())
+                // The exception goes to the log, not onto the screen: `e.message` is the
+                // machinery talking, and ui/PORT.md §7 asks for what happened to the money.
+                Log.e(TAG, "pay threw", e)
+                PayResult.Error("Nothing was sent", "That payment stopped before it went out. Tap again.")
             }
             phase = when (result) {
                 is PayResult.Sent -> {
