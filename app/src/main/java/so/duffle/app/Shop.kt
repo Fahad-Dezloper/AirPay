@@ -1,5 +1,6 @@
 package so.duffle.app
 
+import java.math.BigDecimal
 import org.json.JSONObject
 
 /**
@@ -117,7 +118,21 @@ object Shop {
         /** When this app stops trusting the price. See [QUOTE_LIFE_MS]. */
         val quotedAt: Long = System.currentTimeMillis(),
     ) {
-        val shown: String get() = "%.2f %s".format(amount / 1_000_000.0, currency)
+        /**
+         * What it cost, written once and stored — `Orders.Order.paid` keeps this exact string
+         * and the receipt renders it at [Type.heading].
+         *
+         * It was `"%.2f %s".format(amount / 1_000_000.0, currency)`: three faults in one line,
+         * invisible until §4 put the figure at heading size. It **rounded half-up**, so a price
+         * the buyer was charged could be written a hundredth lower than it was; it went through
+         * `Double`, which cannot hold a decimal cent exactly; and `format` without a locale
+         * writes the JVM default's separators, so the one figure the receipt exists for was the
+         * only figure in the app not written the way the phone writes numbers. [Money] cuts
+         * rather than rounds, stays in [BigDecimal], and follows the phone.
+         */
+        val shown: String get() = Money.token(
+            BigDecimal.valueOf(amount).movePointLeft(USDC_DECIMALS), currency,
+        )
         val expired get() = System.currentTimeMillis() - quotedAt > QUOTE_LIFE_MS
     }
 
