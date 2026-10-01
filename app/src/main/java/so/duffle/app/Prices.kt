@@ -59,42 +59,19 @@ object Prices {
     // rather than because somebody remembered to add it to a list.
 
     /**
-     * A day of prices for a token, or null when there is none to be had.
+     * SOL's day of prices, or null when there is none to be had.
      *
-     * **Only SOL has one.** A devnet mint has no market, no history and therefore no line to
-     * draw — and a flat or invented sparkline beside a balance is a claim about price movement
-     * that nobody made. Cards without history say so by not drawing one.
+     * **Kept for its existing callers only.** The day of a token's price is now [MarketDay]'s
+     * job, per mint rather than SOL-only, and the CoinGecko client that used to live here moved
+     * there with it: one copy of the thinning, the five-minute cache and the rate-limit handling
+     * rather than two that can drift.
      *
-     * Roughly five-minute samples over 24h, thinned to what a 90dp-wide chart can show.
+     * This wrapper flattens three answers into two, which is exactly what the token cards must
+     * not do — "no day" and "could not ask" render differently (§3.5). New callers want
+     * [Market.quotes] or [MarketDay.of] and the [MarketDay.Day] they return.
      */
-    private var series: Pair<Long, List<Double>>? = null
-
-    suspend fun solDay(): List<Double>? {
-        series?.takeIf { System.currentTimeMillis() - it.first < TTL_MS }?.let { return it.second }
-        val fresh = withContext(Dispatchers.IO) { fetchDay() } ?: return series?.second
-        series = System.currentTimeMillis() to fresh
-        return fresh
-    }
-
-    private fun fetchDay(): List<Double>? = try {
-        val c = (URL("$HOST/coins/solana/market_chart?vs_currency=usd&days=1")
-            .openConnection() as HttpURLConnection).apply {
-            connectTimeout = 8_000; readTimeout = 8_000
-            setRequestProperty("Accept", "application/json")
-        }
-        if (c.responseCode != 200) null else {
-            val arr = JSONObject(c.inputStream.bufferedReader().use { it.readText() })
-                .getJSONArray("prices")
-            // Thinned: a hundred points on a 90dp line is a hundred points nobody can see.
-            val step = maxOf(1, arr.length() / 48)
-            (0 until arr.length() step step)
-                .map { arr.getJSONArray(it).getDouble(1) }
-                .takeIf { it.size >= 4 }
-        }
-    } catch (e: Exception) {
-        Log.i(TAG, "no history: ${e.message}")
-        null
-    }
+    suspend fun solDay(): List<Double>? =
+        (MarketDay.of(Market.WSOL) as? MarketDay.Day.Points)?.usd
 
     /** How much a series moved end to end, as a fraction. Null when there is nothing to compare. */
     fun change(series: List<Double>?): Double? {

@@ -200,10 +200,13 @@ internal object Type {
     val heading = step(Ui, 19, 24, 700, tracking = -0.2f)
     /** Screen and sheet titles, the success line. */
     val title = step(Ui, 24, 28, 700, tracking = -0.4f)
+    // Headings may tighten; NUMBERS NEVER DO (ui/PROJECT.md §3). `amount` and `display` were
+    // tracked -1 and -2 like the heading steps above them, and heavy tabular digits pulled that
+    // close were touching — which is the one thing tabular figures exist to prevent.
     /** The amount on a sheet, the rewards total. */
-    val amount = step(Figure, 40, 44, 700, tracking = -1f, tnum = true)
+    val amount = step(Figure, 40, 44, 700, tnum = true)
     /** The balance and the keypad amount. **A maximum** — nothing is larger. */
-    val display = step(Figure, 60, 64, 800, tracking = -2f, tnum = true)
+    val display = step(Figure, 60, 64, 800, tnum = true)
     /** Addresses, signatures, codes. */
     val mono = step(Mono, 13, 18, 500)
 }
@@ -508,6 +511,11 @@ internal fun FlowFigure(
     Row(modifier, verticalAlignment = Alignment.Bottom) {
         text.forEachIndexed { i, ch ->
             AnimatedContent(
+                // Each digit is aligned by ITS baseline, which is also what gives this Row a
+                // baseline to report upward. Without it `FlowFigure` has none, and a caller
+                // asking for `alignByBaseline()` gets silent nonsense — the balance's whole
+                // part dropped a line below its own cents.
+                modifier = Modifier.alignByBaseline(),
                 targetState = ch,
                 transitionSpec = {
                     val up = targetState > initialState

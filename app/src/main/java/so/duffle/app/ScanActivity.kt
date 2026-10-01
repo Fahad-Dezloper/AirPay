@@ -12,9 +12,10 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.view.CameraController
 import androidx.camera.view.LifecycleCameraController
+import androidx.camera.mlkit.vision.MlKitAnalyzer
 import androidx.camera.view.PreviewView
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -28,21 +29,25 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import com.google.mlkit.vision.barcode.BarcodeScannerOptions
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.barcode.common.Barcode
-import com.google.mlkit.vision.common.InputImage
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
@@ -68,7 +73,22 @@ class ScanActivity : ComponentActivity() {
     /** One code, once. Frames keep arriving after the first hit and each would open a screen. */
     private var handled = false
 
+    /** Where the code is on screen, in the preview's pixels. Kept after it leaves, to spring back from. */
+    private var code by mutableStateOf<Rect?>(null)
+    private var locked by mutableStateOf(false)
+
+    /** The text of the code the frame is on. Decided once, not once per frame. */
+    private var held: String? = null
+    private var misses = 0
+
     private val analyser: ExecutorService by lazy { Executors.newSingleThreadExecutor() }
+
+    // QR only: every other format is a model pass that can never produce a payment.
+    private val scanner by lazy {
+        BarcodeScanning.getClient(
+            BarcodeScannerOptions.Builder().setBarcodeFormats(Barcode.FORMAT_QR_CODE).build(),
+        )
+    }
 
     private val ask = registerForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
         granted = ok
@@ -87,14 +107,14 @@ class ScanActivity : ComponentActivity() {
                     Box(Modifier.fillMaxSize()) {
                         if (granted) CameraView()
 
-                        // Where to aim. An outline rather than a mask, because the scanner
-                        // reads the whole frame and a mask would claim otherwise.
-                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            Box(
-                                Modifier.size(248.dp)
-                                    .border(2.dp, Color(0xCCFFFFFF), RoundedCornerShape(28.dp)),
-                            )
-                        }
+                        // Not where to aim — there is nowhere to aim. The whole picture is
+                        // read, and this frame goes to wherever the code turns out to be.
+                        // Laid over the preview edge to edge, so the code's position in the
+                        // preview is its position here with no conversion.
+                        val lock by animateFloatAsState(
+                            if (locked) 1f else 0f, ScanFrameSpec.lockSpring(), label = "scanLock",
+                        )
+                        ScanFrame(code, locked, lock, Modifier.fillMaxSize())
 
                         Column(
                             Modifier.align(Alignment.TopStart).statusBarsPadding()
@@ -105,10 +125,18 @@ class ScanActivity : ComponentActivity() {
                             // between two steps, and §2 makes Bricolage the wordmark's face
                             // alone; a screen heading borrowing it made this look like a
                             // second logo.
-                            Text("Scan any QR", color = Color.White, style = Type.title)
+                            // The instructions step back once the frame has hold of a code:
+                            // they have been followed. A problem is the opposite — it is about
+                            // the code being held, so it stays.
+                            val words = if (problem != null) 1f else (1f - lock).coerceIn(0f, 1f)
+                            Text(
+                                "Scan any QR", color = Color.White, style = Type.title,
+                                modifier = Modifier.alpha(words),
+                            )
                             Spacer(Modifier.height(Space.tight))
                             Text(
                                 problem ?: "Point it at a Solana Pay code or a wallet address.",
+                                modifier = Modifier.alpha(words),
                                 // D.Danger is the FILL, and on this ground that is right: the
                                 // inks are darkened to carry on WHITE and would disappear over
                                 // a camera picture. #FF8A80 was an invented colour in neither
@@ -152,6 +180,7 @@ class ScanActivity : ComponentActivity() {
     override fun onDestroy() {
         super.onDestroy()
         analyser.shutdown()
+        scanner.close()
     }
 
     @Composable
@@ -169,47 +198,91 @@ class ScanActivity : ComponentActivity() {
                     // the same binding with none of that, and owns the camera lifecycle too.
                     val controller = LifecycleCameraController(ctx)
                     controller.setEnabledUseCases(CameraController.IMAGE_ANALYSIS)
-                    val scanner = BarcodeScanning.getClient()
                     controller.setImageAnalysisBackpressureStrategy(
                         // Only the newest frame matters. A queue means decoding pictures of
                         // where the phone used to be pointing.
                         ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST,
                     )
-                    controller.setImageAnalysisAnalyzer(analyser) { proxy ->
-                        val media = proxy.image
-                        if (media == null) {
-                            proxy.close()
-                            return@setImageAnalysisAnalyzer
-                        }
-                        val image = InputImage.fromMediaImage(media, proxy.imageInfo.rotationDegrees)
-                        scanner.process(image)
-                            .addOnSuccessListener { codes ->
-                                codes.firstOrNull { it.format == Barcode.FORMAT_QR_CODE }
-                                    ?.rawValue
-                                    // Back to the main thread: this opens a screen.
-                                    ?.let { raw ->
-                                        post {
-                                            // A camera loop must not be able to kill the app.
-                                            // It runs on whatever a stranger printed on a wall,
-                                            // and the one time this did throw — an MWA
-                                            // registration at the wrong point in the lifecycle
-                                            // — the crash dialog was the only thing the user
-                                            // saw. Still logged, so a real bug stays visible.
-                                            runCatching { onCode(raw) }.onFailure { e ->
-                                                Log.e(TAG, "reading that code failed", e)
-                                                problem = "That code didn't read. Try again, or ask for the address."
-                                            }
-                                        }
-                                    }
-                            }
-                            // Always, and only once the model is done with the frame — closing
-                            // the proxy early starves the camera and the preview freezes.
-                            .addOnCompleteListener { proxy.close() }
-                    }
+                    // MlKitAnalyzer rather than calling the scanner by hand, for one reason:
+                    // VIEW_REFERENCED. The model sees the sensor's picture — rotated, and
+                    // cropped differently from the FILL_CENTER preview — and this hands the
+                    // corners back already mapped onto the preview, which is the only place
+                    // the frame is drawn. It also closes each frame itself once the model is
+                    // done with it. Answers arrive on the main thread: they move UI state.
+                    controller.setImageAnalysisAnalyzer(
+                        analyser,
+                        MlKitAnalyzer(
+                            listOf(scanner),
+                            ImageAnalysis.COORDINATE_SYSTEM_VIEW_REFERENCED,
+                            ContextCompat.getMainExecutor(ctx),
+                        ) { result -> onFrame(result.getValue(scanner)) },
+                    )
                     controller.bindToLifecycle(owner)
                     this.controller = controller
                 }
             },
+        )
+    }
+
+    /**
+     * One answer from the model, for one camera frame — usually "nothing here".
+     *
+     * Two separate jobs. Following the code is immediate and unconditional: any QR at all gets
+     * the frame, because the frame says "I can see this", not "I can pay this". Deciding what
+     * the code means happens once per sighting and a beat later, so the person sees the frame
+     * arrive before the screen changes under them.
+     */
+    private fun onFrame(codes: List<Barcode>?) {
+        val seen = codes.orEmpty().mapNotNull { c ->
+            val raw = c.rawValue ?: return@mapNotNull null
+            val at = boundsOf(c) ?: return@mapNotNull null
+            raw to at
+        }
+        // Two codes in shot: stay on the one already held, otherwise take the biggest, which
+        // is the one being held up rather than the poster behind it.
+        val hit = seen.firstOrNull { it.first == held } ?: seen.maxByOrNull { it.second.width * it.second.height }
+
+        if (hit == null) {
+            // One blurred frame is not the code leaving. Letting go on the first miss makes
+            // the frame flap between the code and the middle with every shake of the hand.
+            if (locked && ++misses > MISSES_TO_LET_GO) {
+                locked = false
+                held = null
+            }
+            return
+        }
+        misses = 0
+        code = hit.second
+        locked = true
+
+        val raw = hit.first
+        if (raw == held) return
+        held = raw
+        Haptics.select(this)
+        lifecycleScope.launch {
+            delay(HOLD_MS)
+            // Swept past rather than pointed at: it was gone before the frame settled.
+            if (held != raw) return@launch
+            // A camera loop must not be able to kill the app. It runs on whatever a stranger
+            // printed on a wall, and the one time this did throw — an MWA registration at the
+            // wrong point in the lifecycle — the crash dialog was the only thing the user saw.
+            // Still logged, so a real bug stays visible.
+            runCatching { onCode(raw) }.onFailure { e ->
+                Log.e(TAG, "reading that code failed", e)
+                problem = "That code didn't read. Try again, or ask for the address."
+            }
+        }
+    }
+
+    /** The box round a code's four corners, which is tighter than ML Kit's own when it is tilted. */
+    private fun boundsOf(c: Barcode): Rect? {
+        val pts = c.cornerPoints
+        if (pts.isNullOrEmpty()) return c.boundingBox?.let {
+            Rect(it.left.toFloat(), it.top.toFloat(), it.right.toFloat(), it.bottom.toFloat())
+        }
+        return Rect(
+            pts.minOf { it.x }.toFloat(), pts.minOf { it.y }.toFloat(),
+            pts.maxOf { it.x }.toFloat(), pts.maxOf { it.y }.toFloat(),
         )
     }
 
@@ -298,6 +371,12 @@ class ScanActivity : ComponentActivity() {
 
     companion object {
         private const val TAG = "AirPayScan"
+
+        /** Telegram's number: more than four empty frames in a row before the frame lets go. */
+        private const val MISSES_TO_LET_GO = 4
+
+        /** Long enough for the lock spring to land, short enough not to feel like a wait. */
+        private const val HOLD_MS = 350L
         fun intent(context: Context) = Intent(context, ScanActivity::class.java)
     }
 }

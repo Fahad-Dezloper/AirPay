@@ -37,6 +37,9 @@ android {
         buildConfigField("String", "FIREBASE_API_KEY", local("firebase.apiKey"))
         buildConfigField("String", "FIREBASE_PROJECT_ID", local("firebase.projectId"))
         buildConfigField("String", "FIREBASE_SENDER_ID", local("firebase.senderId"))
+        // Live token prices come from Pyth's keyed Hermes gateway. Blank on a clone with no key,
+        // which switches Pyth off and prices from Jupiter alone — see Pyth.configured.
+        buildConfigField("String", "PYTH_API_KEY", local("pyth.apiKey"))
     }
     buildTypes {
         getByName("debug") { buildConfigField("boolean", "PREVIEWS", "true") }
@@ -86,9 +89,19 @@ dependencies {
     // which does the decoding on-device — no network, and no image leaves the phone.
     implementation("androidx.camera:camera-camera2:1.6.0")
     implementation("androidx.camera:camera-view:1.6.0")
+    // Hands ML Kit's answers back in the preview's own coordinates, so the frame on screen can
+    // be drawn where the code actually is without redoing the sensor-to-view maths by hand.
+    implementation("androidx.camera:camera-mlkit-vision:1.6.0")
     implementation("com.google.mlkit:barcode-scanning:17.3.0")
     // ML Kit reads QR codes but cannot write one, and the receive sheet has to draw ours.
     implementation("com.google.zxing:core:3.5.3")
+
+    // Token logos come from whatever host a mint lists, so they are loaded at runtime.
+    implementation("io.coil-kt:coil-compose:2.7.0")
+    // Many token logos are SVG — Jupiter serves USDT's as logo.svg. Coil decodes raster only
+    // without this, so those tokens silently fell back to a letter on a hashed colour and
+    // looked like tokens with no logo at all.
+    implementation("io.coil-kt:coil-svg:2.7.0")
     testImplementation("junit:junit:4.13.2")
     // Android stubs org.json in unit tests, so JSONObject.put() throws "not mocked".
     // The real implementation makes the wire-format tests run on the JVM.

@@ -177,6 +177,10 @@ class MainActivity : ComponentActivity() {
     private var holdings by mutableStateOf<List<Tokens.Holding>>(emptyList())
     /** What the market says about each held mint: verified, and what it is worth. */
     private var market by mutableStateOf<Map<String, Market.Info>>(emptyMap())
+
+    // The token cards need a day of prices and an icon per mint, not just a price, so they take
+    // `Market.Quote`. `market` stays because other callers only want the price.
+    private var quotes by mutableStateOf<Map<String, Market.Quote>>(emptyMap())
     /** Every holding priced and added up — the figure under "Total balance". */
     private var totalUsd by mutableStateOf<Double?>(null)
     /** What this wallet has earned, for the strip on the home page. */
@@ -600,9 +604,14 @@ class MainActivity : ComponentActivity() {
             if (connected == addr && h != null) {
                 // Ask the market about everything held, in one call, before drawing any of it.
                 // SOL is asked about as wrapped SOL, which is how it is priced.
-                val info = Market.of(h.map { it.mint ?: Market.WSOL })
+                // One call for every mint held — price, icon and a day each. `quotes` carries
+                // the day and the icon the cards draw; `info` is the same answer in the shape
+                // the rest of this file already reads.
+                val q = Market.quotes(h.map { it.mint ?: Market.WSOL })
+                val info = q.mapValues { (_, v) -> Market.Info(v.verified ?: false, v.usd, v.icon) }
                 if (connected != addr) return@launch
                 market = info
+                quotes = q
                 // Summed once, here, where both the balances and the prices are in hand.
                 val priced = h.mapNotNull { t ->
                     info[t.mint ?: Market.WSOL]?.usdPrice?.let { u ->
@@ -611,13 +620,34 @@ class MainActivity : ComponentActivity() {
                 }
                 totalUsd = if (priced.isEmpty()) null else priced.sum()
                 holdings = h.filter { t ->
-                    // SOL always. Everything else has to be a token Jupiter recognises —
-                    // which is what keeps airdropped rubbish out of a list of money.
+                    // SOL always. Everything else has to be a token Jupiter both recognises
+                    // AND has a logo for — which is what keeps airdropped rubbish out of a
+                    // list of money. A mint with no icon draws as a letter on a hashed
+                    // colour, and user call 2026-10-01: an unofficial or picture-less token
+                    // should not be on this row at all.
                     //
-                    // An empty map means the lookup failed rather than that nothing is
+                    // An empty map means the lookup FAILED rather than that nothing is
                     // verified, so nothing is hidden on a dropped connection: an empty token
-                    // list would look exactly like a wallet that had been emptied.
-                    t.isSol || info.isEmpty() || info[t.mint]?.verified == true
+                    // list would look exactly like a wallet that had been emptied. That is
+                    // why the whole test is skipped when the map is empty rather than each
+                    // token failing it individually.
+                    val known = info[t.mint]
+                    t.isSol || info.isEmpty() ||
+                        (known?.verified == true && !known.icon.isNullOrBlank())
+                }.sortedBy { t ->
+                    // Dust goes last. A wallet collects tokens worth a fraction of a cent, and
+                    // they were taking the first card in the row ahead of the money. Dust is
+                    // "worth less than the smallest unit fiat can show" — the same test
+                    // Money uses to decide whether to print "<$0.01" rather than a figure —
+                    // and a token with no market at all counts as dust too, since there is no
+                    // amount to compare.
+                    //
+                    // `sortedBy` is stable, so this only partitions: within each group the
+                    // order the chain gave is untouched.
+                    val worth = info[t.mint ?: Market.WSOL]?.usdPrice?.let { u ->
+                        java.math.BigDecimal.valueOf(t.units, t.decimals).multiply(java.math.BigDecimal(u.toString()))
+                    }
+                    if (worth != null && !Money.cutsToZero(worth, 2)) 0 else 1
                 }
             }
         }
@@ -664,6 +694,10 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Let the day-of-prices cache outlive the process. Without it every cold start
+        // re-asked CoinGecko for a day per token, which on the free tier starts answering 429
+        // and leaves the token row with no lines at all.
+        MarketDay.attach(this)
         installCrashGuard()
         wallet = Wallet(this)
         connected = wallet.address   // a session persisted from last launch
@@ -917,11 +951,10 @@ class MainActivity : ComponentActivity() {
                         name = { addr -> known0.firstOrNull { it.address == addr }?.label ?: "Someone" },
                     )
 
-                    // Rows no thread can show: a request we asked before peers were recorded,
-                    // or either side of one with somebody who is not in contacts.
-                    val known = contacts.all().map { it.address }.toSet()
-                    val orphans = toPay.count { it.request.recipient !in known } +
-                        owed.count { it.peer == null || it.peer !in known }
+                    // `orphans` was here — a count of rows no thread can show, used only to
+                    // decide whether §3 offered an "All activity" link. §4.1 removed that link,
+                    // so the count had nothing left to answer. The rows it counted are still
+                    // reachable: the Requests tab lists them.
                     Column(
                         Modifier.fillMaxSize()
                             .then(if (tab == Tab.TAP && !cards && !checking && thread == null)
@@ -1269,8 +1302,7 @@ class MainActivity : ComponentActivity() {
                             // Lead, not a section gap: these cards are what the balance is made of.
                             Spacer(Modifier.height(Space.lead))
                             Tag("2d")
-                            val rate by produceState<Double?>(initialValue = null) { value = Prices.solUsd() }
-                            TokenBadges(holdings, rate, market) { mint ->
+                            TokenBadges(holdings, quotes) { mint ->
                                 clipboard.setText(AnnotatedString(mint))
                                 Haptics.tick(this@MainActivity)
                                 push("— copied $mint")
@@ -1286,10 +1318,6 @@ class MainActivity : ComponentActivity() {
                                     toPay.count { it.payable && it.request.recipient == addr } +
                                         owed.count { it.live && !it.rejected && it.peer == addr }
                                 },
-                                // Only offered when something genuinely cannot be reached
-                                // through a person: a request served before peers were
-                                // recorded, or one from someone no longer in contacts.
-                                onAll = if (orphans > 0) ({ tab = Tab.REQUESTS }) else null,
                                 onPick = { c -> thread = c },
                             )
                         }
@@ -1862,6 +1890,7 @@ fun ago(at: Long, now: Long = System.currentTimeMillis()): String {
 }
 
 
+
 /**
  * One shape for every piece of news the app has to deliver.
  *
@@ -1899,53 +1928,6 @@ private fun Banner(
     }
 }
 
-@Composable
-private fun WalletRow(
-    address: String?,
-    busy: Boolean,
-    onDisconnect: () -> Unit,
-    onConnect: () -> Unit,
-) {
-    // No card behind it (no containers), and "No wallet connected" is INK rather than red:
-    // having no wallet is an ordinary starting point, not a transaction the chain refused.
-    Row(
-        Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(vertical = Space.row),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        HiIcon(Hi.Wallet, D.Quiet, 20.dp)
-        Spacer(Modifier.width(Space.inline))
-        Column(Modifier.weight(1f)) {
-            Text(
-                address?.let { "${it.take(6)}…${it.takeLast(4)}" } ?: "No wallet connected",
-                color = D.Black,
-                // An address is an identifier and reads in mono; the sentence does not.
-                style = if (address == null) Type.body else MonoBody,
-            )
-        }
-        if (address == null) {
-            Box(
-                Modifier.clip(RoundedCornerShape(12.dp)).background(D.Blue)
-                    .clickable(enabled = !busy, onClick = onConnect)
-                    .heightIn(min = 48.dp).padding(horizontal = 16.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                // 19sp bold is the smallest size white on D.Blue passes at (3.30:1 counts only
-                // as large text). The old 14sp label failed.
-                Text(if (busy) "…" else "Connect", color = D.White, style = Type.heading)
-            }
-        } else {
-            // The escape hatch for a session the wallet no longer honours. Without it the only
-            // cure for a stale token is reinstalling the app.
-            Box(
-                Modifier.clip(RoundedCornerShape(10.dp))
-                    .clickable(enabled = !busy, onClick = onDisconnect)
-                    .heightIn(min = 48.dp).padding(horizontal = 8.dp),
-                contentAlignment = Alignment.Center,
-            ) { Text("Disconnect", color = D.Quiet, style = Type.body) }
-        }
-    }
-}
-
 /**
  * The wallet you are spending from, what it is worth, and the other linked wallets behind it.
  *
@@ -1956,6 +1938,21 @@ private fun WalletRow(
  * End side: the interactive card pile, brand logos showing on each card's lip, floating over
  * the space the balance is not using.
  */
+/**
+ * How far the currency sign is lifted, as a fraction of its own size.
+ *
+ * The sign is CENTRED on the figures, not sat on their baseline. From the fonts: the centre of
+ * a Geist 800 digit is 0.355em above the baseline, the centre of Bricolage's "$" is 0.329em of
+ * its own size, and the sign is half the balance — so lifting it 0.381em of ITS size puts the
+ * two centres level. In em, so it holds when the balance shrinks to fit or the text scale grows.
+ *
+ * This only works because all three runs share a baseline (`alignByBaseline`), which in turn
+ * only works because [FlowFigure] now reports one. Bottom-aligned instead, the same shift left
+ * the sign 32px low — measured off a screenshot, because this is not a difference the eye can
+ * judge reliably: an earlier reading of these same two builds got it backwards.
+ */
+private const val SIGN_LIFT = 0.381f
+
 @Composable
 private fun BalanceCard(
     /** Everything held, priced and summed. Null when nothing could be priced. */
@@ -1999,6 +1996,10 @@ private fun BalanceCard(
                     .padding(vertical = 2.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                // No no-wallet branch. Onboarding makes you pick a wallet before Home can
+                // open, so this screen has no such state to draw (ui/PORT-2026-10-01.md §1.4).
+                // Tap, Rewards, Referrals, Offers and the drawer keep theirs — they can be
+                // reached in other ways.
                 if (wallet != null) {
                     // No coloured disc behind it: the icon is its own tile with its own
                     // background, so a circle of the same colour underneath only showed as a
@@ -2020,12 +2021,6 @@ private fun BalanceCard(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
-                } else {
-                    // No grey disc behind it: the mark at 16, the icon size that sits beside a
-                    // caption, and the words in the quiet ink — never red.
-                    HiIcon(Hi.Wallet, D.Quiet, 16.dp)
-                    Spacer(Modifier.width(Space.inline))
-                    Text("No wallet connected", color = D.Quiet, style = Type.caption)
                 }
             }
 
@@ -2072,33 +2067,50 @@ private fun BalanceCard(
             // The face is `Figure` (Geist), which is what `Type.display` is set in; the
             // currency symbol takes `CurrencyFace`, the Bricolage subset that answers for
             // `$ ₹ €`. Both were Bricolage-the-display-face, which is the wordmark's font.
-            Row(verticalAlignment = Alignment.Bottom) {
+            Row(verticalAlignment = Alignment.Bottom) { // EXPERIMENT: alignByBaseline
+                // The sign is CENTRED on the figures, not sat on their baseline. Measured
+                // from the fonts: the centre of a Geist 800 digit is 0.355em above the
+                // baseline, the centre of Bricolage's "$" is 0.329em of its own size, and the
+                // sign is half the balance — so lifting it 0.381em of ITS size puts the two
+                // centres level. In em, so it holds when the balance shrinks to fit or the
+                // text scale grows. Gap to the digits is 8 (ui/PORT-2026-10-01.md §2.1).
                 if (parts != null && parts.symbolFirst) {
                     Text(
-                        parts.symbol, color = D.Quiet, fontSize = 30.sp,
+                        buildAnnotatedString {
+                            withStyle(SpanStyle(baselineShift = BaselineShift(SIGN_LIFT))) {
+                                append(parts.symbol)
+                            }
+                        },
+                        color = D.Quiet, fontSize = 30.sp,
                         fontWeight = FontWeight.Bold, fontFamily = CurrencyFace, style = Figures,
-                        modifier = Modifier.padding(bottom = 10.dp, end = 3.dp),
+                        modifier = Modifier.alignByBaseline().padding(end = 8.dp),
                     )
                 }
                 FlowFigure(
                     text = parts?.whole ?: bare ?: "—",
                     fontSize = 60.sp, color = D.Black,
                     fontWeight = FontWeight.ExtraBold, fontFamily = Figure,
+                    modifier = Modifier.alignByBaseline(),
                 )
                 parts?.fraction?.takeIf { it.isNotEmpty() }?.let { frac ->
                     FlowFigure(
                         text = frac,
                         fontSize = 26.sp, color = D.Quiet,
                         fontWeight = FontWeight.Bold, fontFamily = Figure,
-                        modifier = Modifier.padding(bottom = 6.dp),
+                        modifier = Modifier.alignByBaseline(),
                     )
                 }
                 // "2,84 €" — the locale puts it after the figures, so the app does too.
                 if (parts != null && !parts.symbolFirst) {
                     Text(
-                        parts.symbol, color = D.Quiet, fontSize = 30.sp,
+                        buildAnnotatedString {
+                            withStyle(SpanStyle(baselineShift = BaselineShift(SIGN_LIFT))) {
+                                append(parts.symbol)
+                            }
+                        },
+                        color = D.Quiet, fontSize = 30.sp,
                         fontWeight = FontWeight.Bold, fontFamily = CurrencyFace, style = Figures,
-                        modifier = Modifier.padding(bottom = 10.dp, start = 3.dp),
+                        modifier = Modifier.alignByBaseline().padding(start = 8.dp),
                     )
                 }
                 if (parts == null && sol != null) {
@@ -2158,7 +2170,11 @@ private fun BalanceCard(
                                 ambientColor = Color(0x14000000),
                             )
                             .clip(cardShape)
-                            .background(c.colour)
+                            // `c.fill`, so the Seeker's card runs black to mint. Painted
+                            // BEFORE the border and over the whole clipped shape, so the
+                            // gradient reaches the outer edge — under the 1dp border rather
+                            // than inside it, which is where a black hairline appeared.
+                            .background(c.fill)
                             .border(1.dp, Color.White.copy(alpha = 0.20f), cardShape)
                             // Opens the wallets screen rather than switching on the spot.
                             // A tap that silently changed which wallet you are about to spend
@@ -2172,7 +2188,9 @@ private fun BalanceCard(
                             .padding(start = 8.dp, top = 12.dp),
                         contentAlignment = Alignment.TopStart,
                     ) {
-                        WalletLogo(c, 20.dp)
+                        // 28 at corner 8, up from 20/6. The card's padding is unchanged, so
+                        // 8 + 28 still fits inside the 35dp sliver of each card that shows.
+                        WalletLogo(c, 28.dp, 8.dp)
                     }
                 }
             }
@@ -2194,168 +2212,7 @@ private fun BalanceCard(
  * scheme to Seeker Wallet — so the app has to ask. Real labels and real icons, because a row
  * saying "app.phantom" is a worse chooser than the one we are replacing.
  */
-/**
- * §2d — what is actually held, token by token.
- *
- * A dark head carrying the token's logo and a day of its price, over a white body with the
- * name, the unit price, the amount held and what that is worth.
- *
- * **The chart and the price are only drawn for a token that has a market.** A devnet mint has
- * no price history and therefore no line, and no price to put in the pill — a flat or invented
- * sparkline beside a balance is a claim about price movement nobody made. Those cards keep the
- * head and the logo and simply have nothing in the space, which is the honest shape of
- * "not traded".
- *
- * Every card is the same size. The height used to follow the content and the row came out
- * ragged; the slots are fixed now and the content fits them.
- */
-@Composable
-private fun TokenBadges(
-    holdings: List<Tokens.Holding>,
-    rate: Double?,
-    market: Map<String, Market.Info>,
-    onCopy: (String) -> Unit,
-) {
-    if (holdings.isEmpty()) return
-    // One day of SOL, fetched once for the row rather than per card.
-    val day by produceState<List<Double>?>(initialValue = null) { value = Prices.solDay() }
 
-    // The row runs to both screen edges, not to this column's gutter, so a card scrolling out
-    // slides off the SCREEN instead of being clipped by an invisible margin — and the inset is
-    // put back inside the scroller, so the first and last card still sit on the gutter at rest.
-    val screen = LocalConfiguration.current.screenWidthDp.dp
-    Row(
-        Modifier.offset(x = -Space.gutter).width(screen)
-            .horizontalScroll(rememberScrollState())
-            .padding(horizontal = Space.gutter, vertical = 4.dp),
-        horizontalArrangement = Arrangement.spacedBy(Space.inline),
-    ) {
-        holdings.forEach { h ->
-            // One price source for every token. The old rules priced SOL live, pinned a short
-            // list of stablecoins at a dollar and gave up on everything else — so SKR, a real
-            // token with real liquidity, read "No market price" purely for not being on a list.
-            val unit = market[h.mint ?: Market.WSOL]?.usdPrice
-                ?: if (h.isSol) rate else null
-            val worth = remember(h.mint, h.units, unit) {
-                unit?.let { java.math.BigDecimal.valueOf(h.units, h.decimals).toDouble() * it }
-            }
-            val series = if (h.isSol) day else null
-            val move = Prices.change(series)
-            // What one of them costs, from the market rather than from a list somebody
-            // maintains. A mint with no market has no price, and no price is shown — an
-            // invented one beside a real balance is worse than a gap.
-
-            val press = remember { MutableInteractionSource() }
-
-            // A shadow, because the card body is white on a white page: without an edge the
-            // head read as a dark block with loose text under it rather than one object.
-            Box(Modifier.then(PressScale(press)).width(190.dp).cardShadow(24.dp)) {
-              Column(
-                Modifier.fillMaxWidth()
-                    .clip(RoundedCornerShape(24.dp)).background(D.White)
-                    .clickable(press, indication = null) { onCopy(h.mint ?: "SOL") },
-              ) {
-                // The logo sits INSIDE the head, flush into its top-left corner, and the head
-                // is exactly as tall as the logo. It used to stand proud of the head with a
-                // 16dp gap above; that read as two objects stacked rather than one head.
-                Box(
-                    Modifier.fillMaxWidth().height(58.dp)
-                        .clip(RoundedCornerShape(24.dp)).background(D.Night),
-                ) {
-                    Box(Modifier.align(Alignment.TopStart)) {
-                        TokenImage(h, 58.dp, RoundedCornerShape(14.dp))
-                    }
-                    if (series != null && series.size > 2) {
-                        Sparkline(
-                            series,
-                            up = (move ?: 0.0) >= 0,
-                            modifier = Modifier.align(Alignment.CenterEnd)
-                                .padding(start = 76.dp, end = 16.dp, top = 14.dp, bottom = 14.dp)
-                                .fillMaxSize(),
-                        )
-                    }
-                }
-
-                Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 16.dp)) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                    ) {
-                        val named = h.name.isNotBlank() &&
-                            !h.name.equals(h.symbol, true) && !h.name.startsWith(h.symbol)
-                        Text(
-                            if (named) h.name else "Unnamed",
-                            color = D.Quiet, style = Type.caption,
-                            maxLines = 1, modifier = Modifier.weight(1f, fill = false),
-                        )
-                        // What one of them costs, not what it did today. The day's move is
-                        // already in the line above it, in colour; repeating it as a number
-                        // said the same thing twice and left the price nowhere on the card.
-                        if (unit != null) {
-                            Spacer(Modifier.width(8.dp))
-                            Text(
-                                currencyStyled(Money.unitPrice(java.math.BigDecimal(unit.toString()), "USD")),
-                                color = D.White, style = Type.micro.figure(), maxLines = 1,
-                                modifier = Modifier.clip(RoundedCornerShape(999.dp))
-                                    .background(D.Night)
-                                    .padding(horizontal = 8.dp, vertical = 2.dp),
-                            )
-                        }
-                    }
-
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        "${h.shown} ${h.symbol}", color = D.Black,
-                        style = Type.title.figure(), maxLines = 1,
-                    )
-                    Spacer(Modifier.height(Space.tight))
-                    Text(
-                        // The "$" used to be concatenated here, outside Money, so a dust
-                        // worth rendered "$<0.01" — the symbol on the wrong side of the
-                        // "less than". Money.fiat places it: "<$0.01".
-                        currencyStyled(
-                            if (worth != null) Money.fiat(java.math.BigDecimal(worth.toString()), "USD")
-                            else "No market price"
-                        ),
-                        color = D.Quiet,
-                        // A worth is money. "No market price" is a sentence, so it keeps the
-                        // words face — and it is never "$0.00", which would be a false claim.
-                        style = if (worth != null) Type.caption.figure() else Type.caption,
-                        maxLines = 1,
-                    )
-                }
-              }
-            }
-        }
-    }
-}
-
-/**
- * A day of prices as one line, with the last point marked. Drawn, not charted — no axes.
- *
- * Rising is the success fill; falling is NEUTRAL grey. Red is only a transaction the chain
- * refused, and a price going down is not an error.
- */
-@Composable
-private fun Sparkline(series: List<Double>, up: Boolean, modifier: Modifier) {
-    val stroke = if (up) D.Success else D.Neutral
-    Canvas(modifier) {
-        val lo = series.min()
-        val hi = series.max()
-        val span = (hi - lo).takeIf { it > 0.0 } ?: 1.0
-        val dx = size.width / (series.size - 1)
-        fun y(v: Double) = (size.height * (1f - ((v - lo) / span).toFloat())).coerceIn(0f, size.height)
-
-        val path = Path().apply {
-            moveTo(0f, y(series[0]))
-            series.forEachIndexed { i, v -> if (i > 0) lineTo(i * dx, y(v)) }
-        }
-        // The wash under the line is gone: it was a tint, and the shape of the day was always
-        // the whole claim.
-        drawPath(path, stroke, style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round))
-        drawCircle(stroke, radius = 3.dp.toPx(), center = Offset(size.width, y(series.last())))
-    }
-}
 
 /**
  * A wallet's mark.
@@ -2724,216 +2581,6 @@ private fun WalletsScreen(
  * The brand is what a person recognises across a table — "the OnePlus", "the Seeker" — which
  * is the whole reason the payload carries it. A letter is the fallback, not the default.
  */
-/**
- * The people already met, under the wallet.
- *
- * It replaces both the dark "Send to" pill and the "hold your phone to theirs" panel. The pill
- * hid these behind three initials, and the panel explained a gesture to someone who has already
- * done it — this shows who can be paid and lets them be paid, which is what both were for.
- *
- * Each row names them the best way available: their `.sol` domain if they have one, since that
- * is the only one of the three they chose for themselves, then the phone's label, then nothing.
- * The address sits under it, short enough to recognise and too short to read out.
- */
-/**
- * What to call somebody, and how much of it anyone actually checked.
- *
- * Four kinds of name reach this app and exactly one of them is evidence. Collapsing them into a
- * single string is how a payments app ends up showing a stranger's chosen words with the same
- * confidence as a fact — so they are kept apart here, and drawn differently.
- *
- * In order of preference:
- *
- *  1. **[Kind.Yours]** — what you named them. Never crossed a radio, never a claim anyone made
- *     about themselves, written by you while they were standing in front of you.
- *  2. **[Kind.Verified]** — a `.skr` or `.sol` this phone resolved from the chain. Nobody can
- *     forge it, but nobody vetted who bought it either: it is unforgeable, not attested. The
- *     badge says this address owns that name, and must never be read as "this is that person".
- *  3. **[Kind.Claimed]** — the name their phone sent us. Useful for remembering who someone
- *     was; worthless for deciding whether to trust them.
- *  4. **[Kind.Anonymous]** — the address, shortened. Honest.
- *
- * [domain] is kept apart from [shown] on purpose: when you have renamed somebody who also owns
- * a domain, a row can show your name for them *and* what the chain said, rather than one
- * silently hiding the other.
- */
-private data class Called(
-    val shown: String,
-    /** The on-chain name, when there is one. The only field that earns a tick. */
-    val domain: String?,
-    val kind: Kind,
-    /**
-     * True when the name came from a *different* wallet vouching for this one ([Vouch]).
-     *
-     * Still a fact — the signature was checked and the name still came off the chain — but a
-     * different one: "this address belongs to whoever owns dezloper.skr" rather than "this
-     * address owns dezloper.skr". Worth saying out loud where money moves.
-     */
-    val borrowed: Boolean = false,
-) {
-    enum class Kind { Yours, Verified, Claimed, Anonymous }
-
-    /** True only when the chain answered. Drives the tick, and nothing else does. */
-    val verified: Boolean get() = domain != null
-}
-
-/**
- * Resolves a contact's name, asking the chain once per address.
- *
- * The lookup is mainnet and cached in [Names], so it settles quickly on a warm cache and never
- * blocks a row from drawing: it starts from what is known locally and upgrades in place when
- * the chain replies.
- */
-@Composable
-private fun rememberCalled(contact: Contact): Called {
-    val context = LocalContext.current
-    val found by produceState(initialValue = Names.Found(null, false), contact.address) {
-        // The link is re-verified on the way out of storage, so a tampered prefs file buys
-        // nothing: an unverifiable link reads back as no link at all.
-        value = Names.of(contact.address, Vouch.of(context, contact.address))
-    }
-    val domain = found.text
-    return remember(domain, found.borrowed, contact.yours, contact.label, contact.address) {
-        val claimed = contact.claimed()
-        val yours = contact.yours
-        when {
-            !yours.isNullOrBlank() -> Called(yours, domain, Called.Kind.Yours, found.borrowed)
-            domain != null -> Called(domain, domain, Called.Kind.Verified, found.borrowed)
-            !claimed.isNullOrBlank() -> Called(claimed, null, Called.Kind.Claimed, false)
-            else -> Called(contact.short, null, Called.Kind.Anonymous, false)
-        }
-    }
-}
-
-/**
- * A name with its provenance visible at a glance.
- *
- * The tick is the whole point: it appears for a chain-resolved name and for nothing else, so a
- * stranger can tell a fact from a claim without reading any help text. A name we were merely
- * told is drawn in the quiet colour for the same reason.
- */
-@Composable
-private fun NameLine(
-    called: Called,
-    modifier: Modifier = Modifier,
-    centred: Boolean = false,
-) {
-    Row(
-        modifier,
-        horizontalArrangement = if (centred) Arrangement.Center else Arrangement.Start,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        // The fourth tier is not a name at all, it is an address: mono, like every other
-        // address in the app, so the FACE is a fifth thing saying which tier this is. The
-        // size is the caption step for all four — it was 12, below the scale.
-        val anonymous = called.kind == Called.Kind.Anonymous
-        Text(
-            called.shown,
-            color = if (called.kind == Called.Kind.Claimed || anonymous) D.Quiet else D.Black,
-            style = if (anonymous) Type.mono else Type.caption,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f, fill = false),
-        )
-        if (called.verified) {
-            Spacer(Modifier.width(Space.tight))
-            // 16 is the icon size beside a caption, so the tick carries the line's own weight.
-            HiIcon(Hi.Verified, D.BlueInk, 16.dp)
-        }
-    }
-}
-
-@Composable
-private fun People(list: List<Contact>, waiting: (String) -> Int, onAll: (() -> Unit)?, onPick: (Contact) -> Unit) {
-    Column(Modifier.fillMaxWidth()) {
-        Row(
-            Modifier.fillMaxWidth().heightIn(min = 48.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text("PEOPLE", color = D.Quiet, style = Type.micro)
-            Spacer(Modifier.weight(1f))
-            // Anything whose payer or payee this phone never learned cannot be filed under a
-            // person, so the flat list stays reachable — but only when it holds something.
-            onAll?.let {
-                Box(
-                    Modifier.clip(RoundedCornerShape(8.dp)).clickable(onClick = it)
-                        .heightIn(min = 48.dp).padding(horizontal = 8.dp),
-                    contentAlignment = Alignment.Center,
-                ) { Text("All activity", color = D.BlueInk, style = Type.caption) }
-            }
-        }
-        Spacer(Modifier.height(Space.lead))
-        Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-            list.take(5).forEach { c ->
-                val called = rememberCalled(c)
-                val interaction = remember { MutableInteractionSource() }
-                Column(
-                    Modifier.width(66.dp).then(PressScale(interaction)).clip(RoundedCornerShape(14.dp))
-                        .clickable(interaction, indication = null) { onPick(c) }.padding(vertical = 4.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    Box(Modifier.size(54.dp), contentAlignment = Alignment.Center) {
-                        // The initial, because there is no picture of a person to show and a
-                        // stock silhouette would only pretend there was.
-                        //
-                        // A white disc with a hairline, and a 2dp blue ring for a verified
-                        // Seeker — the ring IS the Seeker mark now, which is why the corner
-                        // badge that used to sit below it is gone: one fact, one mark. The
-                        // letter is 0.38 of the disc, a fraction of the shape and not a step.
-                        Box(
-                            Modifier.fillMaxSize().clip(CircleShape).background(D.White)
-                                .border(
-                                    if (c.seeker) 2.dp else 1.5.dp,
-                                    if (c.seeker) D.Blue else D.Line,
-                                    CircleShape,
-                                ),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Text(called.shown.take(1).uppercase(),
-                                color = if (c.seeker) D.Black else D.Quiet,
-                                fontSize = (54 * 0.38f).sp, fontWeight = FontWeight.Bold)
-                        }
-                        // Their phone, small, in the corner: it says whose it is without
-                        // competing with the initial for the middle of the circle.
-                        Brand.look(c.brand)?.let { look ->
-                            Box(
-                                Modifier.align(Alignment.TopEnd).size(21.dp).clip(CircleShape)
-                                    .background(D.White).padding(1.5.dp).clip(CircleShape)
-                                    .background(look.colour),
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                if (look.picture) {
-                                    Image(painterResource(look.drawable), contentDescription = null,
-                                        modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
-                                } else {
-                                    HIcon(look.drawable, D.White, 12.dp)
-                                }
-                            }
-                        }
-                        // What is outstanding with this person, on this person. The home page
-                        // used to carry one "12 waiting" row for everybody, which said how much
-                        // was open and never with whom.
-                        val open = waiting(c.address)
-                        if (open > 0) {
-                            // On ink, not on blue: an 11sp white number on #008FFF is 3.30:1
-                            // and fails; on ink it is 12.46:1.
-                            Box(
-                                Modifier.align(Alignment.BottomStart).defaultMinSize(19.dp, 19.dp)
-                                    .clip(CircleShape).background(D.Black)
-                                    .padding(horizontal = 4.dp),
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                Text(if (open > 9) "9+" else "$open", color = D.White, style = CountStyle)
-                            }
-                        }
-                    }
-                    Spacer(Modifier.height(8.dp))
-                    NameLine(called, Modifier.fillMaxWidth(), centred = true)
-                }
-            }
-        }
-    }
-}
 
 /**
  * Everything that has ever passed between this phone and one person, as a conversation.
@@ -3557,28 +3204,6 @@ private fun EarnStrip(summary: Rewards.Summary?, onOpen: () -> Unit) {
     Text("Offers and rewards", color = D.Black, style = Type.heading)
 }
 
-/**
- * Rewards, offers, referrals — three ways in, side by side.
- *
- * Drawn rather than iconed, and square rather than round, because the obvious version of this
- * row is three flat circles and that is a shape people have already seen in every payments app.
- * The marks are built from AirPay's own vocabulary: the discs of a balance, the notch of a
- * ticket, two rings meeting the way the avatars do on a tap.
- */
-@Composable
-private fun EarnTiles(onRewards: () -> Unit, onOffers: () -> Unit, onReferrals: () -> Unit) {
-    // 20, not 10. With the tile's grey body gone, the gap is the only thing saying where one
-    // tile ends: 8 inside against 20 outside is x2.5, clear of the x2 the eye needs before it
-    // groups a label with its own mark instead of the one below it.
-    Row(
-        Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(20.dp),
-    ) {
-        EarnTile("Rewards", Mark.Coins, Modifier.weight(1f), onRewards)
-        EarnTile("Offers", Mark.Ticket, Modifier.weight(1f), onOffers)
-        EarnTile("Referrals", Mark.Rings, Modifier.weight(1f), onReferrals)
-    }
-}
 
 internal enum class Mark { Coins, Ticket, Rings, Signal, Screen, Receipt, Basket, Plane, Cup, Game, Dots, Play, Cinema }
 
@@ -4342,48 +3967,6 @@ private fun symbolFor(currency: String) = when (currency) {
     else -> "$currency "
 }
 
-/**
- * What can actually be bought, as tiles.
- *
- * The catalogue has 156 products in eight sections; a person opening this wants "top up my
- * phone", not a shop. So the sections are the doorway and the products live behind them —
- * and a section with nothing in it is not drawn at all, because a tile that opens an empty
- * shelf is worse than no tile.
- */
-@Composable
-private fun ShopTiles(sections: List<Shop.Section>, onOpen: (Shop.Section) -> Unit) {
-    val marks = mapOf(
-        "Phone" to Mark.Signal, "Streaming" to Mark.Play,
-        "Cinema" to Mark.Cinema, "Bills & wallets" to Mark.Receipt,
-        "Travel" to Mark.Plane, "Food" to Mark.Cup, "Shopping" to Mark.Basket,
-        "Games" to Mark.Game, "More" to Mark.Dots,
-    )
-    // Twelve, not eight. Splitting the old TV shelf took the count past eight, and a cap that
-    // silently drops the last shelves is how a whole category disappears without a trace.
-    val shown = sections.filter { it.products.isNotEmpty() }.take(12)
-    // 20 on both axes, for the reason [EarnTiles] gives: the gap is what groups a tile now
-    // that no box does.
-    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(20.dp)) {
-        // Four to a row, and the last row padded with empty weights rather than stretched —
-        // three wide tiles beside four narrow ones is the giveaway that a grid is faked.
-        shown.chunked(4).forEach { row ->
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(20.dp)) {
-                row.forEach { sec ->
-                    EarnTile(
-                        label = when (sec.title) {
-                            "TV & streaming" -> "TV"
-                            "Bills & wallets" -> "Bills"
-                            else -> sec.title
-                        },
-                        mark = marks[sec.title] ?: Mark.Basket,
-                        modifier = Modifier.weight(1f),
-                    ) { onOpen(sec) }
-                }
-                repeat(4 - row.size) { Spacer(Modifier.weight(1f)) }
-            }
-        }
-    }
-}
 
 /**
  * The hand-drawn category marks, on their own so a 38dp history row and a 34dp tile can use
@@ -4543,31 +4126,6 @@ internal fun MarkCanvas(mark: Mark, side: Dp, notch: Color = D.White, tint: Colo
     }
 }
 
-/**
- * One tile: a mark, a label, and space around them. Also the shop's tiles.
- *
- * The grey body is gone, and the padding that held it out went with it (ui/PORT.md §9) —
- * **the mark carries the tile** now, which is why it keeps the blue FILL: a drawn mark is one
- * of the three places a fill still belongs, and here it is the only colour in the grid. The
- * 18dp corner stays even with nothing to fill, because it is the shape the press scales.
- *
- * The height is the content — 34 + 8 + one 18sp caption line — which clears the 48dp touch
- * minimum on its own, so there is nothing left to pad.
- */
-@Composable
-private fun EarnTile(label: String, mark: Mark, modifier: Modifier, onClick: () -> Unit) {
-    val interaction = remember { MutableInteractionSource() }
-    Column(
-        modifier.then(PressScale(interaction)).clip(RoundedCornerShape(18.dp))
-            .clickable(interaction, indication = null, onClick = onClick),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center,
-    ) {
-        MarkCanvas(mark, 34.dp)
-        Spacer(Modifier.height(8.dp))
-        Text(label, color = D.Black, style = Type.caption)
-    }
-}
 
 /**
  * Everything waiting on someone, in one place: requests this phone can still pay, requests
@@ -5285,7 +4843,9 @@ private val MonoBody = Type.body.monospaced()
  * A count on a badge. Tabular, so 9 → 10 does not shift the disc, and without micro's label
  * tracking, which pushes a lone digit off centre.
  */
-private val CountStyle = Type.micro.copy(letterSpacing = 0.sp, fontFeatureSettings = "tnum")
+// `internal`: the header's unread badge and §3's waiting count are the same object — a
+// figure on a disc — and now live in different files.
+internal val CountStyle = Type.micro.copy(letterSpacing = 0.sp, fontFeatureSettings = "tnum")
 
 /**
  * The name this wallet carries, and how it got one.

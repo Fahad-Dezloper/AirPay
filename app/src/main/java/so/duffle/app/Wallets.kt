@@ -2,6 +2,8 @@ package so.duffle.app
 
 import android.content.Context
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.Brush
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -76,6 +78,29 @@ data class Linked(
             matches("ledger") -> Color(0xFF2C323B)
             matches("ultimate") -> Color(0xFF3F8CFF)
             else -> SPARE[(address.hashCode().toUInt() % SPARE.size.toUInt()).toInt()]
+        }
+
+    /**
+     * The card's fill in the fanned pile.
+     *
+     * A [Brush] rather than a [Color] because the Seeker's card is a gradient — black up to
+     * the mint at the bottom, the phone's own colour run. Every other wallet is its flat brand
+     * colour wrapped in a [SolidColor], so one call site paints them all.
+     *
+     * The gradient has to reach the card's OUTER edge: drawn inside the 1dp border instead, a
+     * black hairline showed along the bottom where the last stop stopped short.
+     */
+    val fill: Brush
+        get() = when {
+            matches("seeker", "solanamobile", "seed vault", ".skr") -> Brush.verticalGradient(
+                0f to Color(0xFF000000),
+                .18f to Color(0xFF00080D),
+                .38f to Color(0xFF00283B),
+                .60f to Color(0xFF007D9F),
+                .78f to Color(0xFF18C8D0),
+                1f to Color(0xFF7FFFE9),
+            )
+            else -> SolidColor(colour)
         }
 
     val iconRes: Int
