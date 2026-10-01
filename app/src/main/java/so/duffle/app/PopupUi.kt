@@ -251,9 +251,9 @@ internal fun PopupScreen(
     // (113 recompositions in three trips to the device page), and that was the stutter.
     fun dismissFraction() = if (sheetHeight > 0f) (offset.value / sheetHeight).coerceIn(0f, 1f) else 0f
 
-    // The tap's ripple: a ring spreading from where the phones touched, then fading.
-    val ripple = remember { Animatable(0f) }
-    LaunchedEffect(Unit) { ripple.animateTo(1f, tween(900)) }
+    // The tap's light only means one thing — two phones met — so a sheet opened by a push, a
+    // notification or the camera gets none. It used to draw a ring for every one of them.
+    val inPerson = cameFrom in InPerson
 
     CompositionLocalProvider(LocalTextStyle provides TextStyle(fontFamily = Ui)) {
     // Hosted here, at the top of the sheet, rather than around the form: nested inside the sheet's
@@ -268,15 +268,6 @@ internal fun PopupScreen(
             .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = close),
         contentAlignment = Alignment.BottomCenter,
     ) {
-        Canvas(Modifier.fillMaxSize()) {
-            val t = ripple.value
-            drawCircle(
-                color = D.Blue.copy(alpha = .6f * (1f - t)),
-                radius = size.minDimension * (.08f + .55f * t),
-                center = center.copy(y = size.height * .3f),
-                style = Stroke(width = 4.dp.toPx()),
-            )
-        }
         Column(
             Modifier.fillMaxWidth()
                 .onSizeChanged { sheetHeight = it.height.toFloat() }
@@ -371,11 +362,23 @@ internal fun PopupScreen(
                 }
             }
         }
+        // Over the sheet, not under it: the light ends along the bottom edge, which is the
+        // sheet. Armed, it waits along the top; when the other phone arrives it parts, runs
+        // down the sides and stays. It leaves with the sheet — the fade is read while drawing,
+        // for the same reason everything else that moves per frame here is.
+        TapGlow(
+            waiting = peer == null && inPerson,
+            touched = peer != null && inPerson,
+            modifier = Modifier.fillMaxSize().graphicsLayer { alpha = scrim.value * (1f - dismissFraction()) },
+        )
     }
     }
     }
     }
 }
+
+/** How a sheet can have been opened by two phones actually touching. See `cameFrom`. */
+private val InPerson = setOf("nfc", "hce", "app", "tap-button")
 
 /**
  * The sheet before anybody is on the other end: open, radio on, waiting for the phones to meet.
