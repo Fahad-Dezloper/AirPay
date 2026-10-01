@@ -9,7 +9,9 @@ import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.FastOutLinearInEasing
+import androidx.compose.animation.core.keyframes
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.rememberDraggableState
@@ -106,19 +108,19 @@ import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.drawscope.scale
+import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.util.lerp
 import androidx.compose.ui.graphics.vector.PathParser
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
-import kotlin.math.cos
-import kotlin.math.sin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import androidx.compose.runtime.snapshotFlow
@@ -299,7 +301,11 @@ internal fun PopupScreen(
                 val paying = peer is TapPayload.Card && connected && (phase == Phase.Ready || phase is Phase.Working)
                 PeerHeader(peer, me, history, title = if (paying && !aboutThem) "Pay ${peer.label.ifBlank { "them" }}" else peer.label.ifBlank { "Unknown phone" },
                     verified = genesis is Genesis.Check.Held,
-                    onOpen = if (phase is Phase.Working) null else ({ aboutThem = !aboutThem }), open = aboutThem)
+                    onOpen = if (phase is Phase.Working) null else ({ aboutThem = !aboutThem }), open = aboutThem,
+                    // §1.4: only a chain refusal puts the explorer up here, and only when there
+                    // really is a signature to look up. Nothing is invented when there isn't —
+                    // an icon that leads nowhere is worse than no icon.
+                    onExplorer = (phase as? Phase.Failed)?.signature?.let { sig -> { onExplorer(sig) } })
                 Spacer(Modifier.height(Space.lead))
             }
 
@@ -325,7 +331,7 @@ internal fun PopupScreen(
                         // Waiting for the other phone. Shares the AnimatedContent with every
                         // other state, so when the tap lands the sheet grows into the keypad
                         // on the same spring rather than closing and reopening as a new one.
-                        "armed" -> ArmedBody(close)
+                        "armed" -> ArmedBody()
                         // The keypad and the device page both stay built; switching only fades one
                         // out and the other in. Rebuilding the keypad form on the way back — amount,
                         // chip, twelve keys, shared-element setup — cost 85-150ms frames.
@@ -333,12 +339,16 @@ internal fun PopupScreen(
                             showSecond = aboutThem && phase !is Phase.Working,
                             first = {
                                 Form(p, phase, connected, amount, { amount = it }, token, { token = it }, holdings, onConnect, onPay, onRequest,
-                                    { leave(onDecline) }, { leave(onLater) }, confirming, { confirming = it }, covered = aboutThem,
-                                    cameFrom = cameFrom)
+                                    { leave(onDecline) }, { leave(onLater) }, confirming, { confirming = it }, covered = aboutThem)
                             },
                             second = { AboutThem(p, history, genesis, wallet, cameFrom, onBack = { aboutThem = false }) },
                         ) }
-                        "waiting" -> (phase as? Phase.Waiting)?.let { WaitingBody(peer?.label.orEmpty(), it.amount, it.symbol, waitingNote, close) }
+                        // `waitingNote` is written only when the payer has answered "Later", so
+                        // its presence IS the deferral — §1.3 wants two headlines off one state,
+                        // not a note pasted over one.
+                        "waiting" -> (phase as? Phase.Waiting)?.let {
+                            WaitingBody(peer?.label.orEmpty(), it.amount, it.symbol, deferred = waitingNote != null, onClose = close)
+                        }
                         "success" -> (phase as? Phase.Success)?.let {
                             ResultBody(Tone.Paid, it.title, it.detail, earned) {
                                 ExplorerUnder(it.signature, onExplorer) { PrimaryButton("Done", close) }
@@ -352,11 +362,11 @@ internal fun PopupScreen(
                             ResultBody(Tone.Nothing, it.title, it.detail) { RetryRow(close, onRetry) }
                         }
                         // Failed means a transaction went out and the chain refused it. The only red
-                        // on this sheet, and the only outcome with a signature worth looking up.
+                        // on this sheet, and the only outcome with a signature worth looking up —
+                        // which §1.4 moves to an icon in the header, so the two buttons here are
+                        // Close and Try again and nothing else.
                         "failed" -> (phase as? Phase.Failed)?.let {
-                            ResultBody(Tone.Refused, it.title, it.detail) {
-                                ExplorerUnder(it.signature, onExplorer) { RetryRow(close, onRetry) }
-                            }
+                            ResultBody(Tone.Refused, it.title, it.detail) { RetryRow(close, onRetry) }
                         }
                     }
                 }
@@ -383,63 +393,369 @@ private val InPerson = setOf("nfc", "hce", "app", "tap-button")
 /**
  * The sheet before anybody is on the other end: open, radio on, waiting for the phones to meet.
  *
- * Pressing "Pay via Tap" used to arm the radio silently and leave the home screen looking
- * exactly as it had a moment earlier — nothing said the phone was now listening, or that the
- * next thing to do was physical. This is that sentence, and it holds the place the other
- * person's name will appear.
+ * ui/PORT-2026-10-02.md §1.1. Pressing "Pay via Tap" used to arm the radio silently and leave
+ * the home screen looking exactly as it had a moment earlier — nothing said the phone was now
+ * listening, or that the next thing to do was physical. This is that sentence, and it holds the
+ * place the other person's name will appear.
  *
- * The pulse is the only moving thing on it. It is doing a job: NFC has no progress to report
- * and about four centimetres of range, so the one honest signal is "still listening".
+ * Everything is centred and **nothing here is a button**: the next move is physical, so the
+ * screen shows the gesture rather than offering an alternative to it. The "Cancel" button that
+ * used to close the sheet is gone with the redesign — back, the scrim and a downward drag all
+ * still dismiss it, and none of them competes with the instruction.
+ *
+ * Gone too: the status disc, the line under the title and the three pulsing dots. §1.1 is
+ * explicit that there is no line and no dots — both survive in the sandbox file as commented-out
+ * code and are to be left out. [TapHero] took over the job the pulse was doing (saying the radio
+ * is live) and does it by showing what to do with it.
  */
 @Composable
-private fun ArmedBody(onCancel: () -> Unit) {
-    val pulse = rememberInfiniteTransition(label = "armed")
-    val wave by pulse.animateFloat(
-        initialValue = 0f, targetValue = 1f,
-        animationSpec = infiniteRepeatable(tween(1_600, easing = LinearEasing), RepeatMode.Restart),
-        label = "wave",
-    )
-    // Every centred state on this sheet is the same stack: disc, 16, headline, 4, the line under
-    // it, 24, the actions (`Centered` in ui/components/screens/Tap.tsx). No leading spacer — the
-    // sheet's own top padding is the only space above the disc.
+private fun ArmedBody() {
     Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-        // Waiting is the pending tone, and the NFC mark says what kind of waiting it is.
-        StatusDisc(Tone.Pending, size = 72.dp, mark = { HiIcon(Hi.Nfc, D.White, 40.dp) })
+        TapHero(Modifier.fillMaxWidth())
         Spacer(Modifier.height(Space.row))
-        Text("Hold your phones together", color = D.Black, style = Type.title, textAlign = TextAlign.Center)
-        Spacer(Modifier.height(Space.tight))
-        Text(
-            "Back to back, until they buzz.",
-            color = D.Quiet, style = Type.caption, textAlign = TextAlign.Center,
-            // `mx-auto max-w-xs`: a maximum, not an inset, so a longer line in another language
-            // uses the width it needs up to 320 and still sits centred.
-            modifier = Modifier.widthIn(max = 320.dp),
-        )
+        // Broken where the sandbox breaks it — a hard break, not a width limit, because the break
+        // is the design: the phrase reads as the two halves of the gesture.
+        Text("Hold your phones\ntogether", color = D.Black, style = Type.title, textAlign = TextAlign.Center)
         Spacer(Modifier.height(24.dp))
-        // Three dots, each swelling in turn. The wave is in the SIZE, not the opacity: the two
-        // pale rings that used to pulse here were a wash of a fill colour, which is the one thing
-        // the palette forbids. Solid blue at full strength says the same thing and is allowed.
-        Row(Modifier.padding(bottom = 20.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            repeat(3) { i ->
-                val swell = 1f + .4f * sin(Math.PI * ((wave + i * .18f) % 1f)).toFloat()
-                Box(
-                    Modifier.size(8.dp)
-                        .graphicsLayer { scaleX = swell; scaleY = swell }
-                        .background(D.Blue, CircleShape),
-                )
-            }
-        }
-        SecondaryButton("Cancel", onCancel, Modifier.fillMaxWidth())
-        Spacer(Modifier.height(Space.tight))
+        NfcTip()
     }
 }
 
+/**
+ * Where to aim, as a picture rather than a sentence: ui/PORT-2026-10-02.md §1.1.
+ *
+ * Corner 24, padding 12, on the artwork's own pale blue. [TIP_GROUND] and [TIP_DISC] are
+ * illustration pigments, not palette colours — the sanctioned exception for a tint *under* an
+ * illustration (ui/PROJECT.md §3), the same licence the Seeker's own colours take inside
+ * [TapHero]. The text on it is ink, not quiet: quiet on that blue is 4.4:1.
+ */
+@Composable
+private fun NfcTip() {
+    Row(
+        Modifier.fillMaxWidth().background(TIP_GROUND, RoundedCornerShape(24.dp)).padding(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        // The top half of the phone, zoomed in on the NFC highlight, standing in a disc a shade
+        // deeper than the card. The disc cuts it off at the bottom and the sides; its top rises
+        // 8 past the disc, which is what makes it read as a thing and not a photo.
+        Box(Modifier.size(80.dp)) {
+            Box(Modifier.fillMaxSize().background(TIP_DISC, CircleShape))
+            Image(
+                painterResource(R.drawable.nfc_tip), contentDescription = null,
+                // 80 across by 88 tall, starting 8 above the disc, with the bottom 40 rounded
+                // away. `rounded-b-full` on an 80-wide box clamps to a 40 radius, which is
+                // exactly the disc's own bottom semicircle — so the photo ends on the disc's edge
+                // rather than near it.
+                modifier = Modifier.offset(y = (-8).dp).size(width = 80.dp, height = 88.dp)
+                    .clip(RoundedCornerShape(bottomStart = 40.dp, bottomEnd = 40.dp)),
+                alignment = Alignment.TopCenter,
+                contentScale = ContentScale.Crop,
+            )
+        }
+        Spacer(Modifier.width(Space.inline))
+        Column(Modifier.weight(1f)) {
+            Text("Tip", color = D.Black, style = TipHead)
+            Spacer(Modifier.height(Space.tight))
+            Text(
+                "The NFC chip is near the center of the back of Seeker phones. " +
+                    "Keep the backs close and steady.",
+                color = D.Black, style = Type.caption,
+            )
+        }
+    }
+}
+
+/** `text-body font-bold`: the body step at bold, which is not a scale step of its own. */
+private val TipHead = Type.body.copy(fontWeight = FontWeight.Bold)
+
+/**
+ * The tip card's ground and the disc standing on it.
+ *
+ * Raw hexes on purpose: they are the artwork's own pale blue, lifted from the render the tip
+ * photo was cut out of, and they exist to sit *under* that photo. They are not palette colours
+ * and nothing else may use them, which is why they live here beside the one card that does and
+ * not in `D` — the same reason [TapHero]'s pigments are written out where they are drawn.
+ */
+private val TIP_GROUND = Color(0xFFECF3FC)
+private val TIP_DISC = Color(0xFFD3E3FB)
+
+// -------------------------------------------------------------------------------- the gesture
+
+// The three CSS easings the hero's keyframes ask for, spelled out because Compose 1.7 has no
+// equivalents: its named easings are a different set, and `FastOutSlowInEasing` is (.4, 0, .2, 1),
+// which is NOT CSS `ease-in-out`. Prefixed so that if a later Compose puts `Ease`/`EaseInOut`/
+// `EaseOut` within reach of a wildcard import, these stay the ones the hero means.
+// Ported from ui/app/globals.css (`tap-hero-*`).
+/** CSS `ease-in-out` — the ring's breath. Symmetric, which is why one half-wave covers both. */
+private val CssEaseInOut = CubicBezierEasing(.42f, 0f, .58f, 1f)
+/** CSS `ease-out` — a ripple leaves fast and dies slowly. */
+private val CssEaseOut = CubicBezierEasing(0f, 0f, .58f, 1f)
+/** CSS `ease`: what an `animation` shorthand with no timing function gets, i.e. the field's fade. */
+private val CssEase = CubicBezierEasing(.25f, .1f, .25f, 1f)
+
+/** One trip apart → together → apart. */
+private const val HERO_LOOP = 4_800
+/** The ring's breath — exactly a third of the loop, so the two can never drift out of step. */
+private const val HERO_PULSE = 1_600
+
+/** Where the two backs meet, on the 360 × 270 canvas. Everything in the field is centred here. */
+private val FIELD = Offset(198f, 128f)
+private val RING_R = floatArrayOf(82f, 62f, 43f, 25f)
+private val RING_A = floatArrayOf(.16f, .26f, .42f, .75f)
+/** `animationDelay: -.15s` per ring, as a fraction of the 1.6s breath. */
+private const val RING_STAGGER = .15f / 1.6f
+
+/**
+ * The gesture, drawn and looping: ui/PORT-2026-10-02.md §1.1, from `TapHero.tsx` (the drawing,
+ * on a 360 × 270 canvas) and the `tap-hero-*` rules in `globals.css` (the motion).
+ *
+ * Two Seekers come together back to back, a blue field answers where they meet, and they part.
+ * It is the instruction — "Hold your phones together" — shown instead of said, which is why it
+ * loops for as long as the sheet waits rather than playing once.
+ *
+ * One 4.8s loop, read off a single progress number: hold apart to 8%, closed by 36%, held until
+ * 80%, back apart by 100%. CSS interpolates a transform list component by component, so the
+ * translate and the angle both come off that one number instead of being animated apart.
+ *
+ * **The rings are the app's blue at four fixed opacities.** That is a glow inside an
+ * illustration — the sanctioned exception to "no tints" (ui/PROJECT.md §3), like the tip card
+ * under it — and it is drawn with `drawCircle`'s own `alpha`, never by making a paler blue. The
+ * phone's colours are the Seeker's own and are raw on purpose: they are the picture, not the
+ * palette.
+ *
+ * Everything that moves is read inside the draw lambda, never in composition. This sheet has
+ * paid for that mistake before (the drag offset, the sheet's own height): a per-frame read in
+ * composition recomposes the whole sheet every frame, and this canvas changes on all of them.
+ *
+ * [moving] false draws the CSS resting pose — closed, field on, rings at rest, no ripples —
+ * which is the same instruction standing still. It is what reduced motion should pass; nothing
+ * in the app reads that setting yet, so nothing passes it.
+ */
+@Composable
+private fun TapHero(modifier: Modifier = Modifier, moving: Boolean = true) {
+    val loop = rememberInfiniteTransition(label = "hero")
+    val pose = loop.animateFloat(
+        initialValue = 0f, targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            keyframes {
+                durationMillis = HERO_LOOP
+                0f at 0
+                0f at 384 using CubicBezierEasing(.5f, 0f, .2f, 1f) // 8% → 36%: closing
+                1f at 1_728
+                1f at 3_840 using CubicBezierEasing(.6f, 0f, .4f, 1f) // 80% → 100%: parting
+                0f at HERO_LOOP
+            },
+            RepeatMode.Restart,
+        ),
+        label = "pose",
+    )
+    // The field is only on while the backs are actually together: it fades in over 33–40% and
+    // out over 76–84%, so the blue never appears across a gap.
+    val field = loop.animateFloat(
+        initialValue = 0f, targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            keyframes {
+                durationMillis = HERO_LOOP
+                0f at 0 using CssEase
+                0f at 1_584 using CssEase
+                1f at 1_920 using CssEase
+                1f at 3_648 using CssEase
+                0f at 4_032 using CssEase
+                0f at HERO_LOOP
+            },
+            RepeatMode.Restart,
+        ),
+        label = "field",
+    )
+    // Linear, because the curve belongs to each thing the phase drives: the rings breathe on
+    // ease-in-out, the ripples expand on ease-out, and both are a third of the loop long.
+    val pulse = loop.animateFloat(
+        initialValue = 0f, targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(HERO_PULSE, easing = LinearEasing), RepeatMode.Restart),
+        label = "pulse",
+    )
+
+    Canvas(
+        modifier.aspectRatio(4f / 3f)
+            // One picture, and it says what the title says. A screen reader gets the title.
+            .clearAndSetSemantics { },
+    ) {
+        scale(size.width / 360f, size.width / 360f, pivot = Offset.Zero) {
+            val t = if (moving) pose.value else 1f
+            val on = if (moving) field.value else 1f
+            val p = pulse.value
+
+            // Paint order is the depth: the far phone, the field's filled discs, the near phone,
+            // then the ripples and the bright core over both, at the edge where the backs meet.
+            phone(lerp(260f, 195f, t), lerp(137f, 134f, t), lerp(10f, 30f, t), flip = true)
+            if (on > 0f) {
+                for (i in RING_R.indices) {
+                    val k = if (moving) ringScale((p + i * RING_STAGGER) % 1f) else 1f
+                    drawCircle(D.Blue, RING_R[i] * k, FIELD, alpha = on * RING_A[i])
+                }
+            }
+            phone(lerp(100f, 163f, t), lerp(140f, 137f, t), lerp(-10f, -27f, t), flip = false)
+            if (on > 0f) {
+                // Two ripples half a cycle apart. At rest they are invisible (opacity 0 is the
+                // CSS resting value), so a still hero is the pose and the glow and nothing else.
+                if (moving) {
+                    for (i in 0 until 2) {
+                        val q = CssEaseOut.transform((p + i * .5f) % 1f)
+                        drawCircle(
+                            D.Blue, 96f * lerp(.25f, 1f, q), FIELD,
+                            alpha = on * lerp(.7f, 0f, q), style = Stroke(2f),
+                        )
+                    }
+                }
+                drawCircle(CORE, 26f, FIELD, alpha = on)
+            }
+        }
+    }
+}
+
+/** 0%,100% scale(.94) · 50% scale(1.05), on CSS ease-in-out — which is symmetric, so one wave. */
+private fun ringScale(phase: Float): Float =
+    lerp(.94f, 1.05f, CssEaseInOut.transform(if (phase < .5f) phase * 2f else (1f - phase) * 2f))
+
+/** The point of contact: white at the centre, out to a transparent edge. */
+private val CORE = Brush.radialGradient(
+    0f to Color(0xFFFFFFFF), .35f to Color(0xFF9AD2FF), 1f to Color(0x009AD2FF),
+    center = FIELD, radius = 26f,
+)
+
+// The Seeker's own colours, measured off the product shot. A vertical gradient here is written
+// with the start and end y it had as an SVG objectBoundingBox gradient, because the phone is
+// drawn centred on its own origin and so every one of those boxes straddles zero.
+/** The back panel: near-black at the cameras, lightening to teal-grey at the foot. */
+private val BACK = Brush.verticalGradient(
+    0f to Color(0xFF1A2123), .45f to Color(0xFF33444A), 1f to Color(0xFF5E7378),
+    startY = -97.4f, endY = 97.4f,
+)
+private val FRAME = Brush.horizontalGradient(
+    0f to Color(0xFF0D1214), .5f to Color(0xFF263236), 1f to Color(0xFF6F8388),
+    startX = -46f, endX = 46f,
+)
+private val EDGE = Brush.verticalGradient(
+    0f to Color(0xFF4A5A5F), .5f to Color(0xFF7D9196), 1f to Color(0xFF3A484C),
+    startY = -99f, endY = 99f,
+)
+/** The Seed Vault plate: black where it meets the cameras, pale at its foot. */
+private val PLATE = Brush.verticalGradient(
+    0f to Color(0xFF090B0C), .5f to Color(0xFF2C373B), 1f to Color(0xFF93A4AA),
+    startY = -23.6f, endY = 23.1f,
+)
+
+/**
+ * The plate and the three logo bars, parsed once.
+ *
+ * Building a `Path` from its string inside a draw scope is work on a frame, and on this canvas
+ * that is every frame — the same reason [Tone.paths] is lazy.
+ */
+private val PLATE_PATH: Path by lazy {
+    PathParser().parsePathString(
+        "M-46 -23.6H-16.3A2.8 2.8 0 0 1 -13.5 -20.8V20.3A2.8 2.8 0 0 1 -16.3 23.1H-46Z",
+    ).toPath()
+}
+private val LOGO_BARS: List<Path> by lazy {
+    listOf(
+        "M-3.35 67H5.15L3.35 69.4H-5.15Z",
+        "M-5.15 70.5H3.35L5.15 72.9H-3.35Z",
+        "M-3.35 74H5.15L3.35 76.4H-5.15Z",
+    ).map { PathParser().parsePathString(it).toPath() }
+}
+
+/**
+ * A Seeker's back: 92 × 198, corner 15, centred on its own origin — measured off the product
+ * shot at .2335 units to its pixel (394 × 838 → 92 × 195.7).
+ *
+ * Placed by the CSS `translate(x, y) rotate(deg)`, in that order, so the phone turns about its
+ * own middle and not about the canvas.
+ *
+ * | part | where |
+ * |---|---|
+ * | thickness | the frame showing 6 past the +x side, with the two keys on it |
+ * | frame, back | the body, then the panel inset 1.6 with the vertical gradient |
+ * | cameras | one round lens on its own island (r 8.9) and, under it, a pill of two — the Seeker's layout, not a single bar |
+ * | flash | a pale dot right of the gap between them |
+ * | Seed Vault plate | flush with the −x edge, square there and rounded on the inner side, with its ring mark |
+ * | logo | three bars near the foot, the middle one skewed the other way |
+ *
+ * [flip] mirrors the whole phone for the far one, so its cameras sit top-right. The plate's
+ * "SEED VAULT" lettering is **not** drawn: it is 3 units tall, which is about 3dp on the device,
+ * so it is texture rather than text — and measuring a text layout to put it inside this
+ * transform stack would cost a frame to draw something nobody can read.
+ */
+private fun DrawScope.phone(x: Float, y: Float, deg: Float, flip: Boolean) {
+    translate(x, y) {
+        rotate(deg, Offset.Zero) {
+            scale(if (flip) -1f else 1f, 1f, Offset.Zero) {
+                val body = Size(92f, 198f)
+                val corner = CornerRadius(15f)
+                drawRoundRect(EDGE, Offset(-40f, -99f), body, corner)
+                drawRoundRect(KEY, Offset(47f, -32f), Size(3f, 15f), CornerRadius(1.5f))
+                drawRoundRect(KEY, Offset(47f, -13f), Size(3f, 15f), CornerRadius(1.5f))
+                drawRoundRect(FRAME, Offset(-46f, -99f), body, corner)
+                drawRoundRect(BACK, Offset(-44.4f, -97.4f), Size(88.8f, 194.8f), CornerRadius(13.4f))
+
+                // The islands in one dark fill, then each lens as rim, glass, pupil, glint.
+                val island = Offset(-34.6f, -67.5f)
+                val islandSize = Size(16.8f, 35f)
+                drawRoundRect(ISLAND, island, islandSize, CornerRadius(8.4f))
+                drawRoundRect(ISLAND_RIM, island, islandSize, CornerRadius(8.4f), style = Stroke(.8f))
+                drawCircle(ISLAND, 8.9f, LENS[0])
+                drawCircle(ISLAND_RIM, 8.9f, LENS[0], style = Stroke(.8f))
+                for (i in LENS.indices) {
+                    val r = if (i == 0) 5.4f else 5.1f
+                    drawCircle(GLASS, r, LENS[i])
+                    drawCircle(GLASS_RIM, r, LENS[i], style = Stroke(.7f))
+                    drawCircle(PUPIL, if (i == 0) 2.8f else 2.6f, LENS[i])
+                    drawCircle(GLINT, .7f, Offset(LENS[i].x + 1f, LENS[i].y - 1f))
+                }
+                drawCircle(FLASH, 2.6f, Offset(-10f, -69.1f))
+                drawCircle(FLASH_RIM, 2.6f, Offset(-10f, -69.1f), style = Stroke(.6f))
+
+                drawPath(PLATE_PATH, PLATE)
+                drawCircle(MARK, 3f, Offset(-37.4f, -17f), style = Stroke(.7f))
+                drawCircle(MARK, 1.2f, Offset(-37.4f, -17f), style = Stroke(.7f))
+
+                LOGO_BARS.forEach { drawPath(it, LOGO) }
+            }
+        }
+    }
+}
+
+private val KEY = Color(0xFF1C2527)
+private val ISLAND = Color(0xFF0B0E0F)
+private val ISLAND_RIM = Color(0xFF2A3539)
+private val GLASS = Color(0xFF141A1C)
+private val GLASS_RIM = Color(0xFF36444A)
+private val PUPIL = Color(0xFF050607)
+private val GLINT = Color(0xFF8FA3AB)
+private val FLASH = Color(0xFF8793A0)
+private val FLASH_RIM = Color(0xFFAEB9C2)
+private val MARK = Color(0xFFD5DDE0)
+private val LOGO = Color(0xFFCDD5D8)
+
+/** The three lens centres, top to bottom. The glint sits 1 up and 1 right of each. */
+private val LENS = arrayOf(Offset(-25.7f, -77.8f), Offset(-26.2f, -59.1f), Offset(-26.2f, -40.4f))
+
 // ------------------------------------------------------------------------------------ header
 
+/**
+ * Who is on the other end, above every state but armed.
+ *
+ * [onExplorer] is ui/PORT-2026-10-02.md §1.4: on a chain refusal the explorer stops being a
+ * button and becomes an icon at this header's end. Under Close and Try again it was a second
+ * outlined button the same size as the first, and at a glance the two could not be told apart —
+ * which on the one screen where somebody is deciding whether to pay again is the worst place for
+ * it. Success keeps its `Done` + `View on explorer` pair, where there is no second chance to
+ * confuse it with.
+ */
 @Composable
 private fun PeerHeader(
     peer: TapPayload, me: String, history: Contact?, title: String,
     verified: Boolean, onOpen: (() -> Unit)?, open: Boolean,
+    onExplorer: (() -> Unit)? = null,
 ) {
     // Only what the chain confirmed. A claimed Genesis token used to earn the badge by itself.
     val seeker = verified
@@ -475,6 +791,20 @@ private fun PeerHeader(
             }
             // An address is read a character at a time, so it is set in the mono step.
             Text("${peer.address.take(6)}…${peer.address.takeLast(6)}", color = D.Quiet, style = Type.mono, maxLines = 1)
+        }
+        if (onExplorer != null) {
+            val press = remember { MutableInteractionSource() }
+            Box(
+                // 48dp of hit area, pulled out by 12 so the mark — not the empty half of the
+                // target — is what meets the gutter.
+                Modifier.then(PressScale(press)).offset(x = 12.dp).size(48.dp)
+                    .clickable(press, indication = null, onClick = onExplorer)
+                    .semantics { contentDescription = "View on explorer" },
+                contentAlignment = Alignment.Center,
+            ) {
+                // Hugeicons LinkSquare02 — a box with an arrow leaving it, "opens elsewhere".
+                HIcon(R.drawable.hi_open, D.Black, 24.dp)
+            }
         }
     }
 }
@@ -521,8 +851,6 @@ private fun Form(
     onConfirming: (Boolean) -> Unit,
     /** The device page is showing over this form; its back button belongs to that page. */
     covered: Boolean = false,
-    /** How the sheet was opened, for the line under an incoming ask. */
-    cameFrom: String? = null,
 ) {
     val working = (phase as? Phase.Working)?.text
     if (!connected) return ConnectBody(working, onConnect)
@@ -575,8 +903,7 @@ private fun Form(
                 Entry(peer, working, amount, onAmount, token, onToken, holdings, { onConfirming(true) }, onRequest, onDecline, onLater,
                     // Shown here too when the amount is already fixed: on a request there is
                     // nothing left to change, so the earlier they read it the better.
-                    reward = if (peer is TapPayload.Request) reward else null,
-                    cameFrom = cameFrom)
+                    reward = if (peer is TapPayload.Request) reward else null)
             }
         }
         }
@@ -667,22 +994,18 @@ private fun Entry(
     onDecline: () -> Unit,
     onLater: () -> Unit,
     reward: Rewards.Preview? = null,
-    /** How the sheet was opened, for the line under an incoming ask. */
-    cameFrom: String? = null,
 ) {
     if (peer is TapPayload.Request) {
         val asked = peer.request.amount
-        // How the ask reached you. Only said when we know — the device page has the same rule,
-        // and a guess about how two phones met is not worth printing above a Pay button.
-        val met = when (cameFrom) {
-            "nfc", "hce", "app" -> "In person, by tap · "
-            "server", "notification" -> "Through AirPay, after a tap · "
-            else -> ""
-        }
-        // The ask, centred, with the amount as the hero: `Asking` in
+        // ui/PORT-2026-10-02.md §1.2. The ask, centred, with the amount as the hero: `Asking` in
         // ui/components/screens/Tap.tsx. The amount is the `amount` step, not `display` — one
         // amount size on every state of this sheet, so the ask and the screen that waits for it
         // to be paid show the same number at the same size.
+        //
+        // "In person, by tap · Solana mainnet" is gone from under the amount (§1.2). Neither
+        // half of it changed the decision: the network is the same on every ask, and the header
+        // above already says who this is and the device page says how they reached you — so it
+        // was a line of furniture between the number and what it earns.
         Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
             Text("Asks you for", color = D.Quiet, style = Type.caption)
             Spacer(Modifier.height(Space.tight))
@@ -691,21 +1014,24 @@ private fun Entry(
                 maxLines = 1, softWrap = false, textAlign = TextAlign.Center,
                 modifier = Modifier.shared("amount"),
             )
-            Spacer(Modifier.height(Space.tight))
-            Text("${met}Solana mainnet", color = D.Quiet, style = Type.caption, textAlign = TextAlign.Center)
         }
-        RewardLine(reward)
+        EarnsLine(reward)
         Spacer(Modifier.height(24.dp))
         PrimaryButton(working ?: "Pay", onReview,
             Modifier.fillMaxWidth().shared("primary", bounds = true), loading = working != null)
-        // Two different answers: "Later" keeps it in Requests and tells them nothing; "Decline"
+        // Two different answers: "Later" keeps it payable and tells them nothing; "Decline"
         // is a no, and their phone is told so they stop waiting.
         AnimatedVisibility(visible = working == null) {
             Column {
-                Row(Modifier.padding(top = Space.lead), horizontalArrangement = Arrangement.spacedBy(Space.inline)) {
-                    SecondaryButton("Decline", onDecline, Modifier.weight(1f))
+                Row(Modifier.fillMaxWidth().padding(top = Space.lead), horizontalArrangement = Arrangement.spacedBy(Space.inline)) {
+                    DeclineButton(onDecline, Modifier.weight(1f))
                     SecondaryButton("Later", onLater, Modifier.weight(1f))
                 }
+                // Why it earns nothing, at the foot (§1.2): a reason, not a headline. It used to
+                // take the reward line's place under the amount, where the eye reads it as what
+                // this ask is FOR. Down here it is what it is — a footnote to a decision that
+                // has already been made on the amount and who is asking.
+                WhyNothing(reward)
                 // Said under the answer, not above it: somebody looking at a stranger's ask is
                 // deciding whether to open their wallet, so what this app cannot reach is part
                 // of the decision.
@@ -873,6 +1199,86 @@ private fun RewardLine(reward: Rewards.Preview?) {
             if (earns) Marked("Earns ${reward?.skr} SKR")
             else Text(why.orEmpty(), color = D.Quiet, style = Type.body)
         }
+    }
+}
+
+/**
+ * What an incoming ask earns, centred under the amount it belongs to: §1.2.
+ *
+ * Separate from [RewardLine], which is the review screen's start-aligned row inside a column of
+ * labelled details. Here the amount is the hero and this hangs off it, so the pair has to be
+ * centred as a group — and only the *earning* half lives here. The refusal moved to the foot
+ * ([WhyNothing]) because a reason sitting where a reward goes reads as the reward.
+ */
+@Composable
+private fun EarnsLine(reward: Rewards.Preview?) {
+    AnimatedVisibility(visible = reward?.earns == true) {
+        Row(
+            // `mt-lead`: 12 below the amount.
+            Modifier.fillMaxWidth().padding(top = Space.lead),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            HiIcon(Hi.Gift, D.Black, 18.dp)
+            // `gap-2`, not `Space.inline`: an 18 icon beside a 15sp line, not an avatar beside a row.
+            Spacer(Modifier.width(8.dp))
+            Marked("Earns ${reward?.skr} SKR")
+        }
+    }
+}
+
+/**
+ * Why this payment earns nothing, at the foot of the ask: §1.2.
+ *
+ * Nobody should learn a reward rule by not being paid, so it is still said before they decide —
+ * but under the two answers and above "AirPay never holds your keys.", which is where the other
+ * thing this sheet owes them already sits. Caption and quiet, with the info mark rather than the
+ * gift: it takes no highlight, because it is not a prize.
+ *
+ * Nothing is drawn when there is no reason. [Rewards.sayWhy] returns null both for a payment
+ * that earns and for `not_a_seeker` — the badge in the header already said that, and it is not
+ * news to the person holding the phone.
+ */
+@Composable
+private fun WhyNothing(reward: Rewards.Preview?) {
+    val why = Rewards.sayWhy(reward)
+    AnimatedVisibility(visible = reward != null && reward.earns.not() && why != null) {
+        Row(
+            Modifier.fillMaxWidth().padding(top = Space.lead),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            HiIcon(Hi.Info, D.Quiet, 16.dp)
+            Spacer(Modifier.width(8.dp))
+            Text(why.orEmpty(), color = D.Quiet, style = Type.caption)
+        }
+    }
+}
+
+/**
+ * "No", and their phone is told so they stop waiting. ui/PORT-2026-10-02.md §1.2 and §10.
+ *
+ * **The second sanctioned red in the app**, after a chain refusal — §10 lists exactly three, and
+ * this is one of them. It is not a warning: declining is a perfectly ordinary answer. It is red
+ * because it is the only *irreversible* answer on the sheet. "Later" leaves the ask payable, Pay
+ * pays it, and both can be undone by doing the other; a decline tells the other phone to stop,
+ * and nothing on this screen takes that back. Two outline buttons said those two things in the
+ * same voice.
+ *
+ * `D.Danger` fill with white [Type.heading] is 3.31:1, and large text needs 3:1. Same geometry
+ * as the [SecondaryButton] beside it — min 52, corner 16 — so the pair is one row and not a
+ * button next to a bigger button.
+ */
+@Composable
+private fun DeclineButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
+    val interaction = remember { MutableInteractionSource() }
+    Box(
+        modifier.then(PressScale(interaction)).heightIn(min = 52.dp).clip(RoundedCornerShape(16.dp))
+            .background(D.Danger)
+            .clickable(interaction, indication = null, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text("Decline", color = D.White, style = Type.heading)
     }
 }
 
@@ -1243,86 +1649,52 @@ private fun ConnectBody(working: String?, onConnect: () -> Unit) {
 
 // ---------------------------------------------------------------------------------- outcomes
 
+/**
+ * Watching for money that has not landed yet: ui/PORT-2026-10-02.md §1.3.
+ *
+ * **The same shape as [ResultBody]**, so every outcome on this sheet looks alike — the 72 disc,
+ * the headline in the tone's ink, the amount, one line, one way out. Waiting used to have an
+ * arrangement of its own (the amount on top, then a 40 disc and its words beside it), which made
+ * it read as a different kind of screen from the endings it turns into.
+ *
+ * [deferred] is still the pending tone and still the ticking clock: a deferral is not an ending,
+ * the money can still arrive, so only the words change. The clock keeps running because it is
+ * still true that we are waiting.
+ */
 @Composable
-private fun WaitingBody(label: String, amount: String, symbol: String, note: String?, onClose: () -> Unit) {
+private fun WaitingBody(label: String, amount: String, symbol: String, deferred: Boolean, onClose: () -> Unit) {
+    // The same unknown, mid-sentence and at the start of one. A blank label is a phone that gave
+    // us no name, and "They will pay later" is honest where "will pay later" is broken.
+    val them = label.ifBlank { "them" }
+    val they = label.ifBlank { "They" }
     Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-        // The amount stays the loudest thing here: what is owed outranks the fact that it has not
-        // arrived. The state sits under it as a disc and its words, side by side.
-        //
+        // §2: inside a `StatusDisc` the clock is drawn at 80% of the disc — 58 in a 72 — because
+        // the face now carries twelve hour dots, and at the other marks' 40 they close up.
+        StatusDisc(Tone.Pending, size = 72.dp, mark = { TickingClock(58.dp, D.White) })
+        Spacer(Modifier.height(Space.row))
+        Text(
+            if (deferred) "They will pay later" else "Waiting for payment",
+            color = Tone.Pending.ink, style = Type.title, textAlign = TextAlign.Center,
+        )
+        // `mt-2`, and not a spacing role: it is the gap between a headline and the number it is
+        // about, which is tighter than heading-to-content on purpose.
+        Spacer(Modifier.height(8.dp))
         // Through Money, so this reads the same as every other amount in the app: the phone's
         // grouping, cut rather than rounded up, and the no-break space before the code so the
         // number and "USDC" can never wrap apart. The fallback is for a string that isn't a
         // decimal at all \u2014 showing what we were handed beats showing nothing.
         Text(moneyOr(amount, symbol), color = D.Black, style = Type.amount)
-        Spacer(Modifier.height(Space.row))
-        // The disc and its words are one group, centred as a group with the words start-aligned —
-        // not stretched across the sheet, which would read as a left-aligned row under a centred
-        // amount.
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            // "Later" lands here too, and it is still the pending disc — a deferral is not an
-            // ending, the money can still arrive, so only the words change. The clock keeps
-            // running because it is still true that we are waiting.
-            StatusDisc(Tone.Pending, mark = { TickingClock(20.dp, D.White) })
-            Spacer(Modifier.width(Space.inline))
-            Column {
-                Text(note ?: "Waiting for ${label.ifBlank { "them" }}", color = Tone.Pending.ink, style = Type.body)
-                Spacer(Modifier.height(Space.tight))
-                Text(
-                    if (note != null) "Still watching for it · this stays open"
-                    else "Still watching for it · you can close this",
-                    color = D.Quiet, style = Type.caption,
-                )
-            }
-        }
+        Spacer(Modifier.height(Space.tight))
+        Text(
+            if (deferred) "$they will pay later. You will be notified when they do."
+            else "From $them. We are watching for it — you can close this.",
+            color = D.Quiet, style = Type.caption, textAlign = TextAlign.Center,
+            // `mx-auto max-w-xs`, like every other centred state: the line wraps before it runs
+            // the full width of the sheet, so a two-line note reads as one block.
+            modifier = Modifier.widthIn(max = 320.dp),
+        )
         Spacer(Modifier.height(24.dp))
         SecondaryButton("Close", onClose, Modifier.fillMaxWidth())
-    }
-}
-
-/**
- * A clock that actually keeps time, instead of an icon breathing in and out.
- *
- * The second hand jumps once a second and settles, the way an escapement does — the overshoot
- * is a low damping ratio on the spring, not a decoration. Waiting is the one screen where a
- * clock means something, so it should read as one: someone glancing at it can tell it is
- * running rather than merely animated.
- *
- * It is now the mark inside the pending [StatusDisc] rather than a disc of its own, so it is
- * drawn on the same 24-unit grid as the other marks, at the stroke a disc asks for, in white on
- * the tone's fill. The tinted well it used to sit in — a 10% wash of the fill — is gone; the
- * quarter marks went with it, because at 20dp they were below a pixel.
- */
-@Composable
-private fun TickingClock(size: Dp = 20.dp, tint: Color = D.White) {
-    var ticks by remember { mutableIntStateOf(0) }
-    LaunchedEffect(Unit) {
-        // Aligned to the wall clock so the first tick is not a fraction of a second late.
-        delay(1_000 - System.currentTimeMillis() % 1_000)
-        while (true) {
-            ticks++
-            delay(1_000)
-        }
-    }
-    val second by animateFloatAsState(
-        targetValue = ticks * 6f,
-        animationSpec = spring(dampingRatio = 0.42f, stiffness = 2200f),
-        label = "second",
-    )
-    Canvas(Modifier.size(size)) {
-        val unit = this.size.minDimension / 24f
-        scale(unit, unit, pivot = Offset.Zero) {
-            // The face is the sandbox's clock mark: r = 8 on the 24 grid, centred.
-            val c = Offset(12f, 12f)
-            val w = markStroke(size, disc = true)
-            drawCircle(tint, radius = 8f - w / 2f, center = c, style = Stroke(w))
-            // The hour hand creeps; at this size it reads as "a clock" rather than "a dial".
-            val hour = Math.toRadians((second / 60f) * 0.5)
-            drawLine(tint, c, Offset(c.x + (3.5f * sin(hour)).toFloat(), c.y - (3.5f * cos(hour)).toFloat()),
-                strokeWidth = w, cap = StrokeCap.Round)
-            val a = Math.toRadians(second.toDouble())
-            drawLine(tint, c, Offset(c.x + (5.5f * sin(a)).toFloat(), c.y - (5.5f * cos(a)).toFloat()),
-                strokeWidth = w, cap = StrokeCap.Round)
-        }
     }
 }
 
