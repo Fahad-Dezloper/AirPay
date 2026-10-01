@@ -42,6 +42,12 @@ object Shop {
         val values: List<String>,
         /** The same denominations with what each costs. See [Package]. */
         val packages: List<Package> = emptyList(),
+
+        /**
+         * The words §3.2 of ui/PORT-2026-10-02.md puts on a service's page — **every field of
+         * it nullable, and today every field of it null**. See [Guide].
+         */
+        val guide: Guide = Guide(),
     ) {
         val needsPhone get() = recipient == "phone_number"
 
@@ -54,6 +60,22 @@ object Shop {
          */
         val logoUrl: String? get() = image?.takeIf { it.isNotBlank() }?.let {
             "https://www.bitrefill.com/content/cn/b_rgb:F8F8F8,c_pad,h_256,w_256/v1/$it.png"
+        }
+
+        /**
+         * The same logo at its own shape, on **transparent** padding — what §3.1's tile and
+         * §3.2's page logo draw.
+         *
+         * Two differences from [logoUrl], and both are load-bearing for §3. It asks for no
+         * `w_`, so a wordmark comes back as a wordmark instead of being scaled down to fit a
+         * square — §3.2 wants it "48 tall at its natural width". And it asks for no `b_rgb:`,
+         * so the ground is the screen's to choose rather than the CDN's to bake in, which is
+         * what lets a logo drawn for a dark ground be put on one (`groundFor` in Vouchers.kt
+         * measures which). The same URL form `Vouchers.headerArt` already uses, for the same
+         * two reasons.
+         */
+        val artUrl: String? get() = image?.takeIf { it.isNotBlank() }?.let {
+            "https://www.bitrefill.com/content/cn/h_168/v1/$it.png"
         }
 
         /**
@@ -81,13 +103,71 @@ object Shop {
     }
 
     /**
+     * §3.2's disclosure, as data: what this is, what must be read before buying, where it
+     * works, how to claim it, and what an amount means.
+     *
+     * **Everything here is null or empty today, and that is the honest state of it.** §3.4 of
+     * ui/PORT-2026-10-02.md is explicit: these words were written by hand from Bitrefill's long
+     * descriptions and terms, Bitrefill's API does not supply them in this form, and "they need
+     * a home on AirPay's server". The server has not grown one — `duffleserver/shop.py`'s
+     * `_trim` sends exactly nine fields (id, name, currency, categories, image, recipient,
+     * redemption, values, packages) and not one of them is any of these. §13 lists the wording
+     * as an open point and notes that the "cannot change or refund it" sentence has legal
+     * weight and has not been reviewed.
+     *
+     * So this is a **shape, not a copy of the sandbox's table**. Nothing is hardcoded per
+     * service: every field is read off the product payload and every field is nullable, so a
+     * page draws only the rows the server actually answered and leaves the rest out — which is
+     * what §3.2 asks for anyway ("Leave a row out when the data has no value for it"). The
+     * moment the server sends these keys the page fills in with no further change here.
+     *
+     * The key names are the ones the server would have to use.
+     *
+     * @param kind "Gift card" or "Subscription code" — §3.2's highlight badge.
+     * @param line one line of what the service is for. §3.1's second row, and §3.2's.
+     * @param where where a code can be spent.
+     * @param valid how long it lasts.
+     * @param uses whether it is one use or a balance.
+     * @param know §3.2's "Read before you buy" bullets.
+     * @param steps §3.2's numbered "How to claim it".
+     * @param amounts one sentence saying what a price point means. §3.3 puts it over Pay.
+     * @param brandHex the brand's own colour as `#RRGGBB`, for §3.1's tile and §3.2's logo box.
+     *   Absent, the ground is measured from the logo's own pixels instead (`groundFor`).
+     */
+    data class Guide(
+        val kind: String? = null,
+        val line: String? = null,
+        val where: String? = null,
+        val valid: String? = null,
+        val uses: String? = null,
+        val know: List<String> = emptyList(),
+        val steps: List<String> = emptyList(),
+        val amounts: String? = null,
+        val brandHex: String? = null,
+    )
+
+    /**
      * One thing you can buy from a product, and what it costs.
      *
      * [amount] is in the product's own currency — 219 really is the ₹219 a Jio 30GB pack costs.
      * It is for **choosing**: the price anybody actually pays comes back on the invoice, in
      * USDC, and is the only number this app treats as authoritative.
+     *
+     * @param usdPrice what this package costs in USDC, as a decimal string — §3.3's second line
+     *   inside a price box, and the figure on its `Pay 5.49 USDC` button. **Null today.**
+     *   `shop.py` deliberately withholds Bitrefill's own price field ("`price` is Bitrefill's
+     *   internal unit and is NOT money anybody recognises… deliberately not sent to the app"),
+     *   so there is no USDC figure on the wire for a denomination that has not been invoiced
+     *   yet. Null makes §3.3's cost line render nothing and its button read a bare `Pay`; the
+     *   real price still arrives on the invoice, which is the only number this app has ever
+     *   treated as authoritative. See [Invoice].
      */
-    data class Package(val value: String, val amount: Int, val id: String? = null) {
+    data class Package(
+        val value: String,
+        val amount: Int,
+        val id: String? = null,
+        val usdPrice: String? = null,
+    ) {
         /**
          * What to print as the price.
          *
@@ -105,6 +185,130 @@ object Shop {
     }
 
     data class Section(val title: String, val products: List<Product>)
+
+    // -- §3.1: the list of services ------------------------------------------------------------
+
+    /**
+     * One buyable card inside a [Service] — a Bitrefill product, with the tab label §3.2 puts
+     * on it.
+     *
+     * @param label what §3.2's pill reads. Null when the service sells one card, in which case
+     *   §3.2 draws no tabs at all. For a brand that sells several, the sandbox's labels
+     *   ("Flights & hotels", "Holidays", "Rail", "Bus", "Hotel card") are hand-written words
+     *   and are not in the catalogue, so this falls back to the product's own server `name`
+     *   with the brand and the country suffix trimmed off the ends of it. Derived from what the
+     *   server sent, never invented.
+     */
+    data class Card(val product: Product, val label: String?)
+
+    /**
+     * One brand on §3.1's list, which is not always one product.
+     *
+     * @param id the brand key — a product id, or [BRANDS]' key for a grouped brand.
+     * @param cards one or more, in §3.2's tab order. The first is the one a page opens on.
+     */
+    data class Service(val id: String, val name: String, val cards: List<Card>) {
+        /** The card a page opens on, and the one §3.1's row draws. */
+        val lead get() = cards.first().product
+        /** §3.2 draws tabs only for a brand with several cards. */
+        val tabbed get() = cards.size > 1
+    }
+
+    /**
+     * §3.1's order, by Bitrefill's own product ids: "Hotstar, PhonePe, MakeMyTrip, Google Play,
+     * The Man Company, FirstCry, Himalaya, Wakefit, Wildcraft, IKEA, Nykaa Men, Tinder Plus &
+     * Gold, Airlines… then the rest of the catalogue."
+     *
+     * **This is a curation decision and it lives here rather than pretending to have come off
+     * the wire.** The server sends no ordering — `_trim`'s nine fields do not include one — so
+     * the catalogue's own order is whatever Bitrefill's API happened to return. The ids are the
+     * server's; only the sequence is ours, and it is the sequence §3.1 names.
+     *
+     * Anything not listed keeps the order the server gave it, after these.
+     */
+    private val LEAD = listOf(
+        "hotstar-india",
+        "phonepe-india",
+        "makemytrip",
+        "google-play-india",
+        "the-man-company-india",
+        "first-cry-egift-voucher-india",
+        "himalaya-india",
+        "wakefit-india",
+        "wildcraft-india",
+        "ikea-india",
+        "nykaa-men-india",
+        "tinder-plus-and-gold-india",
+        "airlinegift-india",
+    )
+
+    /**
+     * The brands §3.1 collapses into **one** row, and the order of their tabs.
+     *
+     * "MakeMyTrip is one row although Bitrefill sells five MakeMyTrip products" — and those
+     * five are five separate ids on the wire, with five separate validities, warnings and price
+     * lists, which is exactly why §3.2 gives them tabs instead of five list rows.
+     *
+     * Listed by id rather than guessed from a shared prefix on purpose: the prefix before the
+     * first `-` groups `first-cry-egift-voucher-india` under "first", and a shop that silently
+     * merged two unrelated brands into one row would be the worse failure. A brand not listed
+     * here is one product and one row.
+     */
+    private val BRANDS: Map<String, Pair<String, List<String>>> = mapOf(
+        "makemytrip" to ("MakeMyTrip" to listOf(
+            "makemytrip-voucher-india",
+            "makemytrip-holiday-india",
+            "makemytrip-rail-india",
+            "makemytrip-bus-india",
+            "makemytrip-hotel-card-india",
+        )),
+    )
+
+    /** The catalogue's " India" / " India " suffix, which says nothing a per-country shop does not. */
+    private fun trimCountry(name: String) = name.removeSuffix(" India").trim()
+
+    /**
+     * [products] as §3.1's list: grouped by brand, in §3.1's order.
+     *
+     * Order and grouping only. Nothing is added, nothing is dropped — a product the server sent
+     * is a row (or a tab) here, and a product no [LEAD] entry names keeps its place behind the
+     * ones that do.
+     */
+    fun services(products: List<Product>): List<Service> {
+        val byId = products.associateBy { it.id }
+        val grouped = mutableSetOf<String>()
+        val out = mutableListOf<Service>()
+
+        // The grouped brands first, wherever their members appear, so a member can never also
+        // surface as a row of its own below.
+        for ((key, brand) in BRANDS) {
+            val (name, ids) = brand
+            val cards = ids.mapNotNull { byId[it] }.map { p ->
+                // The brand off the front, the country off the back: "MakeMyTrip Rail India"
+                // → "Rail". Whatever is left when that trim empties the name is the product's
+                // own name, which is still better than a blank pill.
+                val label = trimCountry(p.name).removePrefix(name).trim()
+                    .ifBlank { trimCountry(p.name) }
+                Card(p, label)
+            }
+            if (cards.isEmpty()) continue
+            grouped += ids
+            out += Service(key, name, cards)
+        }
+
+        // Everything else: one product, one service, no tabs.
+        for (p in products) {
+            if (p.id in grouped) continue
+            out += Service(p.id, trimCountry(p.name), listOf(Card(p, null)))
+        }
+
+        // `indexOf` is -1 for anything unlisted, so a listed brand sorts by its place in [LEAD]
+        // and everything else sorts after it by the order it arrived in. Keyed on the index
+        // this loop carries rather than `out.indexOf`, which would compare whole Services.
+        return out.withIndex()
+            .sortedBy { (i, s) -> LEAD.indexOf(s.id).takeIf { it >= 0 } ?: (LEAD.size + i) }
+            .map { it.value }
+    }
 
     /** What an invoice asks for: somewhere to pay, and exactly how much. */
     data class Invoice(
@@ -182,12 +386,34 @@ object Shop {
                 a!!.optJSONObject(i)?.let { o ->
                     o.optString("value").takeIf { it.isNotBlank() }
                         ?.let { v ->
-                            Package(v, o.optInt("amount", 0), o.text("id"))
+                            Package(v, o.optInt("amount", 0), o.text("id"), o.text("usd_price"))
                         }
                 }
             }
         },
+        guide = guide(j),
     )
+
+    /** §3.2's words, read leniently: a key the server has not grown yet simply stays null. */
+    private fun guide(j: JSONObject) = Guide(
+        kind = j.text("kind"),
+        line = j.text("line"),
+        where = j.text("where_it_works"),
+        valid = j.text("valid_for"),
+        uses = j.text("how_used"),
+        know = j.strings("know"),
+        steps = j.strings("steps"),
+        amounts = j.text("amounts"),
+        brandHex = j.text("brand_colour"),
+    )
+
+    /** An array of non-blank strings, or nothing. `null` entries are dropped, not stringified. */
+    private fun JSONObject.strings(name: String): List<String> {
+        val a = optJSONArray(name) ?: return emptyList()
+        return (0 until a.length()).mapNotNull { i ->
+            if (a.isNull(i)) null else a.optString(i).takeIf { it.isNotBlank() }
+        }
+    }
 
     /** Asks for a price. Nothing is bought and nothing is owed until the transfer is signed. */
     /**
