@@ -2,7 +2,9 @@ package so.duffle.app
 
 import androidx.annotation.DrawableRes
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -11,7 +13,12 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -20,44 +27,176 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 
 /**
- * §4 "Pay a bill" and §5 "Offers and rewards" — one tile, two rows.
+ * §4 "Pay a bill" — a grid of tiles — and §5 "Offers and rewards" — a row of three cards.
  *
  * Lifted out of MainActivity.kt so this section can be worked on without touching a 5,600-line
- * file. What the tiles DRAW is ui/PORT-2026-10-01.md §5.
+ * file. What the §4 tiles DRAW is ui/PORT-2026-10-01.md §5; the §5 cards are
+ * ui/PORT-2026-10-01-2.md §2.
  */
+
+/**
+ * One of §5's three cards: a title, the line under it, and its own illustration.
+ *
+ * [endPct] and [belowPct] are fractions of the CARD's width and height rather than dp, because
+ * the design states them that way and because §5 of ui/PORT-2026-10-01-2.md leaves the 184
+ * width open to retuning — a dp inset would drift off the artwork's corner the moment it moves.
+ */
+private class EarnCard(
+    val title: String,
+    val line: String,
+    @DrawableRes val art: Int,
+    val top: Color,
+    val bottom: Color,
+    /** Inset from the card's END edge, as a fraction of the card's width. */
+    val endPct: Float,
+    /** How far the artwork is pushed BELOW the bottom edge, as a fraction of the card's height. */
+    val belowPct: Float,
+)
+
+/**
+ * Rewards, Offers, Referrals — the three, in order (ui/PORT-2026-10-01-2.md §2.2).
+ *
+ * **A sanctioned exception to "no tinted backgrounds, no boxes"** (ui/PROJECT.md §3). These
+ * three are the app's only illustrated surfaces, and the tint here is the ILLUSTRATION'S OWN
+ * GROUND — not a state, a tier or a severity, which is what the rule exists to stop. So the
+ * six colours below are sampled from the artwork and are deliberately **not** palette tokens:
+ * they do not belong in Palette.kt and they are not to be reused anywhere else.
+ *
+ * Quiet grey on the three top colours measures 4.76 / 4.84 / 4.61:1, all clear of 4.5 — which
+ * is why the top is HELD for the first 45% of the card (see [EarnCardFace]) and why the tops
+ * must not be darkened to "improve" the figure.
+ */
+private val EARN_CARDS = listOf(
+    EarnCard(
+        "Rewards", "Earn rewards on every transaction", R.drawable.rewards,
+        // The gift box sits on the card's floor and is cut by it, as in the design.
+        top = Color(0xFFE8FCEF), bottom = Color(0xFFD0FADD), endPct = .02f, belowPct = .04f,
+    ),
+    EarnCard(
+        "Offers", "Grab the best deals and discounts", R.drawable.offers,
+        top = Color(0xFFFEF9E7), bottom = Color(0xFFFEEAB9), endPct = .04f, belowPct = .08f,
+    ),
+    EarnCard(
+        "Referrals", "Invite friends and earn together", R.drawable.referrals,
+        // A shade lighter than the design's #EBF0FD: quiet text on that is 4.47:1, under the
+        // 4.5 bar.
+        top = Color(0xFFEFF3FE), bottom = Color(0xFFDBE4FD), endPct = .02f, belowPct = .10f,
+    ),
+)
+
+private val EARN_W = 184.dp
+private val EARN_H = 180.dp
+private val EARN_R = 24.dp
+private val EARN_PAD = 16.dp
+
+/**
+ * The caption's own ceiling, 2dp inside the 152 the padding already leaves.
+ *
+ * It is there to make the line BREAK rather than run to the padding's edge: two short lines
+ * clear of the artwork read better than one long one ending against it.
+ */
+private val EARN_LINE = 150.dp
+
+/** The illustration's width, as a fraction of the card: 78%, about 144 at 184. */
+private const val EARN_ART = .78f
 
 /**
  * Rewards, offers, referrals — three ways in, side by side.
  *
- * Drawn rather than iconed, and square rather than round, because the obvious version of this
- * row is three flat circles and that is a shape people have already seen in every payments app.
- * The marks are built from AirPay's own vocabulary: the discs of a balance, the notch of a
- * ticket, two rings meeting the way the avatars do on a tap.
+ * Three illustrated cards, replacing the three small drawn-mark tiles (user's design,
+ * 2026-10-01; ui/components/sections/Earn.tsx). Three tiles squeezed across the screen left
+ * each of them too narrow for two lines of caption, so the row scrolls instead: at 184 two
+ * cards show and the third is cut by the screen edge, which is what says there is more.
  *
- * These three keep the solid blue [MarkCanvas] shapes while §4 moves to the two-colour line
- * icons — whether they get redrawn in that style is an open question (PORT-2026-10-01 §7), so
- * only the box grew to 48 with everything else.
+ * The heading "Offers and rewards" and its 12 gap are the call site's, not this row's.
  */
 @Composable
 internal fun EarnTiles(onRewards: () -> Unit, onOffers: () -> Unit, onReferrals: () -> Unit) {
-    // 20, not 10. With the tile's grey body gone, the gap is the only thing saying where one
-    // tile ends: 8 inside against 20 outside is x2.5, clear of the x2 the eye needs before it
-    // groups a label with its own mark instead of the one below it.
+    // In [EARN_CARDS]' order: Rewards, Offers, Referrals. Each card opens exactly what the
+    // tile it replaced opened.
+    val cards = EARN_CARDS.zip(listOf(onRewards, onOffers, onReferrals))
+
+    // Aligned with every other section at rest, and running off the SCREEN when scrolled —
+    // the token cards' row ([TokenBadges]), where the measurements behind this were made. The
+    // parent's gutter would do the first but not the second: a card scrolling away would stop
+    // at an invisible margin 20dp in. So the row breaks out of that gutter and carries it as
+    // CONTENT instead — spacers, which a scroller is guaranteed to scroll. Horizontal padding
+    // does not survive the scroller; spacers do.
     Row(
-        Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(20.dp),
+        Modifier
+            .layout { measurable, constraints ->
+                val gutter = Space.gutter.roundToPx()
+                val placeable = measurable.measure(
+                    // TWO gutters wider than the parent allows: one buys back the gutter the
+                    // row is shifted into, the other buys the one at the end. One gutter left
+                    // the end edge 20dp short of the screen — measured on the phone.
+                    constraints.copy(minWidth = 0, maxWidth = constraints.maxWidth + 2 * gutter),
+                )
+                // The parent's OWN width is what gets reported. Reporting `placeable.width`
+                // here instead shifted the row by two gutters, not one.
+                layout(constraints.maxWidth, placeable.height) { placeable.place(-gutter, 0) }
+            }
+            .horizontalScroll(rememberScrollState()),
     ) {
-        EarnTile("Rewards", Mark.Coins, Modifier.weight(1f), onRewards)
-        EarnTile("Offers", Mark.Ticket, Modifier.weight(1f), onOffers)
-        EarnTile("Referrals", Mark.Rings, Modifier.weight(1f), onReferrals)
+        Spacer(Modifier.width(Space.gutter))
+        cards.forEachIndexed { i, (card, onOpen) ->
+            if (i > 0) Spacer(Modifier.width(Space.inline))
+            EarnCardFace(card, onOpen)
+        }
+        // The same gutter after the last card as before the first. It costs nothing at rest —
+        // it sits off the end of the viewport — and it is what stops the last card dead
+        // against the screen edge once the row is scrolled all the way.
+        Spacer(Modifier.width(Space.gutter))
     }
 }
 
-/** The side of every tile's icon box — line icon, brand image and drawn mark alike. */
+/** One card: the ground, the two lines, and the artwork behind them. */
+@Composable
+private fun EarnCardFace(card: EarnCard, onOpen: () -> Unit) {
+    val press = remember { MutableInteractionSource() }
+    Box(
+        Modifier.then(PressScale(press))
+            .size(EARN_W, EARN_H)
+            // The clip lives HERE, on the card itself, because it is the card that is meant to
+            // cut the illustration off at its bottom edge.
+            .clip(RoundedCornerShape(EARN_R))
+            // The top colour is HELD to 45% and only then moves. A plain two-stop gradient
+            // would put the mid tone straight behind the caption, and the 4.6:1 was measured
+            // on the top colour — the hold is what keeps the words on the colour that passed.
+            .background(Brush.verticalGradient(0f to card.top, .45f to card.top, 1f to card.bottom))
+            .clickable(press, indication = null, onClick = onOpen),
+    ) {
+        // Drawn FIRST, so it sits behind the words: the gift tag's loop and the link bubble
+        // pass under the title rather than across it. It runs off the bottom on purpose.
+        Image(
+            painterResource(card.art),
+            contentDescription = null,
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .offset(x = -(EARN_W * card.endPct), y = EARN_H * card.belowPct)
+                // Width only: the height then follows the drawable's own ratio (720 x 496,
+                // 615 and 610), which is what keeps each illustration undistorted at one width.
+                .width(EARN_W * EARN_ART),
+        )
+        Column(Modifier.padding(EARN_PAD)) {
+            Text(card.title, color = D.Black, style = Type.heading)
+            Spacer(Modifier.height(Space.tight))
+            Text(
+                card.line, color = D.Quiet, style = Type.caption,
+                modifier = Modifier.widthIn(max = EARN_LINE),
+            )
+        }
+    }
+}
+
+/** The side of every §4 tile's icon box — line icon and brand image alike. */
 private val ICON_BOX = 48.dp
 
 /**
@@ -136,8 +275,9 @@ internal fun ShopTiles(sections: List<Shop.Section>, onOpen: (Shop.Section) -> U
             Shop.Section("More", left.flatMap { it.products }.distinctBy { p -> p.id })
     }
 
-    // 20 on both axes, for the reason [EarnTiles] gives: the gap is what groups a tile now
-    // that no box does.
+    // 20 on both axes, and 20 rather than 10: with the tile's grey body gone, the gap is the
+    // only thing saying where one tile ends. 8 inside against 20 outside is x2.5, clear of the
+    // x2 the eye needs before it groups a label with its own mark instead of the one below it.
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(20.dp)) {
         // Four to a row, and the last row padded with empty weights rather than stretched —
         // three wide tiles beside four narrow ones is the giveaway that a grid is faked.
@@ -189,10 +329,8 @@ private fun BrandIcon(@DrawableRes res: Int) {
  * One tile: an icon, a label, and space around them. Both rows.
  *
  * The grey body is gone, and the padding that held it out went with it (ui/PORT.md §9) —
- * **the icon carries the tile** now, which is why a drawn mark keeps its blue FILL: a drawn
- * mark is one of the three places a fill still belongs, and in §5 it is the only colour in the
- * row. The 18dp corner stays even with nothing to fill, because it is the shape the press
- * scales.
+ * **the icon carries the tile** now. The 18dp corner stays even with nothing to fill, because
+ * it is the shape the press scales.
  *
  * The height is the content — 48 + 8 + one 18sp caption line — which clears the 48dp touch
  * minimum on its own, so there is nothing left to pad.
@@ -226,8 +364,3 @@ private fun Tile(
     }
 }
 
-/** §5's tile: the same [Tile] with a drawn [Mark] in its icon box. */
-@Composable
-internal fun EarnTile(label: String, mark: Mark, modifier: Modifier, onClick: () -> Unit) {
-    Tile(label, modifier, onClick) { MarkCanvas(mark, ICON_BOX) }
-}

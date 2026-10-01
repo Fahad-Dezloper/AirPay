@@ -87,6 +87,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
@@ -946,10 +947,23 @@ class MainActivity : ComponentActivity() {
                         offerAt = { id -> Alerts.firstSeen(this@MainActivity, id) },
                     )
                     val unread = Alerts.unread(alerts, alertsSeen)
-                    val history = History.build(
-                        toPay = toPay, owed = owed, orders = bought,
-                        name = { addr -> known0.firstOrNull { it.address == addr }?.label ?: "Someone" },
-                    )
+                    // `spends` is read here, inside the composition that rebuilds the list, so
+                    // a category picked a moment ago is on the next row without a restart.
+                    val spends = remember { Spends(this@MainActivity) }
+                    var filedAt by remember { mutableStateOf(0L) }
+                    val history = remember(toPay, owed, bought, known0, filedAt) {
+                        History.build(
+                            toPay = toPay, owed = owed, orders = bought,
+                            name = { addr -> known0.firstOrNull { it.address == addr }?.label ?: "Someone" },
+                            known = { addr -> known0.any { it.address == addr } },
+                            filed = { sig -> spends.of(sig) },
+                        )
+                    }
+                    /** Files a category and nudges the list to rebuild with it. */
+                    val file: (History.Txn, History.Spend) -> Unit = { t, spend ->
+                        spends.file(t.signature, spend)
+                        filedAt = System.currentTimeMillis()
+                    }
 
                     // `orphans` was here — a count of rows no thread can show, used only to
                     // decide whether §3 offered an "All activity" link. §4.1 removed that link,
@@ -1152,6 +1166,7 @@ class MainActivity : ComponentActivity() {
                                 list = history,
                                 month = histMonth,
                                 onMonth = { histMonth = it },
+                                onFile = file,
                                 onOpen = { t -> openTxn(t, known0) },
                             )
                             return@Column
@@ -1361,6 +1376,7 @@ class MainActivity : ComponentActivity() {
                                     histMonth = History.monthOf(history.first().at)
                                     tab = Tab.HISTORY
                                 },
+                                onFile = file,
                                 onOpen = { t -> openTxn(t, contacts.all()) },
                             )
                         }
@@ -4454,81 +4470,259 @@ private fun PayChoice(
 }
 
 /**
- * The shelf a purchase came off. Null for a payment between people — those get an arrow
- * instead, because the useful thing about them is which way the money went, and a mark that
- * looked like a category would say they were all the same kind of thing.
+ * The five categories, as the drawable that draws each one.
+ *
+ * These are the bill-tile vectors from checkpoint 1 §5.4, with both colours baked in — an ink
+ * outline and one detail in blue. They are never tinted: a `ColorFilter` would flatten the pair
+ * to one colour and lose the detail that tells them apart.
  */
-private fun markFor(t: History.Txn): Mark? = when {
-    t.kind != History.Kind.SHOP -> null
-    else -> when (t.category) {
-        "Phone" -> Mark.Signal
-        "TV & streaming" -> Mark.Screen
-        "Bills & wallets" -> Mark.Receipt
-        else -> Mark.Basket
-    }
+internal fun spendIcon(spend: History.Spend): Int = when (spend) {
+    History.Spend.PHONE -> R.drawable.ic_recharge
+    History.Spend.MOVIES -> R.drawable.ic_movie
+    History.Spend.FOOD -> R.drawable.ic_meal
+    History.Spend.SHOPPING -> R.drawable.ic_bag
+    History.Spend.OTHER -> R.drawable.ic_more
 }
 
+internal fun spendLabel(spend: History.Spend): String = when (spend) {
+    History.Spend.PHONE -> "Phone"
+    History.Spend.MOVIES -> "Movies"
+    History.Spend.FOOD -> "Food"
+    History.Spend.SHOPPING -> "Shopping"
+    History.Spend.OTHER -> "Other"
+}
+
+/** The order the picker offers them in (ui/PORT-2026-10-01-2.md §1.4). */
+internal val SPEND_ORDER = listOf(
+    History.Spend.FOOD, History.Spend.SHOPPING, History.Spend.PHONE,
+    History.Spend.MOVIES, History.Spend.OTHER,
+)
+
+/** Every row's icon sits in this box, so every title starts at the same x. */
+private val ICON_BOX = 40.dp
+
 /**
- * One line of history. The amount carries the sign, because that is the thing being scanned
- * for — a column of figures where in and out look alike has to be read word by word.
+ * One line of history.
+ *
+ * **The icon says WHO or WHAT, never which way the money went** (§1.2). The arrow for money out
+ * and the green tick disc for money in are both gone: the amount already carries the sign and
+ * the colour, and an icon repeating it spent the one place on the row that could have said
+ * something new. A person is their face, a shop is its brand or its category, and a payment to
+ * an address nobody has filed is a dashed "+" that asks.
+ *
+ * The amount carries the sign because that is the thing being scanned for — a column of figures
+ * where in and out look alike has to be read word by word.
  */
 @Composable
-private fun TxnRow(t: History.Txn, onOpen: () -> Unit) {
+private fun TxnRow(t: History.Txn, onFile: (History.Spend) -> Unit = {}, onOpen: () -> Unit) {
+    var asking by remember(t.signature) { mutableStateOf(false) }
+    // Only a payment OUT to an address with no category can be filed. Money in is not an
+    // expense, and a shop order came off a shelf that already said what it was.
+    val fileable = t.who == History.Who.ADDRESS && !t.incoming && t.spend == null
+
     Row(
         Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable(onClick = onOpen)
             .padding(vertical = Space.row),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        // A received payment wears the state's disc — a success fill carrying a white tick,
-        // which is one of the three places a fill still belongs. Everything else is a bare
-        // mark on the white page: the shelf a purchase came off, or the direction the money
-        // went. All three sit in the same 40dp box, so the titles line up down the column and
-        // the grey disc that used to be behind every one of them is gone.
-        val mark = markFor(t)
-        if (t.incoming) {
-            IconDisc(R.drawable.hi_tick, D.White, D.Success, size = 40.dp, icon = 20.dp)
-        } else {
-            Box(Modifier.size(40.dp), contentAlignment = Alignment.Center) {
-                if (mark != null) MarkCanvas(mark, 24.dp)
-                else HiIcon(Hi.ArrowUpRight, D.Black, 24.dp)
+        Box(Modifier.size(ICON_BOX), contentAlignment = Alignment.Center) {
+            when {
+                // A face for anyone with a wallet — a contact, or a stranger who paid us. The
+                // same coloured disc §4.4 gives People, seeded on the address so one person is
+                // one colour everywhere.
+                t.who == History.Who.PERSON || (t.who == History.Who.ADDRESS && t.incoming) ->
+                    FaceDisc(t.title, t.address, ICON_BOX)
+                t.brand != null -> Image(
+                    painterResource(t.brand), contentDescription = null,
+                    modifier = Modifier.size(36.dp).clip(RoundedCornerShape(9.dp)),
+                    contentScale = ContentScale.Crop,
+                )
+                t.spend != null -> CategoryIcon(t.spend, ICON_BOX)
+                else -> AddCategory(enabled = fileable) { asking = true }
+            }
+            // The in-progress badge, on the icon's bottom end corner and pushed 2dp outside it.
+            // Finished rows carry none — a badge on everything says nothing.
+            if (t.state == History.State.CONFIRMING || t.state == History.State.PREPARING) {
+                Box(
+                    Modifier.align(Alignment.BottomEnd).offset(x = 2.dp, y = 2.dp)
+                        .size(20.dp).clip(CircleShape).background(D.White).padding(2.dp)
+                        .clip(CircleShape).background(D.Blue),
+                    contentAlignment = Alignment.Center,
+                ) { HiIcon(Hi.Clock, D.White, 12.dp) }
             }
         }
         Spacer(Modifier.width(Space.inline))
         Column(Modifier.weight(1f)) {
-            Text(t.title, color = D.Black, style = Type.body, maxLines = 1)
+            Text(t.title, color = D.Black, style = Type.body, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Spacer(Modifier.height(Space.tight))
-            // A code is the one thing on this row somebody needs to USE, so it is monospaced,
-            // and tapping it copies rather than opening the row. A code you cannot get out of
-            // the app is barely delivered.
-            if (t.code != null) {
-                // A summary, not the code itself. Cramming a card number and a PIN onto one
-                // ellipsized line showed neither properly and copied both as one blob; the
-                // row opens the sheet where each part is labelled and separately copyable.
-                Text("Tap for the code", color = D.BlueInk, style = Type.caption, maxLines = 1)
-            } else {
-                Text(t.note ?: t.category, color = if (t.note != null) D.BlueInk else D.Quiet,
-                    style = Type.caption, maxLines = 1)
-            }
+            StateLine(t, fileable) { asking = true }
         }
         Spacer(Modifier.width(Space.inline))
         Column(horizontalAlignment = Alignment.End) {
             // Money in is the success ink. Money out is INK, never red — spending is not an
             // error, and the sign is what is being scanned for.
             Text(
-                (if (t.incoming) "+" else "−") + t.amount,
+                (if (t.incoming) "+" else "\u2212") + t.amount,
                 color = if (t.incoming) D.SuccessInk else D.Black,
                 style = Type.body.figure(), maxLines = 1,
             )
             Spacer(Modifier.height(Space.tight))
-            Text(ago(t.at), color = D.Quiet,
-                style = Type.caption.copy(fontFeatureSettings = "tnum"))
+            Text(ago(t.at), color = D.Quiet, style = Type.caption.figure(), maxLines = 1)
         }
+    }
+
+    if (asking) {
+        SpendPicker(t.title, onPick = { onFile(it); asking = false }) { asking = false }
+    }
+}
+
+/**
+ * The line under the title: one fixed sentence per state, the same in both lists (§1.3).
+ *
+ * Fixed, because the same transaction read two different ways in two places is the thing that
+ * makes somebody check their wallet against the app.
+ */
+@Composable
+private fun StateLine(t: History.Txn, fileable: Boolean, onFile: () -> Unit) {
+    val quiet = Type.caption
+    when {
+        t.state == History.State.CONFIRMING ->
+            Text("Confirming on Solana", color = D.BlueInk, style = quiet, maxLines = 1)
+        t.state == History.State.PREPARING ->
+            Text("Paid · getting your code", color = D.BlueInk, style = quiet, maxLines = 1)
+        t.state == History.State.DELIVERED && t.code != null ->
+            Text("Code ready · tap to see it", color = D.Quiet, style = quiet, maxLines = 1)
+        t.state == History.State.DELIVERED ->
+            Text("Delivered", color = D.Quiet, style = quiet, maxLines = 1)
+        t.state == History.State.REFUNDED ->
+            Text("Refunded to your wallet", color = D.Quiet, style = quiet, maxLines = 1)
+        t.incoming ->
+            Text("Paid you", color = D.Quiet, style = quiet, maxLines = 1)
+        // "You paid · Add a category" — the second half is a link, so it is its own Text.
+        fileable -> Row {
+            Text("You paid · ", color = D.Quiet, style = quiet, maxLines = 1)
+            Text(
+                "Add a category", color = D.BlueInk, style = quiet, maxLines = 1,
+                modifier = Modifier.clickable(onClick = onFile),
+            )
+        }
+        t.spend != null ->
+            Text("You paid · ${spendLabel(t.spend)}", color = D.Quiet, style = quiet, maxLines = 1)
+        else ->
+            Text("You paid", color = D.Quiet, style = quiet, maxLines = 1)
+    }
+}
+
+/**
+ * The "+" that asks what a payment was for.
+ *
+ * Dashed, because the circle is a blank waiting to be filled rather than a thing in its own
+ * right — every other icon on this row is a statement, and this one is a question.
+ */
+@Composable
+private fun AddCategory(enabled: Boolean, onClick: () -> Unit) {
+    val press = remember { MutableInteractionSource() }
+    val dash = PathEffect.dashPathEffect(floatArrayOf(6f, 5f))
+    Box(
+        Modifier.then(if (enabled) PressScale(press) else Modifier)
+            .size(ICON_BOX)
+            .clickable(press, indication = null, enabled = enabled, onClick = onClick)
+            .drawBehind {
+                drawCircle(
+                    D.Neutral,
+                    radius = size.minDimension / 2 - 0.75.dp.toPx(),
+                    style = Stroke(1.5.dp.toPx(), pathEffect = dash),
+                )
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        Canvas(Modifier.size(20.dp)) {
+            val w = size.width
+            val arm = w * .3f
+            val stroke = Stroke(markStroke(20.dp) * w / 24f, cap = StrokeCap.Round)
+            drawLine(D.BlueInk, Offset(w / 2 - arm, w / 2), Offset(w / 2 + arm, w / 2),
+                strokeWidth = stroke.width, cap = StrokeCap.Round)
+            drawLine(D.BlueInk, Offset(w / 2, w / 2 - arm), Offset(w / 2, w / 2 + arm),
+                strokeWidth = stroke.width, cap = StrokeCap.Round)
+        }
+    }
+}
+
+/**
+ * A category icon at its optical size.
+ *
+ * The five vectors were drawn at one scale and their inked areas differ a lot, so at one box
+ * size the phone and More look small beside the ticket. [opticalScale] sizes each so they cover
+ * the same area (§1.5).
+ */
+/**
+ * A category icon at its optical size, from Icons.kt.
+ *
+ * `CategoryMark` and not a local `Image`: the five vectors were drawn at one scale and their
+ * inked areas differ by nearly half, so each has to be scaled so `sqrt(w * h)` matches or the
+ * phone reads a size smaller than the ticket beside it (§1.5). It also uses `requiredSize`
+ * rather than `size` — `size` is coerced into the parent's already-fixed constraints and
+ * clamps the scaled grid straight back to the box, which silently undoes the whole thing. The
+ * first version here made exactly that mistake.
+ */
+@Composable
+private fun CategoryIcon(spend: History.Spend, box: Dp, optical: Float = CatMark.ROW_OPTICAL) {
+    val mark = CatMark.forCategory(spendLabel(spend)) ?: return
+    CategoryMark(mark, box, optical)
+}
+
+
+/**
+ * "What was this?" — the five categories, one tap to file.
+ *
+ * It only ever appears for a payment the app cannot explain by itself, and the answer never
+ * leaves the phone, which is what the second line says.
+ */
+@Composable
+private fun SpendPicker(title: String, onPick: (History.Spend) -> Unit, onClose: () -> Unit) {
+    Tray(onClose) {
+        Text("What was this?", color = D.Black, style = Type.heading)
+        Spacer(Modifier.height(Space.tight))
+        Text(
+            "Your payment to $title. Only you see this.",
+            color = D.Quiet, style = Type.caption,
+        )
+        Spacer(Modifier.height(Space.section))
+        Column(verticalArrangement = Arrangement.spacedBy(20.dp)) {
+            SPEND_ORDER.chunked(4).forEach { row ->
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(20.dp)) {
+                    row.forEach { spend ->
+                        val press = remember { MutableInteractionSource() }
+                        Column(
+                            Modifier.weight(1f).then(PressScale(press))
+                                .clip(RoundedCornerShape(14.dp))
+                                .clickable(press, indication = null) { onPick(spend) }
+                                .padding(vertical = Space.tight),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                        ) {
+                            CatMark.forCategory(spendLabel(spend))?.let {
+                                CategoryMark(it, CatMark.PickerBox, CatMark.PICKER_OPTICAL)
+                            }
+                            Spacer(Modifier.height(8.dp))
+                            Text(spendLabel(spend), color = D.Black, style = Type.caption)
+                        }
+                    }
+                    repeat(4 - row.size) { Spacer(Modifier.weight(1f)) }
+                }
+            }
+        }
+        Spacer(Modifier.height(Space.section))
     }
 }
 
 /** The home screen's tail: the last three things that moved money, and a way to the rest. */
 @Composable
-private fun HistoryStrip(list: List<History.Txn>, onViewAll: () -> Unit, onOpen: (History.Txn) -> Unit) {
+private fun HistoryStrip(
+    list: List<History.Txn>,
+    onViewAll: () -> Unit,
+    onFile: (History.Txn, History.Spend) -> Unit,
+    onOpen: (History.Txn) -> Unit,
+) {
     Column(Modifier.fillMaxWidth()) {
         Row(
             Modifier.fillMaxWidth().heightIn(min = 48.dp),
@@ -4546,7 +4740,7 @@ private fun HistoryStrip(list: List<History.Txn>, onViewAll: () -> Unit, onOpen:
         // Split by a hairline rather than boxed, and no trailing line under the last row.
         val rows = list.take(3)
         rows.forEachIndexed { i, t ->
-            TxnRow(t) { onOpen(t) }
+            TxnRow(t, onFile = { onFile(t, it) }) { onOpen(t) }
             if (i < rows.lastIndex) RowLine()
         }
     }
@@ -4565,6 +4759,7 @@ private val MONTH: DateTimeFormatter = DateTimeFormatter.ofPattern("LLLL yyyy")
 @Composable
 private fun HistoryTab(
     list: List<History.Txn>,
+    onFile: (History.Txn, History.Spend) -> Unit,
     month: YearMonth,
     onMonth: (YearMonth) -> Unit,
     onOpen: (History.Txn) -> Unit,
@@ -4607,7 +4802,7 @@ private fun HistoryTab(
             )
             LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
                 itemsIndexed(rows) { i, t ->
-                    TxnRow(t) { onOpen(t) }
+                    TxnRow(t, onFile = { onFile(t, it) }) { onOpen(t) }
                     if (i < rows.lastIndex) RowLine()
                 }
             }

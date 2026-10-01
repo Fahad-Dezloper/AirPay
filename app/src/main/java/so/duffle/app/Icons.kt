@@ -1,9 +1,14 @@
 package so.duffle.app
 
+import androidx.annotation.DrawableRes
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.foundation.layout.size
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
@@ -11,8 +16,10 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.addPathNodes
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import kotlin.math.sqrt
 
 /**
  * Every line icon the app draws, rebuilt so its stroke can follow the text beside it.
@@ -221,3 +228,125 @@ internal val HI_FOR_RES: Map<Int, Hi> = mapOf(
     R.drawable.hi_clock to Hi.Clock,
     R.drawable.hi_backspace to Hi.Backspace,
 )
+
+// ─── The five bill-tile category marks, optically sized ──────────────────────────────────────
+
+/**
+ * One of the five two-colour category marks (ui/PORT-2026-10-01-2.md §1.5).
+ *
+ * These are NOT [Hi] icons and deliberately do not go through [HiIcon]:
+ *
+ *  - **Both colours are baked into the vector** — an ink outline with one detail in `#008FFF`.
+ *    Anything that tints (an `Icon`, a `ColorFilter`) flattens the pair to one colour and
+ *    destroys the drawing, so they are painted with `Image` as they ship.
+ *  - **Their 0.833 stroke is part of the drawing**, traced from the user's reference sheet at
+ *    12 reference px to a grid unit. These five are the standing exception to the [markStroke]
+ *    size rule, which is why the stroke scaling with the vector below is expected and not a bug.
+ *
+ * [ink] is the mark's ink box on its own 24 × 24 grid, width to height, read off the path data
+ * in `res/drawable/ic_*.xml` (and `ui/components/ui/Marks.tsx` `TILE_INK`, which carries the
+ * same five pairs). The five were traced at ONE scale, so their ink differs a lot — the phone is
+ * 10.9 × 17, the ticket 20.8 × 13.3, More 14 × 14 — and dropped into one box the phone and More
+ * read a size smaller than the ticket. [unitFor] is the fix.
+ *
+ * [res] is a `get()` and not a constructor property on purpose: it is the only member that
+ * touches `R`, so the sizing arithmetic stays loadable (and testable) on a bare JVM, where
+ * Android resources do not exist.
+ */
+internal enum class CatMark(internal val ink: Pair<Float, Float>) {
+    Recharge(10.916f to 16.958f),
+    Movie(20.75f to 13.334f),
+    Meal(14.584f to 16.916f),
+    Bag(16.456f to 16.75f),
+    More(14f to 14.084f);
+
+    @get:DrawableRes
+    internal val res: Int
+        get() = when (this) {
+            Recharge -> R.drawable.ic_recharge
+            Movie -> R.drawable.ic_movie
+            Meal -> R.drawable.ic_meal
+            Bag -> R.drawable.ic_bag
+            More -> R.drawable.ic_more
+        }
+
+    internal companion object {
+        /**
+         * Category → mark, from ui/PORT-2026-10-01-2.md §1.2. `null` for a payment the user has
+         * not filed yet, which gets the dashed "+" of §1.4 instead of a mark.
+         *
+         * Travel and Bills are absent because they have no line icon yet (§5 "Open points"),
+         * so they are not offered in the picker either.
+         */
+        internal fun forCategory(category: String?): CatMark? = when (category) {
+            "Phone" -> Recharge
+            "Movies" -> Movie
+            "Food" -> Meal
+            "Shopping" -> Bag
+            "Other" -> More
+            else -> null
+        }
+
+        /** §1.5: the transaction row's box and optical target. */
+        internal val RowBox: Dp = 40.dp
+        internal const val ROW_OPTICAL: Float = 26f
+
+        /** §1.5: the category picker's box and optical target (§1.4's 4-column grid). */
+        internal val PickerBox: Dp = 48.dp
+        internal const val PICKER_OPTICAL: Float = 31f
+    }
+}
+
+/**
+ * dp per grid unit that puts this mark's ink at [optical] — the §1.5 rule, verbatim:
+ * scale the vector so `sqrt(inkWidth × inkHeight)` equals the target.
+ *
+ * **Equal AREA, not equal box.** The geometric mean of the ink box is what reads as "the same
+ * size" across a tall shape, a wide one and a square one; matching the bounding box instead
+ * would make the ticket look twice the phone's weight. The box the mark sits in is left alone,
+ * so nothing in the layout moves.
+ */
+internal fun CatMark.unitFor(optical: Float): Float {
+    val (w, h) = ink
+    return optical / sqrt(w * h)
+}
+
+/** The size this mark's ink actually ends up drawn at, in dp, width to height. Pinned by test. */
+internal fun CatMark.drawnSize(optical: Float): Pair<Float, Float> {
+    val u = unitFor(optical)
+    return ink.first * u to ink.second * u
+}
+
+/**
+ * One category mark, drawn at [optical] and centred in a [box]-sized box.
+ *
+ * The whole 24-unit grid is painted at `24 × unit` dp, which is LARGER than the box — the
+ * drawing is scaled, not the frame. That is the point of §1.5: the box stays [box] so every
+ * title in a transaction row still starts at the same x, while the ink inside it covers the
+ * same area for all five marks. Every one of the five is centred on 12,12 by its own ink box,
+ * so centring the grid in the box centres the ink.
+ *
+ * [requiredSize] and not [androidx.compose.foundation.layout.size]: `size` is coerced into the
+ * incoming constraints, which the enclosing box has already fixed at [box] — it would silently
+ * clamp the scaled grid back down and undo the whole change. The overhang carries no ink (the
+ * widest case, recharge in the picker, reaches 54.7dp of grid for a 25 × 39 inked area), so
+ * nothing is cut and the box is not clipped.
+ *
+ * `Image` and not `Icon`: see [CatMark] — tinting flattens the two-colour drawing.
+ */
+@Composable
+internal fun CategoryMark(
+    mark: CatMark,
+    box: Dp,
+    optical: Float,
+    modifier: Modifier = Modifier,
+    contentDescription: String? = null,
+) {
+    Box(modifier.size(box), contentAlignment = Alignment.Center) {
+        Image(
+            painter = painterResource(mark.res),
+            contentDescription = contentDescription,
+            modifier = Modifier.requiredSize((24f * mark.unitFor(optical)).dp),
+        )
+    }
+}

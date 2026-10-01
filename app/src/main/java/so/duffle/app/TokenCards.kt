@@ -129,8 +129,9 @@ internal fun TokenBadges(
     // The parent's gutter would do the first but not the second: a card scrolling away would
     // stop at an invisible margin 20dp in. So the row breaks out of that gutter and carries
     // the start inset as content instead — a leading spacer, which a scroller is guaranteed
-    // to scroll. There is no trailing spacer, because the end edge is meant to run out to the
-    // screen.
+    // to scroll. A trailing one matches it, so the last card is not left dead against the
+    // screen edge once the row is scrolled through; it sits off the viewport at rest, so the
+    // end edge still runs out to the screen until you get there.
     //
     // `layout` reports the parent's OWN width and places the measured-wider content one gutter
     // to the start. Reporting `placeable.width` here instead shifted the row by two gutters,

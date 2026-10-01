@@ -31,6 +31,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
@@ -122,7 +123,7 @@ internal fun rememberCalled(contact: Contact): Called {
  * deliberately NOT palette tokens, which is why they live here and not in Palette.kt, and why
  * they are private to this file. Nothing outside §3 People may use them.
  */
-private val FaceColours = listOf(
+internal val FaceColours = listOf(
     Color(0xFF7887E2), Color(0xFFA076E7), Color(0xFFC26BD4), Color(0xFFE25CA4),
     Color(0xFF119C97), Color(0xFFB6840F), Color(0xFF798FAF),
 )
@@ -135,7 +136,13 @@ private val FaceColours = listOf(
  * and across a restart. The sandbox reproduces Java's `String.hashCode` so both sides land on
  * the same hue; in Kotlin `hashCode()` already *is* that.
  */
-private fun faceColour(address: String) =
+/**
+ * `internal`, not private, because transaction rows draw the same face for the same person
+ * (ui/PORT-2026-10-01-2.md §1.2) and one person must be one colour everywhere. The constraint
+ * these were given still stands and is the reason they are not in `Palette.kt`: they are
+ * IDENTITY colours, not palette tokens, and nothing may reuse them for anything else.
+ */
+internal fun faceColour(address: String) =
     FaceColours[(address.hashCode() and 0x7fffffff) % FaceColours.size]
 
 /**
@@ -336,5 +343,30 @@ private fun Person(
         // The inline tick only for a verified name on a phone that is not a Seeker; a verified
         // Seeker already wears it on the face.
         NameLine(called, Modifier.fillMaxWidth(), centred = true, tick = called.verified && !seekerTick)
+    }
+}
+
+
+/**
+ * A person's face: their initial in white on the colour their address hashes to.
+ *
+ * Seeded on the ADDRESS and never the name, because names change — a rename, or a domain
+ * resolving later — and the address does not. So somebody keeps their colour across a rename,
+ * and looks the same in §3 and in a transaction row.
+ *
+ * The letter is 0.38 x the disc, which is the avatar's own composition rather than a step on
+ * the type scale (the same ratio `Initial` uses).
+ */
+@Composable
+internal fun FaceDisc(letter: String, address: String?, size: Dp, modifier: Modifier = Modifier) {
+    Box(
+        modifier.size(size).clip(CircleShape)
+            .background(address?.let(::faceColour) ?: D.Neutral),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            letter.take(1).uppercase().ifBlank { "?" }, color = D.White,
+            fontSize = (size.value * 0.38f).sp, fontWeight = FontWeight.Bold, fontFamily = Ui,
+        )
     }
 }
