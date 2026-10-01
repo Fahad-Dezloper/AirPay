@@ -258,21 +258,35 @@ private val BILL_TILES = listOf(
  * shelf is worse than no tile. That is still why a tile can be missing: the eight are fixed,
  * but a tile whose shelf is absent or bare is dropped rather than drawn as a dead end.
  */
+/**
+ * Everything the eight bill tiles do not cover, as one shelf.
+ *
+ * Built here rather than routed to a "More" section on the server, because what is left over
+ * depends on which of the seven named tiles found a shelf — and Games, or anything the server
+ * adds later, must not vanish just because it lost its own tile. De-duplicated by product id:
+ * two shelves can list the same voucher.
+ *
+ * `internal`, and lifted out of [ShopTiles], because Rewards' "Recommended for you" row sends
+ * its "See all" to exactly this shelf (user call, 2026-10-01). Two routes to one page means one
+ * function; built twice, the two would drift the first time a tile was added.
+ *
+ * Null when nothing is left over — a door onto an empty shelf is worse than no door.
+ */
+internal fun moreSection(sections: List<Shop.Section>): Shop.Section? {
+    val stocked = sections.filter { it.products.isNotEmpty() }
+    val spoken = BILL_TILES.mapNotNull { it.shelf(stocked)?.title }.toSet()
+    val rest = stocked.filterNot { it.title in spoken }
+    return rest.takeIf { it.isNotEmpty() }?.let { left ->
+        Shop.Section("More", left.flatMap { it.products }.distinctBy { p -> p.id })
+    }
+}
+
 @Composable
 internal fun ShopTiles(sections: List<Shop.Section>, onOpen: (Shop.Section) -> Unit) {
     val stocked = sections.filter { it.products.isNotEmpty() }
     val shown = BILL_TILES.mapNotNull { tile -> tile.shelf(stocked)?.let { tile to it } }
-
-    // More is the rest of the catalogue, flattened into one shelf. It is built here rather than
-    // routed to a "More" section on the server, because what is left over depends on which of
-    // the seven above found a shelf — and Games, or anything the server adds later, must not
-    // vanish just because it lost its own tile. De-duplicated by product id: two shelves can
-    // list the same voucher.
-    val spoken = shown.map { it.second.title }.toSet()
-    val rest = stocked.filterNot { it.title in spoken }
-    val more = rest.takeIf { it.isNotEmpty() }?.let { left ->
-        BillTile("More", R.drawable.ic_more, brand = false, sections = emptyList()) to
-            Shop.Section("More", left.flatMap { it.products }.distinctBy { p -> p.id })
+    val more = moreSection(sections)?.let {
+        BillTile("More", R.drawable.ic_more, brand = false, sections = emptyList()) to it
     }
 
     // 20 on both axes, and 20 rather than 10: with the tile's grey body gone, the gap is the

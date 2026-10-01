@@ -988,7 +988,15 @@ class MainActivity : ComponentActivity() {
                             // A union is resolved in a single pass.
                             .windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.ime)),
                     ) {
-                        Header(
+                        // The AirPay bar belongs to HOME, not to every page.
+                        //
+                        // It carries your avatar and the notification bell — both of which are
+                        // about the app as a whole, and neither of which a sub-page is asking
+                        // about. Rewards, Offers and Referrals each bring their own title and
+                        // back arrow, so the bar above them was a second header saying nothing
+                        // (user call, 2026-10-01). Tabs that still rely on `BackHeader` get it
+                        // from there; none of them needs this.
+                        if (tab == Tab.TAP) Header(
                             checking = checking,
                             unread = unread,
                             // The on-chain name first: it is the one other people see, so it
@@ -1011,8 +1019,9 @@ class MainActivity : ComponentActivity() {
                             },
                         )
                         // The header is chrome rather than a section, so the balance sits
-                        // directly under it: 16, not the 40 between sections.
-                        Spacer(Modifier.height(16.dp))
+                        // directly under it: 16, not the 40 between sections. Only drawn with
+                        // the header, or a sub-page starts with a gap nothing explains.
+                        if (tab == Tab.TAP) Spacer(Modifier.height(16.dp))
 
                         when (val st = status) {
                             is Status.Working -> { Banner("…", st.what, D.Quiet); Spacer(Modifier.height(Space.inline)) }
@@ -1113,13 +1122,15 @@ class MainActivity : ComponentActivity() {
                             return@Column
                         }
 
-                        if (tab != Tab.TAP) {
+                        // Rewards draws its OWN back row and title (§1 of
+                        // ui/PORT-2026-10-01-3.md), so the generic one is skipped for it —
+                        // otherwise the screen opens with "← Earn" above "← Rewards".
+                        if (tab != Tab.TAP && tab != Tab.REWARDS) {
                             BackHeader(
                                 when (tab) {
                                     Tab.REQUESTS -> "Activity"
                                     Tab.ALERTS -> "Notifications"
                                     Tab.HISTORY -> "Transactions"
-                                    Tab.REWARDS -> "Earn"
                                     Tab.REFERRALS -> "Refer & earn"
                                     Tab.OFFERS -> "Offers"
                                     else -> shopSection?.title ?: "Pay a bill"
@@ -1214,6 +1225,14 @@ class MainActivity : ComponentActivity() {
                                 connected, myGenesis != null,
                                 onInvite = { tab = Tab.REFERRALS },
                                 onOffers = { tab = Tab.OFFERS },
+                                onBack = { tab = Tab.TAP; shopSection = null; shopProduct = null },
+                                // §5's cards open the product in the shop, which is this
+                                // screen's state to move.
+                                onProduct = { p -> shopProduct = p; tab = Tab.SHOP },
+                                // The same shelf the More tile opens, from the same function.
+                                onSeeAll = moreSection(shopSections)?.let { more ->
+                                    { shopSection = more; tab = Tab.SHOP }
+                                },
                             )
                             return@Column
                         }
@@ -1324,11 +1343,37 @@ class MainActivity : ComponentActivity() {
                             }
                         }
 
-                        if (contactCount > 0) {
+                        // §3 is people you have actually PAID or BEEN PAID BY — not everyone
+                        // this phone has ever met.
+                        //
+                        // A contact is recorded on a tap, a scan, even a request that never got
+                        // answered, because the app needs their name the moment they appear.
+                        // That is right for the tap sheet and wrong for Home: scanning one QR
+                        // put a stranger permanently in the row (user call, 2026-10-01).
+                        //
+                        // History is the test, not `Contact.totalPaid`: that only counts money
+                        // this wallet SENT, so paying by it alone would drop everybody who has
+                        // paid you. A settled row in either direction is the honest version of
+                        // "we have done business".
+                        //
+                        // Ordered by how many of those there are, then by the most recent, so
+                        // the row is the people dealt with regularly rather than most recently
+                        // bumped into.
+                        val dealings = remember(history) {
+                            history.mapNotNull { it.peer }.groupingBy { it }.eachCount()
+                        }
+                        val people = remember(known0, dealings) {
+                            known0.filter { dealings.containsKey(it.address) }
+                                .sortedWith(
+                                    compareByDescending<Contact> { dealings[it.address] ?: 0 }
+                                        .thenByDescending { it.lastTapMillis },
+                                )
+                        }
+                        if (people.isNotEmpty()) {
                             Spacer(Modifier.height(Space.section))
                             Tag("3")
                             People(
-                                list = contacts.all(),
+                                list = people,
                                 waiting = { addr ->
                                     toPay.count { it.payable && it.request.recipient == addr } +
                                         owed.count { it.live && !it.rejected && it.peer == addr }

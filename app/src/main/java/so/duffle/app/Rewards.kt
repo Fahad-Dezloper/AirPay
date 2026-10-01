@@ -85,6 +85,33 @@ object Rewards {
          * about which rewards are new. It has no bearing on the money — see [reveal].
          */
         val revealed: Boolean,
+        /**
+         * What the card holds when it is not SKR.
+         *
+         * Null on every card the server sends today — `rewards.py` has no concept of a gift
+         * card and its `total` is `sum(a.skr)`, an integer. ui/PORT-2026-10-01-3.md §3 asks a
+         * card to be able to hold one, and §10 lists the reward record's gift fields as
+         * undesigned. So the shape is here and the screen draws it, and the day the server
+         * sends `gift` the cards appear with no further work. Nothing fabricates one meanwhile.
+         */
+        val gift: Gift? = null,
+    )
+
+    /**
+     * A gift card won on a scratch card: what it buys, and what it is worth.
+     *
+     * [usd] is separate from [face] on purpose. The face value is in the brand's own currency
+     * and is what the card says; the USD worth is what the total card sums. The phone does not
+     * convert between them — both have to arrive from the server (§2).
+     */
+    data class Gift(
+        val brand: String,
+        /** Bitrefill's icon id, e.g. "amazon-icon". The logo is fetched padded and transparent. */
+        val logoId: String?,
+        /** Face value in [currency], whole: 250 reads "₹250". */
+        val face: Double,
+        val currency: String,
+        val usd: Double?,
     )
 
     data class Refusal(val counterparty: String, val why: String, val at: Long)
@@ -98,6 +125,16 @@ object Rewards {
         val poolLeft: Int,
         val perPayment: Int, val streak: Int, val streakNeeded: Int, val lockDays: Int,
         val rows: List<Row>, val refusals: List<Refusal>,
+        /**
+         * Everything earned, as money, when the server can say.
+         *
+         * §2 wants the total card to read "$16.24" rather than an SKR count, which needs the
+         * SKR price and each gift card's worth — and §2 is explicit that the phone does not
+         * convert currencies, so neither may be worked out here. The server supplies none of it
+         * today (`rewards.py` has no USD anywhere), so this is null and the card falls back to
+         * the SKR figure rather than printing a dollar sign in front of a number nobody priced.
+         */
+        val totalUsd: Double? = null,
     )
 
     suspend fun summary(address: String): Summary? {
@@ -112,7 +149,18 @@ object Rewards {
             for (i in 0 until a.length()) a.optJSONObject(i)?.let {
                 rows += Row(it.optInt("id"), it.optString("kind"), it.optInt("skr"), it.optString("counterparty"),
                     (it.optDouble("created_at") * 1000).toLong(), (it.optDouble("unlock_at") * 1000).toLong(),
-                    it.optString("state"), it.text("reason"), !it.isNull("revealed_at"))
+                    it.optString("state"), it.text("reason"), !it.isNull("revealed_at"),
+                    gift = it.optJSONObject("gift")?.let { g ->
+                        Gift(
+                            brand = g.text("brand") ?: return@let null,
+                            logoId = g.text("logo_id"),
+                            face = g.optDouble("face", 0.0),
+                            currency = g.text("currency") ?: "INR",
+                            // Absent is NOT zero: a gift card whose worth the server has not
+                            // priced must not drag the total down to nothing.
+                            usd = if (g.isNull("usd")) null else g.optDouble("usd"),
+                        )
+                    })
             }
         }
         val refusals = mutableListOf<Refusal>()
@@ -125,6 +173,7 @@ object Rewards {
         return Summary(
             locked = bal?.optInt("locked") ?: 0, ready = bal?.optInt("ready") ?: 0,
             settled = bal?.optInt("settled") ?: 0, total = bal?.optInt("total") ?: 0,
+            totalUsd = bal?.let { if (it.isNull("total_usd")) null else it.optDouble("total_usd") },
             weekPayments = week?.optInt("rewarded_payments") ?: 0, weekAllows = week?.optInt("of") ?: 4,
             monthEarned = month?.optInt("earned") ?: 0, monthCap = month?.optInt("cap") ?: 0,
             poolLeft = o.optInt("pool_left"),
