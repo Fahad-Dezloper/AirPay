@@ -31,6 +31,22 @@ class Orders(context: Context) {
          * after the product is gone. Blank for anything bought before this was recorded.
          */
         val category: String = "",
+        /**
+         * The product's own currency, so [value] can be written "₹100" and not a bare "100".
+         *
+         * Stored for the same reason as [category]: the catalogue is the server's and the
+         * product can be gone by the time the order is read back. Null for anything bought
+         * before this was recorded, and the figure then prints without a symbol rather than
+         * guessing one — a wrong currency symbol on a receipt is worse than none.
+         */
+        val currency: String? = null,
+        /**
+         * Bitrefill's image id, e.g. "phonepe-svg" — `Shop.Product.image`. See [logoUrl].
+         *
+         * The brand tile on the code sheet needs it, and `Shop.Product` only has it while the
+         * buying is happening; once the sheet is reopened from history the product is gone.
+         */
+        val image: String? = null,
         /** The denomination in the product's own currency, e.g. "50". */
         val value: String,
         /**
@@ -70,6 +86,14 @@ class Orders(context: Context) {
          * every launch, never settled. `not_delivered` is listed on the other side precisely
          * because "delivered" is a substring of it and any looser test would invert it.
          */
+        /**
+         * The brand's logo, built exactly as `Shop.Product.logoUrl` builds it — the padded,
+         * square, F8F8F8-grounded form, because the code sheet draws it in a 40dp tile.
+         */
+        val logoUrl: String? get() = image?.takeIf { it.isNotBlank() }?.let {
+            "https://www.bitrefill.com/content/cn/b_rgb:F8F8F8,c_pad,h_256,w_256/v1/$it.png"
+        }
+
         val delivered get() = status in setOf("all_delivered", "complete", "delivered")
         val failed get() = status in setOf("denied", "payment_error", "failed", "expired")
         /** Some orders arrived and some did not. Not finished, and not a failure either. */
@@ -108,6 +132,8 @@ class Orders(context: Context) {
                 status = o.optString("t", "paid").ifBlank { "paid" }, at = o.optLong("a"),
                 recipient = o.optString("r").takeIf { it.isNotBlank() },
                 code = o.optString("k").takeIf { it.isNotBlank() },
+                currency = o.optString("u").takeIf { it.isNotBlank() },
+                image = o.optString("m").takeIf { it.isNotBlank() },
             )
         }
     } catch (e: Exception) {
@@ -128,6 +154,8 @@ class Orders(context: Context) {
                 put("a", o.at)
                 o.recipient?.let { put("r", it) }
                 o.code?.let { put("k", it) }
+                o.currency?.let { put("u", it) }
+                o.image?.let { put("m", it) }
             })
         }
         prefs.edit().putString(KEY, arr.toString()).apply()
