@@ -98,6 +98,7 @@ import java.time.format.DateTimeFormatter
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
+import java.math.BigDecimal
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -148,6 +149,8 @@ class MainActivity : ComponentActivity() {
     private var tab by mutableStateOf(Tab.TAP)
     /** The person whose thread is open, or null for the main page. */
     private var thread by mutableStateOf<Contact?>(null)
+    /** Which item inside the open thread has its own page up (§8.4), by the row's id. */
+    private var threadItem by mutableStateOf<String?>(null)
     /** "check" is open: the diagnostics and the exchange log, which are for us, not the user. */
     private var checking by mutableStateOf(false)
     /** A wallet app is open in front of us. Hoisted out of the composition because linking
@@ -462,6 +465,7 @@ class MainActivity : ComponentActivity() {
                                             invoiceId = inv.id, name = product.name, value = value,
                                             paid = inv.shown, signature = sent.signature,
                                             category = category, recipient = phone,
+                                            currency = product.currency, image = product.image,
                                             status = "paid", at = System.currentTimeMillis(),
                                         ))
                                         refreshLists()
@@ -520,7 +524,7 @@ class MainActivity : ComponentActivity() {
     private fun openTxn(t: History.Txn, known: List<Contact>) {
         val person = t.peer?.let { p -> known.firstOrNull { it.address == p } }
         if (person != null) {
-            thread = person
+            thread = person; threadItem = null
             tab = Tab.TAP
             return
         }
@@ -928,10 +932,16 @@ class MainActivity : ComponentActivity() {
                 // like a screen you can back out of.
                 BackHandler(enabled = thread != null || cards || tab != Tab.TAP) {
                     when {
+                        // The item page backs out before the thread it was opened from.
+                        threadItem != null -> threadItem = null
                         thread != null -> thread = null
                         cards -> cards = false
                         shopProduct != null -> shopProduct = null
-                        shopSection != null -> shopSection = null
+                        // Leaving the section leaves the tab with it. The shop body is
+                        // `shopSection?.let { … }`, so clearing the section while the tab stayed
+                        // on SHOP drew an empty screen under the fallback "Pay a bill" title —
+                        // one back press that looked like the app had broken.
+                        shopSection != null -> { shopSection = null; tab = Tab.TAP }
                         else -> tab = Tab.TAP
                     }
                 }
@@ -1004,7 +1014,13 @@ class MainActivity : ComponentActivity() {
                         // back arrow, so the bar above them was a second header saying nothing
                         // (user call, 2026-10-01). Tabs that still rely on `BackHeader` get it
                         // from there; none of them needs this.
-                        if (tab == Tab.TAP) Header(
+                        // Home only — and a thread is not Home, even though it lives in the Home
+                        // tab. The thread draws its own header (back · face · name · Rename) and
+                        // the item page inside it draws another, so leaving this one up stacked
+                        // the AirPay bar above a screen that already said where it was. Same
+                        // rule the shop's service page gets below: whoever draws a header owns
+                        // the top of the screen.
+                        if (tab == Tab.TAP && thread == null) Header(
                             checking = checking,
                             unread = unread,
                             // The on-chain name first: it is the one other people see, so it
@@ -1115,7 +1131,7 @@ class MainActivity : ComponentActivity() {
                                     push("— withdrew ${e.amount} ${e.symbol} request ${e.reference.take(8)}…")
                                     lifecycleScope.launch { ServerClient.withdraw(e.reference) }
                                 },
-                                onBack = { thread = null },
+                                onBack = { thread = null; threadItem = null },
                                 onOpen = {
                                     // The same sheet a tap opens, addressed to someone already
                                     // met. Their Genesis mint is not stored, only whether they
@@ -1126,6 +1142,24 @@ class MainActivity : ComponentActivity() {
                                         "contacts"))
                                 },
                                 onSay = { text -> say(live.address, text) },
+                                // `Rewards.Row.counterparty` is an address, so the thread filters
+                                // these itself rather than being handed a pre-filtered list.
+                                rewards = rewardSummary?.rows.orEmpty(),
+                                wallet = walletList.firstOrNull { it.address == connected },
+                                openItem = threadItem,
+                                onOpenItem = { threadItem = it },
+                                // "Later" is not an answer. The request stays payable and the
+                                // asker is told, so their phone shows it as pending rather than
+                                // as silence — the same call the tap sheet's own Later makes.
+                                onLater = { item ->
+                                    lifecycleScope.launch {
+                                        ServerClient.defer(
+                                            item.request.reference,
+                                            Identity.label(this@MainActivity),
+                                        )
+                                    }
+                                    push("— told ${item.request.label} we'll pay later")
+                                },
                             )
                             return@Column
                         }
@@ -1136,10 +1170,19 @@ class MainActivity : ComponentActivity() {
                         // Rewards and Offers both draw their OWN back row and title, so the
                         // generic one is skipped for them — otherwise the screen opens with
                         // "← Offers" above "← Offers".
-                        if (tab != Tab.TAP && tab != Tab.REWARDS && tab != Tab.OFFERS) {
+                        // A service's page (§3.2) and an item's page (§8.4) each draw their own
+                        // back row and title, so the generic header must stand down for them.
+                        // Only the gift-card branch draws its own back row, so only that branch
+                        // may stand this one down. Testing `shopProduct != null` alone took the
+                        // header off the recharge screen too — which draws none — and left it
+                        // with no way back but the system gesture.
+                        val ownsHeader = tab == Tab.SHOP && shopProduct != null &&
+                            shopSection?.products?.none { it.isMobileRecharge } == true
+                        if (tab != Tab.TAP && tab != Tab.REWARDS && tab != Tab.OFFERS &&
+                            !ownsHeader
+                        ) {
                             BackHeader(
                                 when (tab) {
-                                    Tab.REQUESTS -> "Activity"
                                     Tab.ALERTS -> "Notifications"
                                     Tab.HISTORY -> "Transactions"
                                     else -> shopSection?.title ?: "Pay a bill"
@@ -1175,6 +1218,12 @@ class MainActivity : ComponentActivity() {
                                         email = myEmail,
                                         onEmail = { editingEmail = true },
                                         onBuy = { p, v -> buy(p, v, sec.title) },
+                                        // Matched on the mint, not on the symbol: the symbol is
+                                        // whatever `Tokens` named a mint, and matching the mint
+                                        // `buy()` actually builds its transfer against is the
+                                        // only version that cannot disagree with what is spent.
+                                        usdc = holdings.firstOrNull { it.mint == Shop.USDC_MAINNET }
+                                            ?.let { BigDecimal.valueOf(it.units, it.decimals) },
                                     )
                                 }
                             }
@@ -1199,7 +1248,7 @@ class MainActivity : ComponentActivity() {
                                     // which is where the state it refers to actually lives.
                                     a.peer != null ->
                                         known0.firstOrNull { it.address == a.peer }?.let {
-                                            thread = it; tab = Tab.TAP
+                                            thread = it; threadItem = null; tab = Tab.TAP
                                         }
                                     a.kind == Alerts.Kind.OFFER -> tab = Tab.REWARDS
                                     else -> tab = Tab.TAP
@@ -1228,7 +1277,19 @@ class MainActivity : ComponentActivity() {
                                 onBack = { tab = Tab.TAP; shopSection = null; shopProduct = null },
                                 // §5's cards open the product in the shop, which is this
                                 // screen's state to move.
-                                onProduct = { p -> shopProduct = p; tab = Tab.SHOP },
+                                // The shop body is `shopSection?.let { … }`, so setting only the
+                                // product landed on a blank screen under the fallback "Pay a
+                                // bill" header — a recommended card opened nothing at all. The
+                                // product has to arrive with the shelf it came off; `More` is
+                                // the fallback because that is where a product with no shelf of
+                                // its own is listed.
+                                onProduct = { p ->
+                                    shopSection = shopSections.firstOrNull { sec ->
+                                        sec.products.any { it.id == p.id }
+                                    } ?: moreSection(shopSections)
+                                    shopProduct = p
+                                    tab = Tab.SHOP
+                                },
                                 // The same shelf the More tile opens, from the same function.
                                 onSeeAll = moreSection(shopSections)?.let { more ->
                                     { shopSection = more; tab = Tab.SHOP }
@@ -1237,35 +1298,9 @@ class MainActivity : ComponentActivity() {
                             return@Column
                         }
 
-                        if (tab == Tab.REQUESTS) {
-                            RequestsTab(
-                                toPay = toPay,
-                                owed = owed,
-                                paying = paying,
-                                onPay = { item -> incoming = item.request },
-                                onDismissToPay = { item ->
-                                    val req = item.request
-                                    inbox.remove(req.reference); refreshLists()
-                                    push("— declined ${req.amount} ${req.symbol} from ${req.label}")
-                                    // Only a live request is a rejection; one they already took
-                                    // back, or already paid, is just tidying up.
-                                    if (item.payable) {
-                                        lifecycleScope.launch {
-                                            ServerClient.reject(req.reference, Identity.label(this@MainActivity))
-                                        }
-                                    }
-                                },
-                                onDismissOwed = { e ->
-                                    watch.remove(e.reference); refreshLists()
-                                    push("— withdrew ${e.amount} ${e.symbol} request ${e.reference.take(8)}…")
-                                    // Tell the phone we asked, so it stops offering a Pay button
-                                    // for something we took back. Advisory: money sent anyway
-                                    // still arrives, and the server keeps watching for it.
-                                    lifecycleScope.launch { ServerClient.withdraw(e.reference) }
-                                },
-                            )
-                            return@Column
-                        }
+                        // RequestsTab (the Activity screen) was here. §9 removes it: nothing linked to
+                        // it, and a request somebody deferred is reached through its notification
+                        // and through that person's thread.
 
                         Tag("2")
                         BalanceCard(
@@ -1378,7 +1413,7 @@ class MainActivity : ComponentActivity() {
                                     toPay.count { it.payable && it.request.recipient == addr } +
                                         owed.count { it.live && !it.rejected && it.peer == addr }
                                 },
-                                onPick = { c -> thread = c },
+                                onPick = { c -> thread = c; threadItem = null },
                             )
                         }
 
@@ -1564,7 +1599,9 @@ class MainActivity : ComponentActivity() {
 
                 showCodeFor?.let { id ->
                     bought.firstOrNull { it.invoiceId == id }?.let { o ->
-                        CodeSheet(o) { showCodeFor = null }
+                        CodeSheet(o, currency = o.currency, logoUrl = o.logoUrl) {
+                            showCodeFor = null
+                        }
                     }
                 }
 
@@ -2651,369 +2688,7 @@ private fun WalletsScreen(
  * is the whole reason the payload carries it. A letter is the fallback, not the default.
  */
 
-/**
- * Everything that has ever passed between this phone and one person, as a conversation.
- *
- * Requests used to live in one "Activity" list, ordered by what needed attention, with the
- * other party reduced to a label on the row. That list answered "what is outstanding" and
- * could not answer "what is going on with them" — which is the question anyone actually has
- * when they open a payments app, and the reason every messaging app files by person.
- *
- * Two directions, drawn as two sides:
- *
- *   * **Left** — what they asked of us, read off a tap and kept in [Inbox]. Payable ones carry
- *     their own Pay and Decline, here rather than on a separate screen.
- *   * **Right** — what we asked of them, kept in [Watch] and settled by the chain.
- *
- * Oldest at the top, like a chat, so the newest thing is where the thumb already is.
- *
- * **A request with no peer recorded cannot appear here.** Only requests served since the field
- * existed know who took them; older ones stay in the Activity list rather than being filed
- * under a guess.
- */
-@Composable
-private fun Thread(
-    who: Contact,
-    toPay: List<Inbox.Item>,
-    owed: List<Watch.Entry>,
-    notes: List<Messages.Note>,
-    paying: String?,
-    onPay: (Inbox.Item) -> Unit,
-    onDecline: (Inbox.Item) -> Unit,
-    onWithdraw: (Watch.Entry) -> Unit,
-    onBack: () -> Unit,
-    onOpen: () -> Unit,
-    onSay: (String) -> Unit,
-    onRename: (String) -> Unit,
-) {
-    val called = rememberCalled(who)
-    var renaming by remember(who.address) { mutableStateOf(false) }
 
-    if (renaming) {
-        ContactNameDialog(
-            called = called,
-            current = who.yours.orEmpty(),
-            onDismiss = { renaming = false },
-            onSave = { renaming = false; onRename(it) },
-        )
-    }
-    val theirs = toPay.filter { it.request.recipient == who.address }
-    val ours = owed.filter { it.peer == who.address }
-    val said = notes.filter { it.peer == who.address }
-    // One list, one clock. `Any` rather than a sealed wrapper because the two shapes already
-    // carry everything a row needs and copying them into a third type would be a place for the
-    // two to drift apart.
-    val lines: List<Any> = (theirs + ours + said).sortedBy {
-        when (it) {
-            is Inbox.Item -> it.readAt
-            is Watch.Entry -> it.createdAt
-            is Messages.Note -> it.at
-            else -> 0L
-        }
-    }
-
-    Column(Modifier.fillMaxSize()) {
-        Row(Modifier.fillMaxWidth().padding(bottom = Space.row), verticalAlignment = Alignment.CenterVertically) {
-            // 24 in a 48dp hit area, on the page rather than in a grey disc — and named,
-            // because an icon-only control has to say what it does.
-            Box(
-                Modifier.size(48.dp).clip(CircleShape).clickable(onClick = onBack)
-                    .semantics { contentDescription = "Back" },
-                contentAlignment = Alignment.Center,
-            ) { HiIcon(Hi.ArrowLeft, D.Black, 24.dp) }
-            Spacer(Modifier.width(Space.tight))
-            Face(who, 42.dp)
-            Spacer(Modifier.width(Space.inline))
-            Column(
-                Modifier.weight(1f).clip(RoundedCornerShape(10.dp))
-                    .clickable { renaming = true }.padding(horizontal = 4.dp, vertical = 2.dp),
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        called.shown, color = D.Black, style = Type.heading, maxLines = 1,
-                        overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false),
-                    )
-                    // The tick belongs to the name the chain confirmed, and to nothing else.
-                    // The Seeker badge is a separate claim about their hardware and is spelled
-                    // out below rather than given a second identical tick beside this one.
-                    if (called.verified) {
-                        Spacer(Modifier.width(Space.tight))
-                        HiIcon(Hi.Verified, D.BlueInk, 16.dp)
-                    }
-                }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    // When you have renamed somebody who owns a domain, their real name still
-                    // shows here — your label is for recognising them, not for hiding this.
-                    if (called.kind == Called.Kind.Yours && called.domain != null) {
-                        Text(called.domain, color = D.BlueInk, style = Type.caption)
-                        Text(" · ", color = D.Quiet, style = Type.caption)
-                    }
-                    // An address, so the mono face — read character by character.
-                    Text(who.short, color = D.Quiet, style = Type.mono)
-                    // Said out loud, because it is a different claim: the name belongs to a
-                    // wallet that vouched for this one, not to this address.
-                    if (called.borrowed) {
-                        Text(" · linked wallet", color = D.Quiet, style = Type.caption)
-                    }
-                    if (who.seeker) {
-                        Text(" · Seeker", color = D.BlueInk, style = Type.caption)
-                    }
-                }
-            }
-        }
-
-        // Built from the bottom up, newest first, which is what `reverseLayout` means: the list
-        // is ANCHORED to the end instead of being scrolled there afterwards. Two attempts at
-        // scrolling to the end — by pixel and by item — both landed a bubble short, because the
-        // height they aim at is only known after layout. There is nothing to aim at here.
-        LazyColumn(
-            Modifier.weight(1f).fillMaxWidth(),
-            reverseLayout = true,
-            verticalArrangement = Arrangement.spacedBy(16.dp),
-        ) {
-            // One Column, because a lazy item lays its children out on top of each other.
-            if (lines.isEmpty()) item {
-                Column {
-                    Spacer(Modifier.height(Space.section))
-                    Text("Nothing between you yet", color = D.Black, style = Type.body)
-                    Spacer(Modifier.height(Space.tight))
-                    Text("Say hello, ask ${who.label} for money, or tap phones to pay them.",
-                        color = D.Quiet, style = Type.caption)
-                }
-            }
-            items(lines.asReversed()) { line ->
-                when (line) {
-                    is Inbox.Item -> Bubble(
-                        mine = false,
-                        amount = "${line.request.amount} ${line.request.symbol}",
-                        at = line.paidAt ?: line.readAt,
-                        state = when {
-                            line.paid -> "You paid this"
-                            line.declined -> "You declined"
-                            line.withdrawn -> "They took it back"
-                            else -> "Asked you"
-                        },
-                        mood = when {
-                            line.paid -> Mood.DONE
-                            line.declined -> Mood.REFUSED
-                            line.withdrawn -> Mood.DROPPED
-                            else -> Mood.OPEN
-                        },
-                    ) {
-                        if (line.payable) {
-                            Spacer(Modifier.height(Space.tight))
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Button(
-                                    onClick = { onPay(line) },
-                                    enabled = paying == null,
-                                    contentPadding = PaddingValues(horizontal = 20.dp, vertical = 10.dp),
-                                    colors = ButtonDefaults.buttonColors(containerColor = D.Blue, contentColor = D.White),
-                                ) {
-                                    // Every button label is the heading step, and white on
-                                    // D.Blue passes only as large text.
-                                    Text(if (paying == line.request.reference) "…" else "Pay",
-                                        style = Type.heading)
-                                }
-                                // Saying no is not a chain refusal — nothing was sent — so
-                                // Decline is ink rather than red.
-                                TextButton(
-                                    onClick = { onDecline(line) },
-                                    enabled = paying == null,
-                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp),
-                                ) { Text("Decline", color = D.Black, style = Type.body) }
-                            }
-                        }
-                    }
-                    is Messages.Note -> Say(line)
-                    is Watch.Entry -> Bubble(
-                        mine = true,
-                        amount = "${line.amount} ${line.symbol}",
-                        at = line.paidAt ?: line.withdrawnAt ?: line.createdAt,
-                        state = when {
-                            line.paid -> "They paid you"
-                            line.rejected -> "${line.rejectedBy} declined · nothing was paid"
-                            line.withdrawn -> "You took this back"
-                            line.pending -> "${line.deferredBy} will pay later"
-                            else -> "Waiting for them"
-                        },
-                        mood = when {
-                            line.paid -> Mood.DONE
-                            line.rejected -> Mood.REFUSED
-                            line.withdrawn -> Mood.DROPPED
-                            else -> Mood.OPEN
-                        },
-                    ) {
-                        // Only while it can still be paid. A request they declined, or one
-                        // already taken back, has nothing left to take back.
-                        if (line.live && !line.rejected) {
-                            // On the page now, under the bubble, so it is blue INK rather than
-                            // faded white on blue — which was 13sp on a 3.30:1 ground.
-                            Box(
-                                Modifier.clip(RoundedCornerShape(8.dp))
-                                    .clickable { onWithdraw(line) }
-                                    .heightIn(min = 48.dp).padding(horizontal = 4.dp),
-                                contentAlignment = Alignment.Center,
-                            ) { Text("Take it back", color = D.BlueInk, style = Type.body) }
-                        }
-                    }
-                }
-            }
-        }
-
-        Box(Modifier.fillMaxWidth().height(1.dp).background(D.Line))
-
-        // Words before money. Checking you have the right person is the thing everyone does
-        // before handing over cash in person, and the only alternative this app offered was
-        // reading 44 base58 characters off a screen — which nobody does.
-        var draft by remember(who.address) { mutableStateOf("") }
-        val sendable = draft.isNotBlank()
-        Row(Modifier.fillMaxWidth().padding(top = Space.inline), verticalAlignment = Alignment.CenterVertically) {
-            // A 1.5dp ring on white instead of a grey body — ink while in use, the hairline
-            // while empty — so the field is findable without a container behind it.
-            Box(
-                Modifier.weight(1f).clip(RoundedCornerShape(22.dp))
-                    .border(1.5.dp, if (draft.isEmpty()) D.Line else D.Black, RoundedCornerShape(22.dp))
-                    .heightIn(min = 48.dp)
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
-            ) {
-                if (draft.isEmpty()) {
-                    Text("Message ${who.label}", color = D.Quiet, style = Type.body, maxLines = 1)
-                }
-                BasicTextField(
-                    value = draft,
-                    // Capped where the server caps it, so nothing is typed that cannot be sent.
-                    onValueChange = { if (it.length <= Messages.MAX_BODY) draft = it },
-                    textStyle = Type.body.copy(color = D.Black),
-                    cursorBrush = SolidColor(D.Blue),
-                    maxLines = 4,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            }
-            Spacer(Modifier.width(Space.tight))
-            Box(
-                Modifier.size(48.dp).clip(CircleShape).background(if (sendable) D.Blue else D.Line)
-                    .clickable(enabled = sendable) { onSay(draft.trim()); draft = "" }
-                    .semantics { contentDescription = "Send message" },
-                contentAlignment = Alignment.Center,
-            ) { HiIcon(Hi.ArrowUpRight, if (sendable) D.White else D.Quiet, 24.dp) }
-        }
-
-        // One button, because the sheet it opens is one screen: a Pay form with "Request
-        // instead" on it. Two buttons here would promise two destinations and deliver one.
-        PrimaryButton("Pay or ask", onClick = onOpen, modifier = Modifier.fillMaxWidth().padding(top = Space.lead))
-    }
-}
-
-/**
- * Ours at the end, theirs at the start — the arrangement everybody already reads without being
- * taught it. The grey body and the blue ground are both gone (see [Say] and [Bubble]); what is
- * left saying which voice this is, is the side it sits on and the corner nearest the speaker,
- * squared off so a stack of these reads as two voices rather than a list of cards.
- */
-/**
- * A line of text in a thread. No amount, no state, no check — a message is only ever said.
- *
- * Deliberately quieter than a [Bubble]: money is what this screen is for, and if words were
- * drawn at the same weight the amounts would stop standing out in a scroll.
- */
-@Composable
-private fun Say(note: Messages.Note) {
-    val corner = RoundedCornerShape(
-        topStart = 18.dp, topEnd = 18.dp,
-        bottomStart = if (note.mine) 18.dp else 5.dp,
-        bottomEnd = if (note.mine) 5.dp else 18.dp,
-    )
-    // Both sides are a hairline outline on white now: no grey body, and no blue ground. Blue
-    // carries only large text in this app, and a sentence is never large text — 15sp white on
-    // #008FFF is 3.30:1. Mine takes the ink outline and theirs the quiet one, and the squared
-    // corner is still what says which voice it is. The time moved out onto the page with it.
-    Column(
-        Modifier.fillMaxWidth(),
-        horizontalAlignment = if (note.mine) Alignment.End else Alignment.Start,
-    ) {
-        Box(
-            Modifier.widthIn(max = 260.dp).clip(corner)
-                .border(1.5.dp, if (note.mine) D.Black else D.Line, corner)
-                .padding(horizontal = 16.dp, vertical = 12.dp),
-        ) {
-            Text(note.body, color = D.Black, style = Type.body)
-        }
-        Text(ago(note.at), color = D.Quiet, style = Type.caption,
-            modifier = Modifier.padding(top = Space.tight))
-    }
-}
-
-/** How a row ended, which is the only thing that decides how it is coloured. */
-private enum class Mood { OPEN, DONE, REFUSED, DROPPED }
-
-/**
- * One item in a thread.
- *
- * **Only the amount sits on the blue.** It is `Type.title` — 24 bold, past the 19sp floor
- * white on #008FFF needs — and everything else moved OUT of the bubble onto the white page
- * under it, because "Asked · 1d ago" was an 11sp white-at-80% line on blue and failed
- * outright. On white the state word can also take its own ink, which it never could on a
- * coloured ground.
- *
- * A declined ask is **neutral**: a struck-through amount and quiet words. Red is only a
- * transaction the chain refused, and a person saying no is not one — so the red well this
- * bubble used to sit in is gone, and the grey one with it (no containers). Theirs is a
- * hairline outline; mine keeps the blue, because blue is the app's "you" colour on the pay bar.
- */
-@Composable
-private fun Bubble(
-    mine: Boolean,
-    amount: String,
-    at: Long,
-    state: String,
-    mood: Mood,
-    extra: @Composable ColumnScope.() -> Unit,
-) {
-    // Refused and dropped both mean nothing happened and nothing will, so they read the same:
-    // struck through, quiet, and off the blue.
-    val settled = mood == Mood.REFUSED || mood == Mood.DROPPED
-    val ink = when {
-        settled -> D.Quiet
-        mine -> D.White
-        else -> D.Black
-    }
-    val corner = RoundedCornerShape(
-        topStart = 18.dp, topEnd = 18.dp,
-        bottomStart = if (mine) 18.dp else 5.dp,
-        bottomEnd = if (mine) 5.dp else 18.dp,
-    )
-    Column(
-        Modifier.fillMaxWidth(),
-        horizontalAlignment = if (mine) Alignment.End else Alignment.Start,
-    ) {
-        Box(
-            Modifier.widthIn(max = 260.dp).clip(corner)
-                .then(
-                    if (mine && !settled) Modifier.background(D.Blue)
-                    else Modifier.border(1.5.dp, D.Line, corner)
-                )
-                .padding(horizontal = 16.dp, vertical = 12.dp),
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(amount, color = ink, style = Type.title.figure(),
-                    textDecoration = if (settled) TextDecoration.LineThrough else null)
-                if (mood == Mood.DONE) {
-                    Spacer(Modifier.width(Space.tight))
-                    HiIcon(Hi.Verified, if (mine) D.White else D.SuccessInk, 20.dp)
-                }
-            }
-        }
-        // The state, under the bubble on white: the paid ink for something that landed, the
-        // quiet ink for everything else.
-        Text(
-            "$state · ${ago(at)}",
-            color = if (mood == Mood.DONE) D.SuccessInk else D.Quiet,
-            style = Type.caption,
-            modifier = Modifier.padding(top = Space.tight),
-        )
-        extra()
-    }
-}
 
 /**
  * Somebody's face: their initial in a white disc with a ring.
@@ -3027,7 +2702,7 @@ private fun Bubble(
  * The letter is 0.38 of the disc: a fraction of the shape, not a step on the type scale.
  */
 @Composable
-private fun Face(c: Contact, size: Dp, ring: Color? = null) {
+internal fun Face(c: Contact, size: Dp, ring: Color? = null) {
     Box(
         Modifier.size(size).clip(CircleShape)
             .then(if (ring != null) Modifier.background(ring).padding(2.dp) else Modifier),
@@ -3666,42 +3341,6 @@ private fun Labelled(label: String, value: String, modifier: Modifier = Modifier
     }
 }
 
-/**
- * Where codes go, asked once and only where it matters.
- *
- * Shown on shelves that deliver a code rather than crediting a number — a phone recharge has
- * nowhere to email. Optional throughout: the code is shown in the app either way, and nobody
- * should have to hand over an address to spend their own money. This is the copy that survives
- * a reinstall, a lost phone, or not looking at the screen in the ten seconds after buying.
- */
-@Composable
-private fun EmailRow(email: String?, onEdit: () -> Unit) {
-    // A setting, drawn as a row with a hairline under it rather than a grey slab.
-    Row(
-        Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable(onClick = onEdit)
-            .padding(vertical = Space.row),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column(Modifier.weight(1f)) {
-            Text(
-                if (email == null) "Codes are shown here only" else "Codes also emailed to",
-                color = D.Quiet, style = Type.caption,
-            )
-            Spacer(Modifier.height(Space.tight))
-            Text(
-                email ?: "Add an email for a copy",
-                color = if (email == null) D.BlueInk else D.Black,
-                style = Type.body, maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
-        Spacer(Modifier.width(Space.inline))
-        Text(if (email == null) "Add" else "Change", color = D.BlueInk, style = Type.body)
-    }
-    RowLine()
-    Spacer(Modifier.height(Space.row))
-}
-
 /** Collecting it. Blank clears, because "no email" has to stay reachable once one is set. */
 @Composable
 private fun EmailDialog(current: String, onDismiss: () -> Unit, onSave: (String) -> Unit) {
@@ -3748,68 +3387,11 @@ private fun EmailDialog(current: String, onDismiss: () -> Unit, onSave: (String)
     )
 }
 
-/**
- * The thing you bought, put in front of you.
- *
- * This did not exist, and its absence was the whole failure: a real PhonePe card was paid for,
- * delivered, and captured correctly — and the screen said "Sent" and then nothing. The code sat
- * in storage while the buyer went to their email to find it.
- *
- * Each part is its own labelled, copyable row rather than one blob. A card number and a PIN are
- * used in different boxes on someone else's website, and a sixteen-digit run followed by a
- * six-digit run says nothing about which is which.
- */
-@Composable
-private fun CodeSheet(order: Orders.Order, onClose: () -> Unit) {
-    val r = remember(order.code) { Shop.Redemption.of(order.code) }
-    Tray(onClose = onClose) {
-        Spacer(Modifier.height(Space.lead))
-        Text(order.name.removeSuffix(" India"), color = D.Black, style = Type.title)
-        Spacer(Modifier.height(Space.tight))
-        // A face value and what was paid for it: tabular, so the two line up, but still a
-        // sentence rather than an amount standing on its own.
-        Text("${order.value} · paid ${order.paid}", color = D.Quiet,
-            style = Type.caption.copy(fontFeatureSettings = "tnum"))
-        Spacer(Modifier.height(Space.section))
 
-        if (r == null) {
-            Text(
-                "Delivered. This one returns no code — the value went straight to the " +
-                    "recipient.",
-                color = D.Quiet, style = Type.caption,
-            )
-        } else {
-            r.code?.let { CodeRow("Card number", it) }
-            r.pin?.let { CodeRow("PIN", it) }
-            r.link?.let { CodeRow("Redeem at", it, mono = false) }
-            r.instructions?.let {
-                Spacer(Modifier.height(Space.lead))
-                Text(it, color = D.Quiet, style = Type.caption)
-            }
-            r.raw?.let {
-                Spacer(Modifier.height(Space.lead))
-                Text(it, color = D.Quiet, style = Type.caption)
-            }
-            r.expires?.let {
-                Spacer(Modifier.height(Space.lead))
-                Text("Valid until ${it.take(10)}", color = D.Quiet, style = Type.caption)
-            }
-        }
-
-        Spacer(Modifier.height(Space.row))
-        Text(
-            "Kept in your history. It is also emailed to whoever the order named.",
-            color = D.Quiet, style = Type.caption,
-        )
-        Spacer(Modifier.height(Space.row))
-        PrimaryButton("Done", onClick = onClose)
-        Spacer(Modifier.height(Space.lead))
-    }
-}
 
 /** One labelled part of a code, big enough to read off and tappable to copy. */
 @Composable
-private fun CodeRow(label: String, value: String, mono: Boolean = true) {
+internal fun CodeRow(label: String, value: String, mono: Boolean = true) {
     val clip = LocalClipboardManager.current
     var copied by remember(value) { mutableStateOf(false) }
     // A row split by a hairline, not a grey field. A code, a PIN and a redeem link are all
@@ -3839,7 +3421,7 @@ private fun CodeRow(label: String, value: String, mono: Boolean = true) {
 
 /** The one line that has to be on every shop screen: this is the real-money corner of the app. */
 @Composable
-private fun MainnetNote() {
+internal fun MainnetNote() {
     // No tinted box any more: the mark and the words in blue INK are enough to be noticed
     // without a wash behind them. 16 is the icon size that sits beside a caption.
     Row(
@@ -3852,165 +3434,7 @@ private fun MainnetNote() {
     }
 }
 
-/**
- * One section of the shop: what is in it, and what it costs.
- *
- * Everything here is bought with **real USDC on mainnet**, which is the only place in this app
- * where the money is real — so the screen says so once at the top and again on the button. A
- * devnet transfer to an invoice address would be a payment into nothing.
- */
-@Composable
-private fun ShopSection(
-    section: Shop.Section,
-    picked: Shop.Product?,
-    onPick: (Shop.Product?) -> Unit,
-    email: String?,
-    onEmail: () -> Unit,
-    onBuy: (Shop.Product, String) -> Unit,
-) {
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-        // This was a second, hand-copied version of [MainnetNote] — the same eight lines, so
-        // the two could drift apart while both claiming to be the one line every shop screen
-        // has to carry. One of them now.
-        MainnetNote()
-        // A short shelf opens itself. Four subscription services behind four taps is a list
-        // pretending to be a menu; sixty-three shopping brands genuinely need collapsing.
-        val alwaysOpen = section.products.size <= 6
-        // Only where a code is the thing being bought. A DTH recharge credits a set-top box
-        // and has nothing to email.
-        // Gated on "comes back to YOU", not on the redemption method. The first version asked
-        // for `"online" in redemption`, which is false for PhonePe — it redeems by phone — so
-        // the one shelf where somebody bought a gift card never offered to email them a copy.
-        if (section.products.any { it.recipient == "none" }) {
-            EmailRow(email, onEmail)
-        }
-        // Rows split by a hairline, not grey cards.
-        section.products.forEachIndexed { i, p ->
-            val open = alwaysOpen || picked?.id == p.id
-            Column(
-                Modifier.fillMaxWidth().heightIn(min = 48.dp)
-                    .clickable { onPick(if (open) null else p) }
-                    .padding(vertical = Space.row),
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    // The brand's own mark. A list of subscription services with no logos is a
-                    // list of words, and these are things people recognise by sight.
-                    p.logoUrl?.let { url ->
-                        val logo by produceState<androidx.compose.ui.graphics.ImageBitmap?>(null, url) {
-                            value = LogoCache.get(url) ?: withContext(Dispatchers.IO) { LogoCache.load(url) }
-                        }
-                        // A white tile with a hairline: on a white page a white box with no
-                        // edge is not a tile at all.
-                        Box(
-                            Modifier.size(40.dp).clip(RoundedCornerShape(11.dp)).background(D.White)
-                                .border(1.5.dp, D.Line, RoundedCornerShape(11.dp)),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            logo?.let {
-                                Image(it, contentDescription = null, modifier = Modifier.fillMaxSize(),
-                                    contentScale = ContentScale.Fit)
-                            }
-                        }
-                        Spacer(Modifier.width(Space.inline))
-                    }
-                    Column(Modifier.weight(1f)) {
-                        Text(p.name.removeSuffix(" India"), color = D.Black, style = Type.body,
-                            maxLines = 1)
-                        Text(
-                            // WHERE it can be spent, which is the thing that decides whether
-                            // a voucher is any use. Twenty-five of the sixty-three shopping
-                            // brands are in-store only — you cannot spend them on the website
-                            // — and the row used to say "9 prices", which answers a question
-                            // nobody asked.
-                            buildString {
-                                append(
-                                    when {
-                                        p.needsPhone -> "Credited to a phone number"
-                                        "online" in p.redemption && "instore" in p.redemption ->
-                                            "Online or in store"
-                                        "instore" in p.redemption -> "In store only"
-                                        "online" in p.redemption -> "Online only"
-                                        "phone" in p.redemption -> "In their app"
-                                        p.values.size == 1 -> "One price"
-                                        else -> "${p.values.size} prices"
-                                    }
-                                )
-                                // Three of the hundred and fifty-eight products are priced in
-                                // dollars by the shop — Tinder, Viber and the eSIM. A lone $3
-                                // among rupees reads as a bug rather than a fact, so the row
-                                // says which it is instead of leaving the symbol to argue for
-                                // itself.
-                                if (p.currency != "INR") append(" · priced in ${p.currency}")
-                            },
-                            color = D.Quiet, style = Type.caption,
-                            modifier = Modifier.padding(top = Space.tight),
-                        )
-                    }
-                    HIcon(if (open) R.drawable.hi_arrow_down else R.drawable.hi_arrow_up_right, D.Quiet, 20.dp)
-                }
-                // What this is and what to do with the code, in the brand's own words.
-                //
-                // Fetched only when the row is open. The text runs to a couple of thousand
-                // characters per product and matters at the moment of choosing, not while
-                // scrolling past — and it is shown in full, because a voucher's terms cut off
-                // mid-sentence is exactly the half somebody needed.
-                if (open) {
-                    val info by produceState<Shop.Details?>(null, p.id) { value = Shop.details(p.id) }
-                    info?.takeIf { !it.empty }?.let { d ->
-                        Spacer(Modifier.height(Space.lead))
-                        d.about?.let {
-                            Text(it, color = D.Quiet, style = Type.caption)
-                        }
-                        d.terms?.let {
-                            if (d.about != null) Spacer(Modifier.height(Space.tight))
-                            Text(it, color = D.Quiet, style = Type.caption)
-                        }
-                    }
-                }
-                // The denominations only appear for the row that was opened, because 156
-                // products with every price showing is a list nobody reads.
-                AnimatedVisibility(visible = open) {
-                    Column(Modifier.padding(top = Space.lead)) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(Space.inline),
-                            modifier = Modifier.horizontalScroll(rememberScrollState())) {
-                            val opts = p.packages.ifEmpty { p.values.map { Shop.Package(it, 0) } }
-                            opts.forEach { pack ->
-                                // The PRICE on the pill, never the description. A package whose
-                                // value is a name — "Amazon Prime Subscription 3M" — was being
-                                // printed straight after the currency symbol, so the button to
-                                // buy a ₹399 subscription read "₹Amazon Prime Subscription 3M".
-                                val price = "${symbolFor(p.currency)}${pack.price}"
-                                val what = packageLabel(pack, p.name)
-                                // The price grew to the heading step: 14sp white on #008FFF
-                                // is 3.30:1 and passes only as large text.
-                                //
-                                // What the price BUYS moved off the blue and under the button.
-                                // It was a 10.5sp white-at-80% line on the fill, the worst
-                                // pairing on the screen — and it is the line that says
-                                // whether ₹399 is three months of Prime or twelve, so it could
-                                // not simply be dropped.
-                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                    Box(
-                                        Modifier.clip(RoundedCornerShape(999.dp))
-                                            .background(D.Blue).clickable { onBuy(p, pack.value) }
-                                            .heightIn(min = 48.dp).padding(horizontal = 20.dp),
-                                        contentAlignment = Alignment.Center,
-                                    ) { Text(currencyStyled(price), color = D.White, style = Type.heading.figure()) }
-                                    what?.let {
-                                        Text(it, color = D.Quiet, style = Type.caption,
-                                            modifier = Modifier.padding(top = Space.tight))
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            if (i < section.products.lastIndex) RowLine()
-        }
-        Spacer(Modifier.height(Space.gutter))
-    }
-}
+
 
 /**
  * What the price buys, when the value says more than the number already does.
@@ -4029,7 +3453,7 @@ internal fun packageLabel(pack: Shop.Package, productName: String): String? = pa
     ?.removePrefix(productName.removeSuffix(" India"))
     ?.trim()?.takeIf { it.isNotBlank() }
 
-private fun symbolFor(currency: String) = when (currency) {
+internal fun symbolFor(currency: String) = when (currency) {
     "INR" -> "₹"
     "USD" -> "$"
     "EUR" -> "€"
@@ -4196,163 +3620,7 @@ internal fun MarkCanvas(mark: Mark, side: Dp, notch: Color = D.White, tint: Colo
 }
 
 
-/**
- * Everything waiting on someone, in one place: requests this phone can still pay, requests
- * others still owe it, and what has already settled.
- *
- * Nothing here counts down. A request is good until its reference is used, so the list is
- * ordered by what needs attention, not by what is about to vanish.
- */
-@Composable
-private fun RequestsTab(
-    toPay: List<Inbox.Item>,
-    owed: List<Watch.Entry>,
-    paying: String?,
-    onPay: (Inbox.Item) -> Unit,
-    onDismissToPay: (Inbox.Item) -> Unit,
-    onDismissOwed: (Watch.Entry) -> Unit,
-) {
-    val openToPay = toPay.filter { !it.paid }
-    val openOwed = owed.filter { !it.paid }
-    val history = (toPay.filter { it.paid }.map { Triple(it.paidAt ?: 0L, "Paid ${it.request.amount} ${it.request.symbol} to ${it.request.label}", it.signature!!) } +
-        owed.filter { it.paid }.map { Triple(it.paidAt ?: 0L, "Received ${it.amount} ${it.symbol}", it.signature!!) })
-        .sortedByDescending { it.first }
 
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-        if (openToPay.isEmpty() && openOwed.isEmpty() && history.isEmpty()) {
-            Spacer(Modifier.height(Space.section))
-            Text("Nothing here yet", color = D.Black, style = Type.body)
-            Spacer(Modifier.height(Space.tight))
-            Text("Requests you tap land here, and stay until they're paid.",
-                color = D.Quiet, style = Type.caption)
-            return@Column
-        }
-
-        if (openToPay.isNotEmpty()) {
-            SectionLabel("TO PAY")
-            openToPay.forEach { item ->
-                // A withdrawn request is greyed and explained rather than deleted. Removing the
-                // row under someone who is mid-payment — or has just approved in their wallet —
-                // is more confusing than leaving it with a reason.
-                val gone = item.withdrawn
-                Row(RowStyle, verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("${item.request.amount} ${item.request.symbol}",
-                                color = if (gone) D.Quiet else D.Black,
-                                style = Type.body.figure(),
-                                textDecoration = if (gone) TextDecoration.LineThrough else null)
-                            if (gone) {
-                                // Taken back means nothing happened and nothing will: quiet
-                                // words, no red well. The chain refused nothing here, and the
-                                // line below already names who took it back.
-                                Spacer(Modifier.width(Space.tight))
-                                Text("WITHDRAWN", color = D.Quiet, style = Type.micro)
-                            } else if (item.request.genesis != null) {
-                                // A fact about them, so it sits on the highlight marker.
-                                Spacer(Modifier.width(Space.tight))
-                                Text("SEEKER", color = D.Black, style = Type.micro,
-                                    modifier = Modifier.clip(RoundedCornerShape(5.dp))
-                                        .background(D.Highlight)
-                                        .padding(horizontal = 8.dp, vertical = 2.dp))
-                            }
-                        }
-                        Text(
-                            if (gone) "${item.request.label} took this back · nothing was paid"
-                            else "${item.request.label} · tapped ${ago(item.readAt)}",
-                            color = D.Quiet, style = Type.caption,
-                            modifier = Modifier.padding(top = Space.tight),
-                        )
-                    }
-                    TextButton(onClick = { onDismissToPay(item) }, enabled = paying == null) {
-                        Text("Remove", color = D.Quiet, style = Type.body)
-                    }
-                    if (!gone) {
-                        Button(
-                            onClick = { onPay(item) }, enabled = paying == null,
-                            colors = ButtonDefaults.buttonColors(containerColor = D.Blue, contentColor = D.White),
-                        ) {
-                            Text(if (paying == item.request.reference) "…" else "Pay",
-                                style = Type.heading)
-                        }
-                    }
-                }
-                RowLine()
-            }
-            Spacer(Modifier.height(Space.section))
-        }
-
-        if (openOwed.isNotEmpty()) {
-            SectionLabel("WAITING FOR PAYMENT")
-            openOwed.forEach { e ->
-                // Declined requests stay, greyed: they may still tap again or pay anyway, and a
-                // row that vanishes tells the asker nothing about what happened.
-                val no = e.rejected
-                // "Later" is its own state, between waiting and declined: somebody saw the
-                // request and said something, and the money can still arrive. Without it the
-                // asker cannot tell "they will pay tonight" from "they never looked".
-                val later = e.pending
-                Row(RowStyle, verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("${e.amount} ${e.symbol}", color = if (no) D.Quiet else D.Black,
-                                style = Type.body.figure(),
-                                textDecoration = if (no) TextDecoration.LineThrough else null)
-                            if (no || later) {
-                                // A person saying no is not a chain refusal, so DECLINED is
-                                // the quiet ink with no well behind it. PENDING is a blue-ink
-                                // outline: the highlight marks things, it does not describe
-                                // waiting.
-                                Spacer(Modifier.width(Space.tight))
-                                if (no) {
-                                    Text("DECLINED", color = D.Quiet, style = Type.micro)
-                                } else {
-                                    Text("PENDING", color = D.BlueInk, style = Type.micro,
-                                        modifier = Modifier
-                                            .border(1.5.dp, D.BlueInk, RoundedCornerShape(5.dp))
-                                            .padding(horizontal = 8.dp, vertical = 2.dp))
-                                }
-                            }
-                        }
-                        Text(
-                            when {
-                                no -> "${e.rejectedBy} declined · nothing was paid"
-                                later -> "${e.deferredBy} will pay later · still watching for it"
-                                else -> "requested ${ago(e.createdAt)} · ${e.reference.take(8)}…"
-                            },
-                            color = D.Quiet,
-                            // The waiting line carries a reference, which is an identifier.
-                            style = if (no || later) Type.caption else Type.mono,
-                            modifier = Modifier.padding(top = Space.tight),
-                        )
-                    }
-                    TextButton(onClick = { onDismissOwed(e) }) {
-                        Text("Remove", color = D.Quiet, style = Type.body)
-                    }
-                }
-                RowLine()
-            }
-            Spacer(Modifier.height(Space.section))
-        }
-
-        if (history.isNotEmpty()) {
-            SectionLabel("DONE")
-            history.forEachIndexed { i, (at, what, sig) ->
-                Row(RowStyle, verticalAlignment = Alignment.CenterVertically) {
-                    // The PAID ink, because that is what these are: money that landed.
-                    HiIcon(Hi.Tick, D.SuccessInk, 20.dp)
-                    Spacer(Modifier.width(Space.inline))
-                    Column(Modifier.weight(1f)) {
-                        Text(what, color = D.Black, style = Type.body)
-                        Text("${ago(at)} · ${sig.take(10)}…", color = D.Quiet, style = Type.mono,
-                            modifier = Modifier.padding(top = Space.tight))
-                    }
-                }
-                if (i < history.lastIndex) RowLine()
-            }
-        }
-    }
-}
 
 /**
  * The two ways to pay somebody, pinned to the bottom of the home screen.
@@ -4925,110 +4193,7 @@ private fun MonthSheet(
     }
 }
 
-/**
- * The notification panel: what has happened, and what is still waiting on someone.
- *
- * One list rather than a badge per section. A request waiting on you, a decline, a message and
- * a recharge that has not arrived are all "something you would want to know", and splitting
- * them by which part of the app they came from asks the reader to know that first.
- *
- * Unread is drawn as a rail down the left of the row rather than a coloured background: the
- * rows already use colour to say what KIND of thing happened, and a second colour meaning
- * "new" on top of it made both unreadable.
- */
-@Composable
-private fun AlertsTab(list: List<Alerts.Alert>, seenAt: Long, onOpen: (Alerts.Alert) -> Unit) {
-    if (list.isEmpty()) {
-        Column(Modifier.fillMaxWidth().padding(top = Space.section)) {
-            Text("Nothing new", color = D.Black, style = Type.body)
-            Spacer(Modifier.height(Space.tight))
-            Text("Requests, replies, messages and anything you've bought show up here.",
-                color = D.Quiet, style = Type.caption)
-        }
-        return
-    }
-    LazyColumn(Modifier.fillMaxSize()) {
-        itemsIndexed(list) { i, a ->
-            val look = alertLook(a.kind)
-            val fresh = a.at > seenAt
-            Row(
-                Modifier.fillMaxWidth().heightIn(min = 48.dp)
-                    .clickable { onOpen(a) }.padding(vertical = Space.row),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                // A payment state wears its disc — a bright fill carrying a white icon, and
-                // never without the icon, because all five fills share one brightness and the
-                // shape is what a colour-blind eye reads. Anything that is not a payment
-                // state is a bare mark on the page; the tinted disc behind every icon is gone.
-                if (look.disc) {
-                    IconDisc(look.icon, D.White, look.fill, size = 40.dp, icon = 20.dp)
-                } else {
-                    Box(Modifier.size(40.dp), contentAlignment = Alignment.Center) {
-                        HIcon(look.icon, D.BlueInk, 20.dp)
-                    }
-                }
-                Spacer(Modifier.width(Space.inline))
-                Column(Modifier.weight(1f)) {
-                    // Unread no longer washes the row blue (no tints): the title sits on the
-                    // highlight, which is what a marker pen is for, at 10.83:1.
-                    Text(
-                        a.title, color = D.Black, style = Type.body, maxLines = 2,
-                        modifier = if (fresh) {
-                            Modifier.clip(RoundedCornerShape(4.dp)).background(D.Highlight)
-                                .padding(horizontal = 4.dp)
-                        } else Modifier,
-                    )
-                    Spacer(Modifier.height(Space.tight))
-                    Text(a.detail, color = look.words, style = Type.caption, maxLines = 2)
-                }
-                Spacer(Modifier.width(Space.inline))
-                Column(horizontalAlignment = Alignment.End) {
-                    Text(ago(a.at), color = D.Quiet,
-                        style = Type.caption.copy(fontFeatureSettings = "tnum"))
-                    if (fresh) {
-                        Spacer(Modifier.height(Space.tight))
-                        // The dot stays as a graphic, so "new" is not told by colour alone —
-                        // the marker behind the title says it too.
-                        Box(
-                            Modifier.size(8.dp).clip(CircleShape).background(D.Blue)
-                                .semantics { contentDescription = "Unread" },
-                        )
-                    }
-                }
-            }
-            if (i < list.lastIndex) RowLine()
-        }
-    }
-}
 
-/**
- * What each kind of alert looks like.
- *
- * A payment state gets a **status disc**: a bright fill carrying a thick white icon, which is
- * one of the three places a fill belongs. Everything else is not a payment state at all — an
- * offer, an order, a message — so it is a bare mark in blue ink on the white page.
- *
- * A decline and a withdrawal are the NEUTRAL disc, not the red one: a person saying no is not
- * the chain refusing a transaction, and in both cases nothing moved.
- */
-private data class AlertLook(@DrawableRes val icon: Int, val fill: Color, val disc: Boolean) {
-    /**
-     * The words beside it. `D.Neutral` has no ink of its own, because "nothing happened" is
-     * the quiet ink rather than a hue; and a row that is not a payment state is quiet too.
-     */
-    val words: Color get() = if (!disc || fill == D.Neutral) D.Quiet else fill.ink
-}
-
-private fun alertLook(kind: Alerts.Kind): AlertLook = when (kind) {
-    Alerts.Kind.RECEIVED -> AlertLook(R.drawable.hi_tick, D.Success, disc = true)
-    Alerts.Kind.DECLINED -> AlertLook(R.drawable.hi_cancel, D.Neutral, disc = true)
-    Alerts.Kind.WITHDRAWN -> AlertLook(R.drawable.hi_cancel, D.Neutral, disc = true)
-    Alerts.Kind.LATER -> AlertLook(R.drawable.hi_clock, D.Blue, disc = true)
-    Alerts.Kind.ASKED -> AlertLook(R.drawable.hi_exchange, D.Blue, disc = false)
-    Alerts.Kind.MESSAGE -> AlertLook(R.drawable.hi_info, D.Blue, disc = false)
-    Alerts.Kind.OFFER -> AlertLook(R.drawable.hi_gift, D.Blue, disc = false)
-    Alerts.Kind.ORDER -> AlertLook(R.drawable.hi_wallet, D.Blue, disc = false)
-}
 
 /**
  * A section's number, from SECTIONS.md, so a change can be asked for by number instead of
@@ -5074,7 +4239,7 @@ private val RowStyle = Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(ver
 
 /** The hairline that replaced the row box. Decorative — never the only boundary. */
 @Composable
-private fun RowLine() = Box(Modifier.fillMaxWidth().height(1.dp).background(D.Line))
+internal fun RowLine() = Box(Modifier.fillMaxWidth().height(1.dp).background(D.Line))
 
 /**
  * An amount: the figure face with tabular figures, at whatever step the caller chose.
@@ -5262,7 +4427,7 @@ private fun HowYouLook(domain: String?, borrowed: Boolean, username: String, onE
  * thing that should never leave the device, which is already [Contacts]' rule.
  */
 @Composable
-private fun ContactNameDialog(
+internal fun ContactNameDialog(
     called: Called,
     current: String,
     onDismiss: () -> Unit,
