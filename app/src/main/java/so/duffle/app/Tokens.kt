@@ -62,7 +62,13 @@ object Tokens {
      */
     private val KNOWN = mapOf(
         "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU" to Meta("USDC", "USD Coin", BUNDLED_USDC),
-        "EPjFWdd5AufqSSqeM2qJxdxLTSnu4ZsdH6DsjCfCnDF6" to Meta("USDC", "USD Coin", BUNDLED_USDC),
+        // Mainnet USDC was written out here as its own literal and the literal was wrong:
+        // `EPjFWdd5AufqSSqeM2qJxdxLTSnu4ZsdH6DsjCfCnDF6`, which shares Circle's first nineteen
+        // characters and then diverges. `solana account` on mainnet answers AccountNotFound for
+        // it, so it is not a mint at all, and a real USDC balance fell through to "EPjF". It now
+        // reads the constant `buy()` builds its transfers against, so the two cannot drift apart
+        // again — and the one that is checked against the chain is the one that spends money.
+        Shop.USDC_MAINNET to Meta("USDC", "USD Coin", BUNDLED_USDC),
     )
 
     data class Meta(val symbol: String, val name: String, val image: String?)
