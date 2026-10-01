@@ -217,6 +217,19 @@ object Rewards {
         val link: String, val windowHours: Int,
         val state: String, val earned: Int, val signature: String?, val refused: String?,
         /**
+         * When this wallet claimed it, in millis — **0 when it has not**.
+         *
+         * `/v1/offers` sends `claimed_at` (`service.offers_for`), null for an offer nobody here
+         * has claimed. With [windowHours] it is the whole countdown ui/PORT-2026-10-02.md §6
+         * shows on a claimed offer: the deadline is `claimedAt + windowHours`, which is the
+         * server's own rule (`offers.settle`) rather than a second one invented on the phone.
+         *
+         * §13 records the countdown as undecided because the sandbox's `21h 14m left` is a fixed
+         * sample and the sample DATA has no claim time. The server does — so the sheet counts
+         * down from the real one, and an unclaimed offer, having none, shows no countdown.
+         */
+        val claimedAt: Long = 0L,
+        /**
          * The app's own icon.
          *
          * ui/PORT-2026-10-01-4.md §1.2 redefines an offer as a task in a dApp Store app and
@@ -247,6 +260,10 @@ object Rewards {
                     link = j.optString("link"), windowHours = j.optDouble("window_hours", 48.0).toInt(),
                     state = j.optString("state", "available"), earned = j.optInt("skr_earned"),
                     signature = j.text("signature"), refused = j.text("refused"),
+                    // Seconds on the wire, and JSON null for an unclaimed offer — `optDouble`
+                    // answers the default for both a missing key and JSONObject.NULL, so an
+                    // unclaimed offer lands on 0 rather than on the epoch.
+                    claimedAt = (j.optDouble("claimed_at", 0.0) * 1000).toLong(),
                     icon = j.text("icon"),
                 )
             }

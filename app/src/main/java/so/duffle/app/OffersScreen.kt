@@ -1,7 +1,12 @@
 package so.duffle.app
 
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
@@ -20,6 +25,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -41,11 +47,13 @@ import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.layout
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
@@ -56,6 +64,7 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 
 /**
  * Offers: a task in a dApp Store app — install it, do one thing in it, earn SKR.
@@ -91,9 +100,10 @@ import kotlinx.coroutines.coroutineScope
  *
  * Every offer carries conditions — a minimum, a window, a token — that decide whether it pays.
  * Crushed into a row they became a subtitle nobody read; behind a sheet they get room to be
- * stated before somebody spends money on the strength of them. §6 of the brief leaves
- * [OfferSheet] un-redesigned on purpose: it is now **the only place the claim-first rule can be
- * stated**, which is why that line came off this screen and not out of the app.
+ * stated before somebody spends money on the strength of them. [OfferSheet] is **the only place
+ * the claim-first rule can be stated**, which is why that line came off this screen and not out
+ * of the app. ui/PORT-2026-10-01-4.md §6 left the sheet alone; ui/PORT-2026-10-02.md §6
+ * redesigned it — see [OfferSheet].
  *
  * ### Ported 2026-10-01 from `ui/components/screens/Offers.tsx`
  *
@@ -559,39 +569,124 @@ private fun ReferralOfferRow(s: Referrals.Summary, first: Boolean, onOpen: () ->
  * [FaceDisc]. Seeded on `funder` — the app's stable id — rather than on `app`, for the reason
  * `faceColour` is seeded on an address and never a name: a display name can change and the id
  * does not, so an app keeps its colour across a rename.
+ *
+ * [OfferSheet] draws this too, at 48 (ui/PORT-2026-10-02.md §6.1). One function rather than two,
+ * because the row and the sheet showing one app in two different colours would be a bug the
+ * sandbox cannot catch — it has icons for all five of its sample apps.
  */
 @Composable
-private fun OfferFace(offer: Rewards.Offer) {
+private fun OfferFace(offer: Rewards.Offer, size: Dp = 40.dp) {
     val seed = offer.funder.ifBlank { offer.app }.takeIf { it.isNotBlank() }
-    FaceDisc(offer.app, seed, 40.dp)
+    FaceDisc(offer.app, seed, size)
 }
 
+// ---------------------------------------------------------------------- §6 the offer sheet
+//
+// ui/PORT-2026-10-02.md §6, from ui/components/sections/OfferSheet.tsx.
+
 /**
- * An app's mark **in [OfferSheet]**, which §6 of ui/PORT-2026-10-01-4.md deliberately leaves
- * un-redesigned. So the sheet keeps the face it shipped with — the initial inside a hairline —
- * rather than quietly inheriting the row's new coloured [OfferFace].
+ * Where a Seeker is bought — Solana Mobile's own site, opened in the browser.
  *
- * `Initial` (Design.kt) — the app's one avatar. This drew its own, and set the letter at
- * `Type.body` (a flat 15sp) where the rule is 0.38 x the disc (15.2 at 40dp). Near enough to
- * look right and wrong enough to drift at any other size.
+ * §13 lists this as an open point: `solanamobile.com` is the site, and the exact purchase
+ * address is not confirmed. The front page is the honest target until it is.
  */
-@Composable
-private fun OfferMark(app: String) {
-    Initial(app.take(1).uppercase(), 40.dp)
+private const val SEEKER_STORE = "https://solanamobile.com"
+
+/** The claim refusal that is a dead end rather than something to try again. */
+private const val ALREADY_CLAIMED = "already_claimed"
+
+/** Three steps: claim, install, do the task. §6.2. */
+private const val OFFER_STEPS = 3
+
+/**
+ * What the one button **is**, which is also what the state of the offer is said with.
+ *
+ * - [Go] — live, blue, and it does something.
+ * - [Over] — the grey disabled button. The offer is finished or refused and the button's place is
+ *   used to say so, because there is no status row any more.
+ * - [Earned] — the green report. Not a button at all; it has nothing to press for.
+ * - [Store] — blue, with the `open` mark: it leaves the app.
+ */
+private enum class Look { Go, Over, Earned, Store }
+
+/**
+ * One state of the sheet, as the things that differ between them (§6's table).
+ *
+ * @param done how many of the three steps carry a tick and have gone quiet.
+ * @param running the ticking clock stands in for the app's icon, and the time left stands in for
+ *   "Task · dApp Store". Only true while a claim is actually running against a deadline.
+ * @param reward whether the reward still sits on the highlight at the end of the header. It comes
+ *   off once it has been *earned*, because then the button says the figure instead.
+ */
+private data class OfferView(
+    val label: String,
+    val look: Look,
+    val done: Int,
+    val running: Boolean,
+    val reward: Boolean,
+)
+
+/**
+ * Which state the sheet is in, from what the server said plus what the phone can work out.
+ *
+ * The order matters. **Finished beats everything**: an expired offer shown to a wallet with no
+ * Genesis Token is over, not an invitation to buy a phone. And `paid` is checked before expiry,
+ * because a claim that paid and then ran past its window still paid.
+ *
+ * @param expired the window has run out — see [OfferSheet]'s deadline. It is checked here as well
+ *   as against `state`, because the server marks a claim expired on its next sweep rather than on
+ *   the stroke of the deadline, so for a minute or two `state` still reads "open".
+ * @param counting there is a real deadline to count down to. A claim with no `claimed_at` cannot
+ *   be counted, and the clock plus "0m left" would be a made-up figure sitting on the highlight —
+ *   so such an offer keeps the app's icon and the line that is still true of it.
+ * @param refused the claim attempt came back [ALREADY_CLAIMED], which no retry can fix.
+ */
+private fun offerView(
+    offer: Rewards.Offer,
+    isSeeker: Boolean,
+    expired: Boolean,
+    counting: Boolean,
+    refused: Boolean,
+): OfferView = when {
+    // What was earned, not what was advertised. The sandbox has one figure for both; the app has
+    // two, and the one that is a fact is the one the server credited.
+    offer.state == "paid" -> OfferView(
+        "Earned ${Money.token(java.math.BigDecimal(offer.earned), "SKR")}",
+        Look.Earned, done = OFFER_STEPS, running = false, reward = false,
+    )
+    // Grey, never red. §10: red is a transaction the chain refused, and an offer's clock running
+    // out is neither a transaction nor a refusal.
+    offer.state == "expired" || expired -> OfferView("Expired", Look.Over, 0, false, reward = true)
+    offer.waiting ->
+        OfferView("Open ${offer.app}", Look.Go, done = 1, running = counting, reward = true)
+    !isSeeker -> OfferView("Get a Seeker", Look.Store, 0, false, reward = true)
+    refused -> OfferView("Already claimed", Look.Over, 0, false, reward = true)
+    else -> OfferView("Claim this offer", Look.Go, 0, false, reward = true)
 }
 
 /**
- * One offer in full: what it pays, and every condition that decides whether it does.
+ * One offer in full: what it pays, what to do, and every condition that decides whether it pays.
  *
- * The conditions are the point. An offer pays on a payment to a particular address, in a
- * particular token, over a minimum, inside a window that starts **when you claim** — and
- * somebody who learns the last of those after paying has been misled by omission. They are
- * listed before the button, not under it, and they are body text rather than a caption for the
- * same reason.
+ * Redesigned for ui/PORT-2026-10-02.md §6. Three parts in one order for every state, compact so
+ * that nothing scrolls: the header, the three steps, the rules card. Then the button.
  *
- * Deliberately **not** redesigned by ui/PORT-2026-10-01-4.md (its §6): with the "Claim first,
- * then pay" line off the Offers screen, this sheet is the only place that rule is stated, so it
- * keeps "Funded by AirPay" and "Pay at least" until the user designs its replacement.
+ * **The state is said on the button, and there is no status row.** The old sheet had both, and
+ * they said the same thing twice — a grey line reading "The window closed" above a button that
+ * also had to be dealt with. The sheet closes by being dragged down or tapped outside, so a
+ * finished offer needs no "Done": the button's place is where the eye already goes, so it is
+ * where the outcome is said, and it goes grey because it no longer does anything. See [offerView]
+ * for the full table.
+ *
+ * The rules are still stated **before** the button rather than under it, for the reason they were
+ * before: somebody who learns after paying that the clock started at the claim and not at the
+ * payment has been misled by omission.
+ *
+ * @param problem why a claim attempt did not go through, already in words. Not in §6's table —
+ *   the sandbox has no failing network — but real, and it sits above the button where the
+ *   not-a-Seeker line sits.
+ * @param refusedCode the same refusal as its machine-readable code, which is what distinguishes
+ *   "try again" from the dead end that is [ALREADY_CLAIMED]. Defaulted because MainActivity.kt
+ *   translates the code before passing it; pass the raw `why` here and this stops guessing.
  */
 @Composable
 internal fun OfferSheet(
@@ -601,71 +696,294 @@ internal fun OfferSheet(
     problem: String?,
     onClaim: () -> Unit,
     onClose: () -> Unit,
+    refusedCode: String? = null,
 ) {
+    val context = LocalContext.current
+
+    // The deadline is DERIVED from two server fields with the server's own rule — `offers.settle`
+    // is `claimed_at + window_hours * 3600`. Nothing here invents a time: an unclaimed offer has
+    // no `claimed_at`, so there is no deadline and no countdown. §13 says the sandbox's
+    // `21h 14m left` is a fixed sample and the claim time is not in the sample DATA — but
+    // `/v1/offers` really does send `claimed_at`, so this counts down from the real one.
+    val deadline =
+        if (offer.claimedAt > 0L) offer.claimedAt + offer.windowHours * 3_600_000L else 0L
+    var now by remember(deadline) { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(deadline) {
+        // Only while there is something to count, and it stops itself at zero rather than
+        // leaving a one-second loop running behind a sheet that says nothing new.
+        while (deadline > System.currentTimeMillis()) {
+            delay(1_000L)
+            now = System.currentTimeMillis()
+        }
+        now = System.currentTimeMillis()
+    }
+
+    val expired = deadline > 0L && now >= deadline
+    val refused = refusedCode == ALREADY_CLAIMED ||
+        // Fallback for the call site that hands over the translated sentence (see [refusedCode]).
+        // Compared against `offerWhy`'s own output rather than a copy of the words, so the two
+        // cannot drift apart.
+        (refusedCode == null && problem != null && problem == Rewards.offerWhy(ALREADY_CLAIMED))
+    val view = offerView(offer, isSeeker, expired, counting = deadline > 0L, refused = refused)
+
+    // "Install Jupiter and swap any token once" → "Swap any token once." — the install half is
+    // already step 2, so repeating it in step 3 would number the same instruction twice.
+    val task = offer.what.removePrefix("Install ${offer.app} and ")
+        .trimEnd('.', ' ')
+        .replaceFirstChar { it.uppercase() }
+    val steps = buildList {
+        add("Claim this offer.")
+        add("Install ${offer.app} from the dApp Store.")
+        // Only when the server sent one. A bare "." is what writing it unconditionally produces.
+        if (task.isNotBlank()) add("$task.")
+    }
+
     Tray(onClose = onClose) {
         Spacer(Modifier.height(Space.row))
+
+        // ---- 1. the header: who the task is in, how long is left, and what it pays
         Row(verticalAlignment = Alignment.CenterVertically) {
-            OfferMark(offer.app)
+            if (view.running) {
+                // Running against a clock, so the clock takes the icon's place and its hand
+                // turns. 48 disc, 38 mark — four fifths of the disc, because the disc is the
+                // clock's own face (Icons.kt).
+                Box(
+                    Modifier.size(48.dp).clip(CircleShape).background(D.Blue),
+                    contentAlignment = Alignment.Center,
+                ) { TickingClock(38.dp, D.White) }
+            } else {
+                // The row's face, at 48 — same seed, so one app is one colour in both places.
+                OfferFace(offer, 48.dp)
+            }
             Spacer(Modifier.width(Space.inline))
             Column(Modifier.weight(1f)) {
-                Text(offer.app, color = D.Black, style = Type.heading)
-                Text(
-                    if (offer.funder == "duffle") "Funded by AirPay" else "Funded by ${offer.funder}",
-                    color = D.Quiet, style = Type.caption,
+                Text(offer.app, color = D.Black, style = Type.heading,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Spacer(Modifier.height(Space.tight))
+                if (view.running) {
+                    // How long is left: the one fact that matters once it is claimed. On the
+                    // highlight, which is the marker pen that replaced the tints — and `tnum`,
+                    // so the digits do not shift sideways as they count down.
+                    OnHighlight(timeLeft(deadline - now), Modifier.offset(x = -4.dp))
+                } else {
+                    Text("Task · dApp Store", color = D.Quiet, style = Type.caption)
+                }
+            }
+            if (view.reward) {
+                Spacer(Modifier.width(Space.inline))
+                // The reward stands alone rather than sitting in a sentence, so it takes the
+                // figure face. Through [Money] like every other amount: "1,000 SKR" in the US
+                // and "1.000 SKR" in Germany, and a non-breaking space before the unit.
+                OnHighlight(
+                    Money.token(java.math.BigDecimal(offer.reward), "SKR"),
+                    style = Type.heading.figure(),
                 )
             }
-            // The reward stands alone here rather than sitting in a sentence, so it takes the
-            // figure face and tabular figures. The step's size, weight and tracking are the
-            // heading's — only the face changes.
-            Text("${offer.reward} SKR", color = D.BlueInk,
-                style = Type.heading.copy(fontFamily = Figure, fontFeatureSettings = "tnum"))
+        }
+
+        // ---- 2. what to do
+        Spacer(Modifier.height(Space.row))
+        steps.forEachIndexed { i, step ->
+            if (i > 0) Spacer(Modifier.height(Space.inline))
+            OfferStep(i, step, done = i < view.done)
+        }
+
+        // ---- 3. the rules. Always, for every state, and above the button.
+        Spacer(Modifier.height(Space.row))
+        Column(
+            Modifier.fillMaxWidth()
+                .border(1.5.dp, D.Line, RoundedCornerShape(16.dp))
+                .padding(horizontal = 16.dp),
+        ) {
+            OfferRule("At least",
+                Money.token(java.math.BigDecimal.valueOf(offer.minimum, offer.decimals), offer.symbol),
+                figure = true)
+            OfferRuleLine()
+            // Not the figure face: a number inside a sentence keeps the sentence's face, and
+            // switching mid-phrase reads as a rendering bug.
+            OfferRule("Time limit", "${offer.windowHours} hours")
+            OfferRuleLine()
+            OfferRule("Counts from", "when you claim — not before")
+        }
+
+        // ---- 4. the button, which is also the state
+        if (view.look == Look.Store) {
+            Spacer(Modifier.height(Space.inline))
+            Text("Offers are for Seeker owners.", color = D.Black, style = Type.body)
+        }
+        problem?.takeIf { !refused }?.let {
+            Spacer(Modifier.height(Space.inline))
+            // Ink, not danger red: nothing was sent and nothing was refused by the chain — the
+            // claim simply did not go through, and it can be tried again (§10).
+            Text(it, color = D.Black, style = Type.body)
         }
         Spacer(Modifier.height(Space.row))
-        Text(offer.what, color = D.Black, style = Type.body)
-        Spacer(Modifier.height(Space.row))
+        when (view.look) {
+            // Not a button: it reports. The paid disc's green with white on it — the same pairing
+            // as that disc and its tick, and 19sp bold is the floor white clears on this fill.
+            Look.Earned -> Box(
+                Modifier.fillMaxWidth().heightIn(min = 60.dp)
+                    .clip(RoundedCornerShape(18.dp)).background(D.Success)
+                    .padding(horizontal = 16.dp),
+                contentAlignment = Alignment.Center,
+            ) { Text(view.label, color = D.White, style = Type.heading.copy(fontFeatureSettings = "tnum")) }
 
-        Condition("Pay at least", "${Chain.fmtUnits(offer.minimum, offer.decimals)} ${offer.symbol}")
-        Condition("Within", "${offer.windowHours} hours of claiming")
-        Condition("Counts from", "the moment you claim — not before")
+            // The way in, not a dead end: the offer cannot be claimed without a Seeker, so the
+            // button is where to get one. It leaves the app, and the mark says so.
+            Look.Store -> LeaveButton(view.label) { openLink(context, SEEKER_STORE) }
 
-        Spacer(Modifier.height(Space.row))
-        when {
-            offer.state == "paid" ->
-                Text("✓ Earned ${offer.earned} SKR", color = D.BlueInk, style = Type.body)
-            offer.state == "expired" ->
-                Text("The window closed. Claim it again to restart the clock.",
-                    color = D.Quiet, style = Type.caption)
-            offer.waiting ->
-                Text(Rewards.offerWhy(offer.refused)
-                    ?: "Claimed. Pay ${offer.app} within ${offer.windowHours}h.",
-                    color = D.Quiet, style = Type.caption)
-            !isSeeker ->
-                Text("Seeker only — this wallet holds no Genesis Token.",
-                    color = D.Quiet, style = Type.caption)
-            else -> {
-                problem?.let {
-                    // Ink, not danger red: nothing was sent and nothing was refused by the
-                    // chain — the claim simply did not go through, and it can be tried again.
-                    Text(it, color = D.Black, style = Type.caption)
-                    Spacer(Modifier.height(Space.tight))
-                }
-                PrimaryButton("Claim this offer", onClaim, enabled = !claiming, loading = claiming)
+            Look.Over -> PrimaryButton(view.label, {}, enabled = false)
+
+            // `waiting`, not `running`: what the button does is settled by the claim existing,
+            // not by whether there is a clock to show for it.
+            Look.Go -> if (offer.waiting) {
+                // `link` is the offer's own, from the server. Blank is possible — `window_hours`
+                // has a default and `link` does not — and a blue button that opens nothing is
+                // worse than a grey one that admits it has nowhere to go.
+                PrimaryButton(
+                    view.label, { openLink(context, offer.link) },
+                    enabled = offer.link.isNotBlank(),
+                )
+            } else {
+                PrimaryButton(view.label, onClaim, enabled = !claiming, loading = claiming)
             }
         }
         Spacer(Modifier.height(Space.tight))
     }
 }
 
+/**
+ * How long is left, to the minute: `21h 14m left`.
+ *
+ * Minutes floor rather than round, so this never claims more time than there is. Under an hour
+ * the hours are dropped — `0h 14m left` reads as a bug — which is a shape the sandbox's fixed
+ * sample never shows.
+ */
+private fun timeLeft(ms: Long): String {
+    val minutes = (ms.coerceAtLeast(0L) / 60_000L)
+    val h = minutes / 60
+    val m = minutes % 60
+    return if (h > 0) "${h}h ${m}m left" else "${m}m left"
+}
+
+/**
+ * One numbered step, and the tick it gets once it is behind you.
+ *
+ * A finished step takes the paid disc — the same green disc with the same thick white tick as a
+ * payment that landed — and its words go quiet. The unfinished ones are an outlined 24 disc with
+ * the number in it, which is a count and not a state, so it carries no colour.
+ */
 @Composable
-private fun Condition(label: String, value: String) {
-    // No SpaceBetween and no fixed widths: the value takes the rest of the line and wraps, so a
-    // long condition grows the row instead of being pushed off the end of it at 2× text.
-    Row(Modifier.fillMaxWidth().padding(vertical = Space.tight)) {
-        Text(label, color = D.Quiet, style = Type.body)
+private fun OfferStep(index: Int, text: String, done: Boolean) {
+    // Top, not centre: a step that runs to two lines must not float its disc into the middle of
+    // the sentence.
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
+        if (done) {
+            Box(
+                Modifier.size(24.dp).clip(CircleShape).background(D.Success),
+                contentAlignment = Alignment.Center,
+            ) { HiIcon(Hi.Tick, D.White, 20.dp, disc = true) }
+        } else {
+            Box(
+                Modifier.size(24.dp).clip(CircleShape).border(1.5.dp, D.Line, CircleShape),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text("${index + 1}", color = D.Black,
+                    style = Type.caption.copy(fontFeatureSettings = "tnum"))
+            }
+        }
+        Spacer(Modifier.width(Space.inline))
+        Text(text, color = if (done) D.Quiet else D.Black, style = Type.body)
+    }
+}
+
+/**
+ * One rule: its name at the start, what it is at the end.
+ *
+ * No `SpaceBetween` and no fixed widths — the value takes the rest of the line and wraps, so a
+ * long rule grows its row instead of being pushed off the end of it at 2× text. Baselines are
+ * aligned rather than the boxes, so a wrapped value still sits on the label's line.
+ */
+@Composable
+private fun OfferRule(label: String, value: String, figure: Boolean = false) {
+    Row(Modifier.fillMaxWidth().padding(vertical = Space.inline)) {
+        Text(label, color = D.Quiet, style = Type.body, modifier = Modifier.alignByBaseline())
         Spacer(Modifier.width(Space.inline))
         Text(
-            value, color = D.Black, style = Type.body.copy(fontFeatureSettings = "tnum"),
-            textAlign = TextAlign.End, modifier = Modifier.weight(1f),
+            value, color = D.Black,
+            style = if (figure) Type.body.figure() else Type.body,
+            textAlign = TextAlign.End,
+            modifier = Modifier.weight(1f).alignByBaseline(),
+        )
+    }
+}
+
+/** The hairline between two rules. Inside the card's padding, so it is inset with the rows. */
+@Composable
+private fun OfferRuleLine() {
+    Box(Modifier.fillMaxWidth().height(1.dp).background(D.Line))
+}
+
+/**
+ * A value worth noticing, on the highlight — the marker pen that replaced the tints.
+ *
+ * `D.Highlight` only ever sits behind ink text; alone on white it is invisible at 1.15:1, so it
+ * is never a dot, a line, a ring or a border.
+ */
+@Composable
+private fun OnHighlight(
+    text: String,
+    modifier: Modifier = Modifier,
+    style: TextStyle = Type.caption,
+) {
+    Text(
+        text, color = D.Black, style = style.copy(fontFeatureSettings = "tnum"), maxLines = 1,
+        modifier = modifier.background(D.Highlight, RoundedCornerShape(4.dp))
+            .padding(horizontal = 4.dp),
+    )
+}
+
+/**
+ * The blue button that leaves the app, with the `open` mark after its label.
+ *
+ * [PrimaryButton] takes a label and nothing else, and the mark is the half of this button that
+ * says it is a door out — so it is built here rather than by widening the shared button for one
+ * call site. Everything else about it is [PrimaryButton]'s: 60 min height, corner 18, `D.Blue`,
+ * white `Type.heading`, and the 0.97 press.
+ */
+@Composable
+private fun LeaveButton(label: String, onClick: () -> Unit) {
+    val press = remember { MutableInteractionSource() }
+    Box(
+        Modifier.then(PressScale(press)).fillMaxWidth().heightIn(min = 60.dp)
+            .clip(RoundedCornerShape(18.dp)).background(D.Blue)
+            .clickable(press, indication = null, onClick = onClick)
+            .padding(horizontal = 20.dp, vertical = 14.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(label, color = D.White, style = Type.heading)
+            Spacer(Modifier.width(8.dp))
+            // `hi_open` through HIcon, which routes it to the stroke-following vector the day
+            // Icons.kt adopts it and paints the drawable until then.
+            HIcon(R.drawable.hi_open, D.White, 20.dp)
+        }
+    }
+}
+
+/**
+ * Opens a link in whatever the phone browses with.
+ *
+ * `runCatching`, because `startActivity` throws on a phone with nothing that handles the scheme,
+ * and the flag because a sheet's context is not always the Activity.
+ */
+private fun openLink(context: Context, url: String) {
+    if (url.isBlank()) return
+    runCatching {
+        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+        context.startActivity(
+            if (context is android.app.Activity) intent
+            else intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
         )
     }
 }
