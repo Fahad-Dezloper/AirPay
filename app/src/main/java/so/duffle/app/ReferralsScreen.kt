@@ -1,20 +1,33 @@
 package so.duffle.app
 
-import androidx.compose.animation.AnimatedVisibility
+import android.content.Context
+import android.content.Intent
+import androidx.activity.compose.BackHandler
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutLinearInEasing
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -22,41 +35,65 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.rotate
-import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
-import java.math.BigDecimal
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.DialogWindowProvider
+import kotlin.math.roundToInt
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 /**
@@ -72,35 +109,846 @@ private val MonoTitle = Type.title.monospaced()
 private val MonoBody = Type.body.monospaced()
 
 /**
- * Every SKR figure on this screen, written the one way the app writes numbers.
+ * The body step in its bold weight, and the caption step with tabular digits.
  *
- * `Int` in, because the server sends whole SKR and the unit has no decimals — but it still goes
- * through [Money], because the phone's locale is what groups the digits. `"$n"` reads "1000"
- * everywhere; this reads "1,000" in the US and "1.000" in Germany. The screen used to
- * interpolate the raw int in five places.
-*
- * Lives in Design.kt now, shared with RewardsScreen, which had its own copy.
+ * Same two steps, not two more: a weight and a font feature are not sizes. `BodyBold` is the
+ * sandbox's `text-body font-bold` (the step titles in "How it works"); `CaptionTabular` is its
+ * `text-caption tnum` — "1 of 2 paid" is a pair of counts rather than money, so it keeps the
+ * sentence face and takes only the tabular figures that stop the digits shifting.
  */
+private val BodyBold = Type.body.copy(fontWeight = FontWeight.Bold)
+private val CaptionTabular = Type.caption.copy(fontFeatureSettings = "tnum")
 
 /**
- * Referrals: your code, what it pays, and who has used it.
+ * The hero card's ground.
  *
- * ### The one number this screen must not invent
+ * These are the ARTWORK's own colours, under the tinted-card exception in ui/PROJECT.md §3 —
+ * the gift's green, the same pair `This week` sits on over in RewardsScreen. They are
+ * deliberately NOT `Palette.kt` tokens: they describe one picture's background, not a state, a
+ * tier or a severity, which is what the no-tints rule exists to stop. Do not reuse them.
+ */
+private val HERO_TOP = Color(0xFFE8FCEF)
+private val HERO_BOTTOM = Color(0xFFD0FADD)
+
+/** The gift fills the card's end 46%, and its start edge is wiped out over that strip's first 35%. */
+private const val HERO_ART = .46f
+private const val HERO_FADE = .35f
+
+// ============================================================ the Refer sheet (PORT-4 §2)
+
+/**
+ * Refer & earn — **a sheet, not a screen** (ui/PORT-2026-10-01-4.md §2).
  *
- * Every app this is modelled on writes "Invite & Win Assured ₹80" against each row. Ours does
- * not, and the difference is not squeamishness: the inviter is paid on the invitee's **first
- * rewarded payment**, not when they join, because a wallet is free and "somebody signed up
- * with my code" costs an attacker nothing. "Assured" would be false on the only question that
- * matters. So the condition sits directly under the card — on white, in body text, where it can
- * actually be read — and the list below shows which invitations have turned into a payment.
+ * `ReferralsTab` was a destination on the tab bar. It is now a tray that opens over whatever the
+ * user is already looking at, from four places: the Referrals card on Home, "Invite a friend" on
+ * Rewards, the AirPay row on Offers, and "Refer and earn" in the profile panel. So this takes
+ * nothing but a way to close it — the wallet, the name and the share chooser are all things it
+ * can reach for itself, and four call sites that each had to assemble them would be four places
+ * for them to drift.
  *
- * ### Why the list is people you invited, not people you could invite
+ * [myName] is the one exception, because the Activity knows something this cannot: the `.sol` or
+ * `.skr` name a wallet has borrowed or resolved (`myDomain`). Left null it falls back to
+ * [Identity.label], which is what the rest of the app shows for somebody who has set a name and
+ * "" for everybody else — and [Referrals.message] is written to work without one.
  *
- * The obvious version reads the phone's address book. That needs READ_CONTACTS — a directory
- * of everybody you know, requested so a promo screen can look busier. [Contacts] is no help
- * either: everyone in it has already tapped with you, so they are already here and inviting
- * them is meaningless. What is worth showing is the half that is true and actually changes:
- * who took the code, and who has paid.
+ * ### Why a Dialog
+ *
+ * Opened from inside a tab, this cannot reach the activity root where `OfferSheet` lives. A
+ * [androidx.compose.ui.window.Popup] is laid out INSIDE the system-bar insets, so the tray stops
+ * a navigation bar's height short of the display and a strip of the page behind shows through
+ * under the button — found and fixed on the phone for `StreakSheet`, 2026-10-01. A [Dialog] told
+ * not to use the platform's default width and not to fit the system windows is the one overlay a
+ * screen composable can open that genuinely reaches the display's edges.
+ *
+ * ### Nothing here says "assured"
+ *
+ * The inviter is paid on the invitee's **first rewarded payment**, not when they join: a wallet
+ * is free, so "somebody signed up with my code" costs an attacker nothing. The hero says what
+ * each side gets and the second sheet ends on the condition; the invited list shows which
+ * invitations have actually turned into a payment.
+ */
+@Composable
+internal fun ReferSheet(onClose: () -> Unit, myName: String? = null) {
+    val context = LocalContext.current
+    // Who "you" are, without an activity. Constructing a [Wallet] registers an MWA result
+    // sender, which is only legal before an activity is STARTED — `addressOf` is the expression
+    // the app keeps in one place for exactly this question.
+    val address = remember { Wallet.addressOf(context) }
+    val fallbackName = remember { Identity.label(context) }
+    val name = myName ?: fallbackName
+
+    var summary by remember { mutableStateOf<Referrals.Summary?>(null) }
+    var loading by remember { mutableStateOf(true) }
+    LaunchedEffect(address) {
+        loading = true
+        summary = address?.let { Referrals.summary(it) }
+        loading = false
+    }
+
+    Dialog(
+        onDismissRequest = onClose,
+        properties = DialogProperties(
+            // Both matter, for different halves of the same problem: without the first the
+            // window is a floating dialog inset from every edge, and without the second it is
+            // laid out inside the system-bar insets.
+            usePlatformDefaultWidth = false,
+            decorFitsSystemWindows = false,
+            // The stack draws its own scrim and dismisses itself when it is tapped, with the
+            // exit animation. Letting the window dismiss as well would skip that animation.
+            dismissOnClickOutside = false,
+        ),
+    ) {
+        // A dialog window can dim behind itself. The scrim below is the only scrim this app has;
+        // a system dim under it would be a second one, at an opacity nobody chose.
+        val host = (LocalView.current.parent as? DialogWindowProvider)?.window
+        SideEffect { host?.setDimAmount(0f) }
+        ReferStack(
+            s = summary,
+            loading = loading,
+            connected = address,
+            myName = name,
+            onClose = onClose,
+        )
+    }
+}
+
+/**
+ * Both sheets, stacked, over one scrim (§2.3).
+ *
+ * ### Why this is not two [Tray]s
+ *
+ * [Tray] is the app's sheet and this would rather have been two of them. It cannot be: a `Tray`
+ * fills the screen and draws the scrim INSIDE itself, so a second one would put a second scrim
+ * over the first sheet — at 28% over the 20% dim the brief asks for — and scaling the first
+ * `Tray` to 94% would scale its scrim with it. So the chrome is rebuilt here: same scrim alpha,
+ * same `Arrive` rise, same drag-to-dismiss thresholds, same handle, same [Tray.OUTER] corner and
+ * [Tray.PAD] gutter, all read from `Tray` itself so the two cannot drift apart.
+ *
+ * ### The motion
+ *
+ * The sandbox animates with 300 ms ease-out. §2.3 says to prefer the app's own springs and that
+ * the scale, offset and dim values are what matter, so the three of them ride [Settle] — the
+ * spring every other content swap in this app uses — rather than a tween nobody chose. No new
+ * spring is declared and `Arrive`/`Snap`/`Settle` are untouched.
+ *
+ * The first sheet scales from its **top** edge ([TransformOrigin] at y = 0), which is what keeps
+ * its top where it is and pulls its bottom up behind the second sheet. Scaling from the centre
+ * would sink the top out of sight, and the top staying visible is the whole point of the stack.
+ *
+ * The second sheet moves by a layout [offset] rather than a `graphicsLayer` translation, because
+ * a layout offset is where Compose places the node and therefore where it hit-tests it: parked
+ * below the display it can never swallow a tap meant for the first sheet's buttons underneath.
+ */
+@Composable
+private fun ReferStack(
+    s: Referrals.Summary?,
+    loading: Boolean,
+    connected: String?,
+    myName: String,
+    onClose: () -> Unit,
+) {
+    val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
+    val scope = rememberCoroutineScope()
+
+    val scrim = remember { Animatable(0f) }
+    val offset = remember { Animatable(0f) }
+    var height by remember { mutableFloatStateOf(0f) }
+    var howHeight by remember { mutableFloatStateOf(0f) }
+    var shown by remember { mutableStateOf(false) }
+    var leaving by remember { mutableStateOf(false) }
+    var how by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        val h = snapshotFlow { height }.first { it > 0f }
+        // Below the screen until it has been measured, so it never flashes in place.
+        offset.snapTo(h)
+        shown = true
+        launch { scrim.animateTo(1f, tween(220)) }
+        offset.animateTo(0f, Arrive)
+    }
+
+    fun leave() {
+        if (leaving) return
+        leaving = true
+        // Both go at once: the scrim closes everything, and a second sheet left standing while
+        // the first slid out from under it would be the one frame that shows they are two
+        // windows rather than one stack.
+        how = false
+        scope.launch { scrim.animateTo(0f, tween(150)) }
+        scope.launch {
+            // Quicker and quieter than the entrance, like every other sheet here.
+            offset.animateTo(height.coerceAtLeast(1f), tween(200, easing = FastOutLinearInEasing))
+            onClose()
+        }
+    }
+
+    // Back takes one layer off at a time, which is what the stack looks like it should do.
+    BackHandler { if (how) how = false else leave() }
+
+    val shrink by animateFloatAsState(if (how) .94f else 1f, Settle, label = "shrink")
+    val lift by animateFloatAsState(if (how) -10f else 0f, Settle, label = "lift")
+    val dim by animateFloatAsState(if (how) .20f else 0f, Settle, label = "dim")
+    val parked by animateFloatAsState(if (how) 0f else 1f, Settle, label = "second")
+
+    val drag = rememberDraggableState { delta ->
+        scope.launch {
+            val next = offset.value + delta
+            // Upward drag is resisted rather than refused, so the sheet feels attached.
+            offset.snapTo(if (next < 0f) (offset.value + delta * .25f).coerceAtLeast(-40f) else next)
+        }
+    }
+
+    // The first sheet is capped and scrolls inside; the second is as tall as its content.
+    val cap = LocalConfiguration.current.screenHeightDp.dp * .88f
+    val panelShape = RoundedCornerShape(topStart = Tray.OUTER, topEnd = Tray.OUTER)
+    val dismiss = remember { MutableInteractionSource() }
+    val behind = remember { MutableInteractionSource() }
+
+    Box(
+        Modifier.fillMaxSize()
+            .drawBehind {
+                val gone = if (height > 0f) (offset.value / height).coerceIn(0f, 1f) else 0f
+                drawRect(Color.Black.copy(alpha = .28f * scrim.value * (1f - gone)))
+            }
+            // A tap on the scrim closes everything, second sheet included.
+            .clickable(dismiss, indication = null) { leave() },
+        contentAlignment = Alignment.BottomCenter,
+    ) {
+        Box(
+            Modifier.fillMaxWidth()
+                .onSizeChanged { height = it.height.toFloat() }
+                .graphicsLayer {
+                    translationY = (if (shown) offset.value else size.height) + lift.dp.toPx()
+                    scaleX = shrink
+                    scaleY = shrink
+                    transformOrigin = TransformOrigin(.5f, 0f)
+                }
+                .draggable(
+                    drag, Orientation.Vertical, enabled = shown && !leaving && !how,
+                    onDragStopped = { velocity ->
+                        // Far enough, or flicked: go. Otherwise settle back.
+                        if (offset.value > height * .25f || velocity > 1_200f) leave()
+                        else scope.launch { offset.animateTo(0f, Settle, initialVelocity = velocity) }
+                    },
+                ),
+        ) {
+            SheetPanel(Modifier.heightIn(max = cap), scroll = true) {
+                when {
+                    connected == null -> Blank(
+                        "Connect a wallet",
+                        "Your code belongs to a wallet, so there is nothing to show until one is connected.",
+                    )
+                    s == null -> Blank(
+                        if (loading) "Checking…" else "Can't reach the server",
+                        if (loading) null
+                        else "Your code is made by the server, so this screen can't show one right now.",
+                    )
+                    else -> ReferBody(
+                        s = s,
+                        onHow = { how = true },
+                        onCopyCode = { clipboard.setText(AnnotatedString(s.code)) },
+                        onCopyInvite = {
+                            clipboard.setText(AnnotatedString(
+                                Referrals.message(myName, s.code, s.theirReward)))
+                        },
+                        onShare = { pkg ->
+                            shareInvite(context, Referrals.message(myName, s.code, s.theirReward), pkg)
+                        },
+                    )
+                }
+            }
+            // The dim over the first sheet, and the tap that sends the second one back down.
+            // Clipped to the panel's own shape so the rounded top is not squared off by it, and
+            // it only takes a tap while the second sheet is up — otherwise it would sit over
+            // `Share on Telegram` and swallow it.
+            Box(
+                Modifier.matchParentSize().clip(panelShape)
+                    .background(Color.Black.copy(alpha = dim))
+                    .then(
+                        if (how) Modifier.clickable(behind, indication = null) { how = false }
+                        else Modifier,
+                    ),
+            )
+        }
+
+        // The second sheet. Shorter than the first, so the first's top shows above it.
+        Box(
+            Modifier.fillMaxWidth()
+                .onSizeChanged { howHeight = it.height.toFloat() }
+                .offset {
+                    // Parked far below the display until it has been measured, so it never
+                    // flashes over the first sheet on the frame before its height is known.
+                    IntOffset(0, if (howHeight > 0f) (parked * howHeight).roundToInt() else 20_000)
+                }
+                .topEdgeShadow(Tray.OUTER),
+        ) {
+            SheetPanel(swallowTaps = how || parked < 1f) {
+                HowItWorksBody(
+                    theirReward = s?.theirReward ?: 0,
+                    reward = s?.reward ?: 0,
+                    onClose = { how = false },
+                )
+            }
+        }
+    }
+}
+
+/**
+ * The white panel of a sheet: the [Tray]'s chrome, reusable twice over.
+ *
+ * Every number is read off [Tray] rather than written again — the corner, the side gutter, the
+ * 10/12 top and bottom — so the two sheets here and every other sheet in the app stay one shape.
+ * [scroll] is the first sheet's 88% cap: the panel scrolls inside the height its caller allows.
+ * [swallowTaps] is what stops a tap on the panel reaching the scrim behind it; the second sheet
+ * drops it while parked off-screen so nothing is listening down there.
+ */
+@Composable
+private fun SheetPanel(
+    modifier: Modifier = Modifier,
+    scroll: Boolean = false,
+    swallowTaps: Boolean = true,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    val swallow = remember { MutableInteractionSource() }
+    val state = rememberScrollState()
+    Column(
+        modifier.fillMaxWidth()
+            .background(D.White, RoundedCornerShape(topStart = Tray.OUTER, topEnd = Tray.OUTER))
+            .clickable(swallow, indication = null, enabled = swallowTaps) {}
+            .navigationBarsPadding()
+            .then(if (scroll) Modifier.verticalScroll(state) else Modifier)
+            .padding(start = Tray.PAD, end = Tray.PAD, top = 10.dp, bottom = 12.dp),
+    ) {
+        Box(Modifier.align(Alignment.CenterHorizontally).size(36.dp, 4.dp).background(D.Line, CircleShape))
+        content()
+    }
+}
+
+/**
+ * The soft shadow on the second sheet's top edge: `0 -8px 24px -8px rgba(0,0,0,.25)`.
+ *
+ * Drawn the way `cardShadow` is, because Compose's `shadow()` has no spread and casts on every
+ * edge. It is what separates two white panels of the same colour that overlap — without it the
+ * second sheet's top edge is invisible against the first.
+ */
+private fun Modifier.topEdgeShadow(corner: Dp) = drawBehind {
+    val px = 1.dp.toPx()
+    // The -8px spread: the shape is shrunk by it before the blur is cast.
+    val spread = 8 * px
+    val r = corner.toPx() - spread
+    drawIntoCanvas { canvas ->
+        val paint = androidx.compose.ui.graphics.Paint().asFrameworkPaint().apply {
+            isAntiAlias = true
+            color = android.graphics.Color.WHITE
+            setShadowLayer(24 * px, 0f, -8 * px, android.graphics.Color.argb(64, 0, 0, 0))
+        }
+        canvas.nativeCanvas.drawRoundRect(
+            spread, spread, size.width - spread, size.height, r, r, paint,
+        )
+    }
+}
+
+/** What the sheet says when there is nothing to show yet. Two lines, no box (§2.1). */
+@Composable
+private fun Blank(title: String, detail: String?) {
+    Spacer(Modifier.height(24.dp))
+    Text(title, color = D.Black, style = Type.heading)
+    if (detail != null) {
+        Spacer(Modifier.height(Space.tight))
+        Text(detail, color = D.Quiet, style = Type.caption)
+    }
+    Spacer(Modifier.height(24.dp))
+}
+
+// ------------------------------------------------------------------ §2.1 the first sheet
+
+/**
+ * The first sheet: what the offer is, your code, four ways to send it, and who took it.
+ *
+ * ### What came off this surface (§2.1)
+ *
+ * - **The "Have a code?" door.** Entering somebody else's code belongs to the first-run screens,
+ *   before a first payment — not to the sheet for sharing yours. §6 records that this leaves an
+ *   invited user with nowhere to type a code until those screens exist; that gap is known and is
+ *   not this sheet's to close.
+ * - **The blue poster.** The hero is the artwork's green card now, and the figures are ink on it
+ *   rather than white on a fill, so they are no longer bound by the 19sp-bold rule.
+ * - **The invited / have paid / SKR earned stats row**, which said the same thing as the list
+ *   below it, and **the "How to refer" link**, which is the pill in the header.
+ */
+@Composable
+private fun ReferBody(
+    s: Referrals.Summary,
+    onHow: () -> Unit,
+    onCopyCode: () -> Unit,
+    onCopyInvite: () -> Unit,
+    /** A package name to send to, or null for the system chooser. */
+    onShare: (String?) -> Unit,
+) {
+    Spacer(Modifier.height(8.dp))
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text("Refer & earn", color = D.Black, style = Type.heading, modifier = Modifier.weight(1f))
+        OutlinePill("How it works", Hi.Info, onHow)
+    }
+
+    Spacer(Modifier.height(8.dp))
+    Hero(s.theirReward, s.reward)
+
+    // The code is read aloud and typed by hand, so it is mono and large: a monospace face gives
+    // every character its own width, which is what tells an O from a 0.
+    Spacer(Modifier.height(24.dp))
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text("Your referral code", color = D.Quiet, style = Type.caption)
+            Spacer(Modifier.height(Space.tight))
+            Text(s.code, color = D.Black, style = MonoTitle)
+        }
+        Spacer(Modifier.width(Space.inline))
+        OutlinePill("Copy", Hi.Copy, onCopyCode, description = "Copy your code")
+    }
+
+    Spacer(Modifier.height(Space.lead))
+    TelegramButton { onShare(TELEGRAM) }
+
+    // Three, not four: "Share" opens the system sheet, which is where every other app already
+    // is, so a "More" beside it would be a second door to the same room.
+    Spacer(Modifier.height(16.dp))
+    Row(Modifier.fillMaxWidth()) {
+        ShareAction("WhatsApp", Modifier.weight(1f), onClick = { onShare(WHATSAPP) }) {
+            // A brand mark is a picture in its own colour: `Image`, never `Icon`, which tints.
+            Image(painterResource(R.drawable.brand_whatsapp), null, Modifier.size(24.dp))
+        }
+        // §6: there is no invite link today, only a code. So this copies the invite MESSAGE —
+        // the same words the share actions send, code included — and invents no URL. The pill
+        // above copies the bare code; this copies something you can paste into a chat.
+        ShareAction("Copy link", Modifier.weight(1f), onClick = onCopyInvite) {
+            HIcon(R.drawable.hi_link, D.Black, 20.dp)
+        }
+        ShareAction("Share", Modifier.weight(1f), onClick = { onShare(null) }) {
+            HIcon(R.drawable.hi_share, D.Black, 20.dp)
+        }
+    }
+
+    Spacer(Modifier.height(Space.section))
+    InvitedList(s)
+}
+
+/**
+ * The hero (§2.1).
+ *
+ * The gift's own green, and the gift itself at the end filling the card's height. The picture
+ * carries that same pale ground, so where it meets the card's gradient there is a seam — wiping
+ * its start edge out with [BlendMode.DstIn] is what hides the join, and it is mirrored in a
+ * right-to-left layout, which carries the wipe to the other side for free.
+ *
+ * Nothing else is in the card: no button, no "limited time" badge. The one action is the share
+ * button below, and a second way in would only split the tap.
+ */
+@Composable
+private fun Hero(theirReward: Int, reward: Int) {
+    val rtl = LocalLayoutDirection.current == LayoutDirection.Rtl
+    Box(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp))
+            .background(Brush.verticalGradient(0f to HERO_TOP, .45f to HERO_TOP, 1f to HERO_BOTTOM)),
+    ) {
+        Box(Modifier.matchParentSize()) {
+            Image(
+                painterResource(R.drawable.week_gift),
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.align(Alignment.CenterEnd)
+                    .fillMaxWidth(HERO_ART).fillMaxHeight()
+                    // The layer is OUTSIDE the wipe, so the alpha comes out of the picture alone.
+                    .graphicsLayer {
+                        if (rtl) scaleX = -1f
+                        compositingStrategy = CompositingStrategy.Offscreen
+                    }
+                    .drawWithContent {
+                        drawContent()
+                        drawRect(
+                            Brush.horizontalGradient(
+                                listOf(Color.Transparent, Color.Black),
+                                startX = 0f, endX = size.width * HERO_FADE,
+                            ),
+                            blendMode = BlendMode.DstIn,
+                        )
+                    },
+            )
+        }
+        // The words take the start 54% of the padded card, which is the sandbox's `max-w-[54%]`
+        // inside its `p-4` — a percentage of the content box, so the padding comes off first.
+        Column(Modifier.padding(16.dp).fillMaxWidth(.54f)) {
+            Text(
+                buildAnnotatedString {
+                    append("Invite friends\n& earn ")
+                    withStyle(SpanStyle(color = D.SuccessInk)) { append("SKR") }
+                },
+                color = D.Black, style = Type.title,
+            )
+            Spacer(Modifier.height(8.dp))
+            // Both amounts through [Money], so the phone's locale groups the digits — and bold
+            // in success ink, because the two figures are the whole offer. They stay in the
+            // sentence's face and take only its tabular figures; the sandbox does the same.
+            val figure = SpanStyle(
+                color = D.SuccessInk, fontWeight = FontWeight.Bold, fontFeatureSettings = "tnum",
+            )
+            Text(
+                buildAnnotatedString {
+                    append("They get ")
+                    withStyle(figure) { append("${skr(theirReward)} SKR") }
+                    append(",\nyou get ")
+                    withStyle(figure) { append("${skr(reward)} SKR") }
+                },
+                color = D.Black, style = Type.body,
+            )
+        }
+    }
+}
+
+/** The main share button: ink, 60 tall, corner 18, the Telegram mark before the words. */
+@Composable
+private fun TelegramButton(onClick: () -> Unit) {
+    val press = remember { MutableInteractionSource() }
+    Box(
+        Modifier.then(PressScale(press)).fillMaxWidth().heightIn(min = 60.dp)
+            .clip(RoundedCornerShape(18.dp)).background(D.Black)
+            .clickable(press, indication = null, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Row(
+            Modifier.padding(horizontal = 20.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Image(painterResource(R.drawable.brand_telegram), null, Modifier.size(24.dp))
+            Spacer(Modifier.width(8.dp))
+            // Every button label is Type.heading (ui/PORT.md §3), white on ink at 12.46:1.
+            Text("Share on Telegram", color = D.White, style = Type.heading)
+        }
+    }
+}
+
+/**
+ * A small outlined pill: a mark and a word. 48 tall to the finger, 36 to the eye.
+ *
+ * The touch height is on the outside and the ring on the inside, so the pill stays the size it
+ * is drawn while the target clears the 48dp minimum — the same trick the rest of the app's
+ * inline controls use rather than growing the visible shape to meet a finger.
+ */
+@Composable
+private fun OutlinePill(label: String, icon: Hi, onClick: () -> Unit, description: String? = null) {
+    val press = remember { MutableInteractionSource() }
+    Box(
+        Modifier.then(PressScale(press)).heightIn(min = 48.dp)
+            .clickable(press, indication = null, onClick = onClick)
+            .then(
+                if (description != null) Modifier.semantics { contentDescription = description }
+                else Modifier,
+            ),
+        contentAlignment = Alignment.Center,
+    ) {
+        Row(
+            Modifier.border(1.5.dp, D.Line, CircleShape)
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            // 16 beside a caption, so the mark is the same weight as the words next to it. Its
+            // label is right there, so it stays decorative to a screen reader.
+            HiIcon(icon, D.Black, 16.dp)
+            Spacer(Modifier.width(8.dp))
+            Text(label, color = D.Black, style = Type.caption)
+        }
+    }
+}
+
+/** One of the three actions under the main button: a 48 outlined disc and its word. */
+@Composable
+private fun ShareAction(
+    label: String,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+    icon: @Composable () -> Unit,
+) {
+    val press = remember { MutableInteractionSource() }
+    Column(
+        modifier.then(PressScale(press)).clickable(press, indication = null, onClick = onClick),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Box(
+            Modifier.size(48.dp).border(1.5.dp, D.Line, CircleShape),
+            contentAlignment = Alignment.Center,
+        ) { icon() }
+        Spacer(Modifier.height(8.dp))
+        Text(label, color = D.Quiet, style = Type.caption)
+    }
+}
+
+// ------------------------------------------------------------------ §2.2 people you invited
+
+/**
+ * The people who took your code (§2.2).
+ *
+ * Each invitation is in one of two places: they have joined — their wallet is connected, their
+ * first tap has not happened — or their first tap has landed and both sides were paid. The card
+ * says which three ways over: the mark on the face, the words, and the amount at the end.
+ *
+ * ### Why this is people you invited, not people you could invite
+ *
+ * The obvious version reads the phone's address book, which needs READ_CONTACTS — a directory of
+ * everybody you know, requested so a promo sheet can look busier. [Contacts] is no help either:
+ * everyone in it has already tapped with you, so inviting them is meaningless. What is worth
+ * showing is the half that is true and actually changes: who took the code, and who has paid.
+ */
+@Composable
+private fun InvitedList(s: Referrals.Summary) {
+    Row(Modifier.fillMaxWidth()) {
+        Text(
+            "People you invited", color = D.Black, style = Type.heading,
+            modifier = Modifier.weight(1f).alignByBaseline(),
+        )
+        // Counts, not money — so tabular figures and nothing else. Only once there is somebody
+        // to count: "0 of 0 paid" above "Nobody yet" says the same thing twice.
+        if (s.people.isNotEmpty()) {
+            Spacer(Modifier.width(Space.inline))
+            Text(
+                "${s.people.count { it.paid }} of ${s.people.size} paid",
+                color = D.Quiet, style = CaptionTabular,
+                modifier = Modifier.alignByBaseline(),
+            )
+        }
+    }
+    if (s.people.isEmpty()) {
+        Spacer(Modifier.height(Space.tight))
+        Text("Nobody yet. Anyone who uses your code shows up here.",
+            color = D.Quiet, style = Type.caption)
+        return
+    }
+    Spacer(Modifier.height(Space.lead))
+    Column(verticalArrangement = Arrangement.spacedBy(Space.inline)) {
+        s.people.forEach { InvitedCard(it, s.reward) }
+    }
+}
+
+@Composable
+private fun InvitedCard(p: Referrals.Person, reward: Int) {
+    val shape = RoundedCornerShape(16.dp)
+    Row(
+        Modifier.fillMaxWidth().clip(shape).border(1.5.dp, D.Line, shape).padding(16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box {
+            // Seeded on the ADDRESS, never a name: one person is one colour everywhere in the
+            // app, and nobody has named these people anyway.
+            FaceDisc(p.address, p.address, 40.dp)
+            if (p.paid) {
+                // A tick once their first tap has landed. Somebody who has only joined carries
+                // no mark, because there is nothing yet to mark. The white ring sits OUTSIDE the
+                // 16 disc — a 20 white circle with the success disc inset 2 into it — which is
+                // what lifts it off the face's own colour.
+                Box(
+                    Modifier.align(Alignment.BottomEnd).offset(x = 2.dp, y = 2.dp)
+                        .size(20.dp).clip(CircleShape).background(D.White)
+                        .padding(2.dp).clip(CircleShape).background(D.Success),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    // `disc = true`: inside a filled disc the icon is what a colour-blind person
+                    // reads, so it is drawn at the heavier grid stroke.
+                    HiIcon(Hi.Tick, D.White, 12.dp, disc = true)
+                }
+            }
+        }
+        Spacer(Modifier.width(Space.inline))
+        Column(Modifier.weight(1f)) {
+            // The address, not a name: inventing one here would be the only unverified thing on
+            // the sheet. Mono, because it is an identifier — at the body step, because it is
+            // this card's title and sits above its own caption.
+            Text(p.short, color = D.Black, style = MonoBody)
+            Spacer(Modifier.height(Space.tight))
+            Text(
+                if (p.paid) "First tap landed · joined ${ago(p.at)}" else "Joined ${ago(p.at)}",
+                color = D.Quiet, style = Type.caption,
+            )
+        }
+        if (p.paid) {
+            Spacer(Modifier.width(Space.inline))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                // Through [Money], so the + comes from the formatter rather than from a string
+                // that happens to start with one.
+                Text(skr(reward, sign = true), color = D.SuccessInk, style = FigureBody)
+                Spacer(Modifier.width(Space.tight))
+                // SKR's own token icon in place of the letters, and no "SKR" text beside it. The
+                // icon is a picture of a word, so it carries the word for a screen reader.
+                Image(
+                    painterResource(R.drawable.token_skr),
+                    contentDescription = "SKR",
+                    modifier = Modifier.size(20.dp).clip(CircleShape),
+                )
+            }
+        }
+    }
+}
+
+// ------------------------------------------------------------------ §2.3 the second sheet
+
+/** One step of the explainer: a fill, a mark, and the two lines beside them. */
+private class HowStep(
+    val fill: Color,
+    val title: String,
+    val detail: String,
+    val mark: @Composable () -> Unit,
+)
+
+/**
+ * "How it works" (§2.3).
+ *
+ * Three steps down a line, then the one rule. Every disc is a **solid fill with a white icon** —
+ * a status disc's kind of mark — and the note is an **outline**: no pale tinted backgrounds
+ * anywhere on this sheet, which is the no-tints rule the rest of the app already follows.
+ *
+ * Step 3 carries the weight. It is where the reward actually happens, so it is the step that has
+ * to say *a real payment* and not *a sign-up*, and the note under the three repeats it — this
+ * sheet is exactly where somebody comes to check whether the offer is real.
+ */
+@Composable
+private fun HowItWorksBody(theirReward: Int, reward: Int, onClose: () -> Unit) {
+    val steps = listOf(
+        HowStep(
+            D.Success, "Send them your code",
+            "It is on the screen behind this, ready to share.",
+        ) {
+            // `hi_share` is a drawable rather than a [Hi], so its stroke is the 1.5 the XML
+            // hard-codes instead of following the size. Adding it to the [Hi] set means editing
+            // Icons.kt, which this change is not allowed to touch; at 20 the two are a quarter
+            // of a pixel apart.
+            HIcon(R.drawable.hi_share, D.White, 20.dp)
+        },
+        HowStep(
+            D.Blue, "They enter it in AirPay",
+            "Before their first payment — a code is an invitation, not a receipt.",
+        ) {
+            // AirPay's own mark. §6: there is no logo symbol yet, so this is the wordmark's "A"
+            // in the logo face — the same thing the sandbox shows, rather than a logo invented
+            // here. It is replaced when the real mark arrives.
+            Text(
+                "A", color = D.White,
+                style = Type.heading.copy(fontFamily = Display, fontWeight = FontWeight.ExtraBold),
+            )
+        },
+        HowStep(
+            D.Orange, "They pay someone by tapping",
+            "They earn ${skr(theirReward)} SKR. You earn ${skr(reward)} SKR.",
+        ) {
+            HiIcon(Hi.Nfc, D.White, 20.dp, disc = true)
+        },
+    )
+
+    Spacer(Modifier.height(16.dp))
+    Text("How it works", color = D.Black, style = Type.heading)
+    Spacer(Modifier.height(24.dp))
+    steps.forEachIndexed { i, step ->
+        val last = i == steps.lastIndex
+        Row(
+            Modifier.fillMaxWidth()
+                .padding(bottom = if (last) 0.dp else 24.dp)
+                // The line down to the next disc, drawn rather than laid out: a `weight` inside
+                // the lead column would need the row's height before the text has wrapped, and
+                // at draw time the height is simply known. It starts 4 under this disc and stops
+                // 4 above the next, which is the sandbox's `my-1`.
+                .drawBehind {
+                    if (last) return@drawBehind
+                    val x = 20.dp.toPx()
+                    drawLine(
+                        D.Line, Offset(x, 44.dp.toPx()), Offset(x, size.height - 4.dp.toPx()),
+                        strokeWidth = 2.dp.toPx(), cap = StrokeCap.Round,
+                    )
+                },
+            verticalAlignment = Alignment.Top,
+        ) {
+            Box(
+                Modifier.size(40.dp).clip(CircleShape).background(step.fill),
+                contentAlignment = Alignment.Center,
+            ) { step.mark() }
+            Spacer(Modifier.width(Space.inline))
+            Column(Modifier.weight(1f)) {
+                Text("STEP ${i + 1}", color = D.Quiet, style = Type.micro)
+                Spacer(Modifier.height(Space.tight))
+                Text(step.title, color = D.Black, style = BodyBold)
+                Spacer(Modifier.height(Space.tight))
+                Text(step.detail, color = D.Quiet, style = Type.caption)
+            }
+        }
+    }
+
+    // The rule, boxed by an outline rather than a wash.
+    Spacer(Modifier.height(24.dp))
+    Row(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp))
+            .border(1.5.dp, D.Line, RoundedCornerShape(16.dp)).padding(16.dp),
+    ) {
+        HiIcon(Hi.Info, D.Black, 20.dp)
+        Spacer(Modifier.width(Space.inline))
+        Text(
+            "Nothing is paid for joining. A wallet costs nothing to make, so the reward waits " +
+                "until a real payment has happened.",
+            color = D.Black, style = Type.caption,
+        )
+    }
+    Spacer(Modifier.height(24.dp))
+    PrimaryButton("Got it", onClose)
+}
+
+// ------------------------------------------------------------------ sharing the invite
+
+/** Telegram's own app, tried before the chooser. */
+private const val TELEGRAM = "org.telegram.messenger"
+
+/** WhatsApp's own app, tried before the chooser. */
+private const val WHATSAPP = "com.whatsapp"
+
+/**
+ * Sends the invite, to one named app or to whatever the phone offers.
+ *
+ * [pkg] is attempted first and the system chooser is the fallback, because on Android 11+ a
+ * package the manifest has not declared a `<queries>` entry for is invisible: `resolveActivity`
+ * answers null even when the app is installed, and `startActivity` to it throws rather than
+ * lying. So the attempt IS the check — and a phone without Telegram still gets a share sheet
+ * instead of a dead button.
+ *
+ * The message carries no link. `duffle.so` does not resolve, and a share whose one link is dead
+ * is worse than one with none, so the code is the thing it carries (see [Referrals.message]).
+ */
+private fun shareInvite(context: Context, text: String, pkg: String?) {
+    fun send() = Intent(Intent.ACTION_SEND).apply {
+        type = "text/plain"
+        putExtra(Intent.EXTRA_TEXT, text)
+    }
+    fun go(intent: Intent) = runCatching {
+        // A Dialog's context is not always the Activity, and starting an activity from a
+        // non-activity context without this flag throws.
+        context.startActivity(
+            if (context is android.app.Activity) intent
+            else intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+        )
+    }.isSuccess
+
+    if (pkg != null && go(send().setPackage(pkg))) return
+    go(Intent.createChooser(send(), "Invite a friend"))
+}
+
+// ============================================================ the old screen, on its way out
+
+/**
+ * Referrals as a **screen** — superseded by [ReferSheet] (ui/PORT-2026-10-01-4.md §2).
+ *
+ * `ReferralsTab` is no longer a destination: the four places that led here now open [ReferSheet]
+ * over whatever the user is already on. This is kept only because `MainActivity.kt` still has the
+ * `Tab.REFERRALS` branch that calls it, and that file is not this change's to edit. It goes with
+ * that call site; nothing new should be wired to it.
+ *
+ * The one thing that has already gone from it is the **"Have a code?" door** (§2.1, and §5 item 6
+ * checks that none survives): entering somebody else's code belongs to the first-run screens.
+ * §6 records the gap that leaves — an invited user has nowhere to type a code until those screens
+ * are designed — and it is deliberately not patched here.
  *
  * ### Ported from ui/components/screens/Referrals.tsx (2026-09-30)
  *
@@ -123,12 +971,6 @@ internal fun ReferralsTab(
     var loading by remember { mutableStateOf(true) }
     var refresh by remember { mutableIntStateOf(0) }
     var query by rememberSaveable { mutableStateOf("") }
-    var entering by rememberSaveable { mutableStateOf(false) }
-    var codeIn by rememberSaveable { mutableStateOf("") }
-    var claimProblem by remember { mutableStateOf<String?>(null) }
-    var claimed by remember { mutableStateOf(false) }
-    var claiming by remember { mutableStateOf(false) }
-    val scope = rememberCoroutineScope()
     val clipboard = LocalClipboardManager.current
 
     LaunchedEffect(connected, refresh) {
@@ -139,7 +981,7 @@ internal fun ReferralsTab(
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
         if (connected == null) {
-            Blank(
+            LegacyBlank(
                 "Connect a wallet",
                 "Your code belongs to a wallet, so there is nothing to show until one is connected.",
             )
@@ -147,7 +989,7 @@ internal fun ReferralsTab(
         }
         val s = summary
         if (s == null) {
-            Blank(
+            LegacyBlank(
                 if (loading) "Checking…" else "Can't reach the server",
                 if (loading) null
                 else "Your code is made by the server, so this screen can't show one right now.",
@@ -222,35 +1064,13 @@ internal fun ReferralsTab(
                 InvitedRow(p, s.reward, first = i == 0)
             }
         }
-
-        // The other half of the loop. There is no deep link to carry a code — duffle.so does
-        // not resolve — so somebody arriving with one needs a door, and this is it.
-        Spacer(Modifier.height(Space.section))
-        HaveACode(
-            open = entering,
-            code = codeIn,
-            claiming = claiming,
-            claimed = claimed,
-            problem = claimProblem,
-            onToggle = { entering = !entering; claimProblem = null },
-            onCode = { codeIn = it.uppercase().filter { c -> c.isLetterOrDigit() }.take(8); claimProblem = null },
-            onClaim = {
-                val me = connected
-                claiming = true
-                scope.launch {
-                    val why = Referrals.claim(codeIn, me)
-                    claiming = false
-                    if (why == null) { claimed = true; refresh++ } else claimProblem = Referrals.why(why)
-                }
-            },
-        )
         Spacer(Modifier.height(Space.section))
     }
 }
 
-/** What the screen says when there is nothing to show yet. Two lines, no box. */
+/** What the old screen said when there was nothing to show. Two lines, no box. */
 @Composable
-private fun Blank(title: String, detail: String?) {
+private fun LegacyBlank(title: String, detail: String?) {
     Spacer(Modifier.height(Space.section))
     Text(title, color = D.Black, style = Type.heading)
     if (detail != null) {
@@ -461,118 +1281,12 @@ private fun SearchBox(query: String, onQuery: (String) -> Unit) {
     )
 }
 
-/** Entering somebody else's code — the receiving end of every share this screen sends. */
-@Composable
-private fun HaveACode(
-    open: Boolean, code: String, claiming: Boolean, claimed: Boolean, problem: String?,
-    onToggle: () -> Unit, onCode: (String) -> Unit, onClaim: () -> Unit,
-) {
-    // The grey panel is replaced by a rule and the space above it: this is a new section, not a
-    // card parked at the bottom of the screen.
-    Column(Modifier.fillMaxWidth()) {
-        Divider()
-        Spacer(Modifier.height(Space.row))
-        if (claimed) {
-            Text("Code accepted", color = D.Black, style = Type.body)
-            Spacer(Modifier.height(Space.tight))
-            Text("Your first tap will earn you — and whoever invited you.",
-                color = D.Quiet, style = Type.caption)
-            return@Column
-        }
-        val interaction = remember { MutableInteractionSource() }
-        Row(
-            Modifier.then(PressScale(interaction)).fillMaxWidth().heightIn(min = 48.dp)
-                .clickable(interaction, indication = null, onClick = onToggle),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(Modifier.weight(1f)) {
-                Text("Have a code?", color = D.Black, style = Type.body)
-                Spacer(Modifier.height(Space.tight))
-                Text("Enter it before your first payment", color = D.Quiet, style = Type.caption)
-            }
-            Spacer(Modifier.width(Space.inline))
-            Chevron(turn = if (open) -90f else 90f)
-        }
-        AnimatedVisibility(open) {
-            Column(Modifier.padding(top = Space.lead)) {
-                CodeField(code, onCode, refused = problem != null)
-                problem?.let {
-                    Spacer(Modifier.height(8.dp))
-                    // Ink, not red. None of these refusals is the chain refusing a transaction —
-                    // no money was in flight — and red is reserved for the one that is.
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        HiIcon(Hi.Alert, D.Black, 16.dp)
-                        Spacer(Modifier.width(8.dp))
-                        Text(it, color = D.Black, style = Type.caption)
-                    }
-                }
-                Spacer(Modifier.height(Space.lead))
-                PrimaryButton("Use this code", onClaim, enabled = code.length == 8 && !claiming,
-                    loading = claiming)
-            }
-        }
-    }
-}
-
 /**
- * The row chevron: pointing down while the door is shut, up once it is open.
+ * The old explainer: three steps, and the one condition that makes them honest.
  *
- * Quiet, because it is an affordance and not information — it was a blue-ink `▾` glyph, which
- * read as a link and took whatever shape the system font happened to have for it.
- *
- * The geometry is `Chevron` in OffersScreen.kt — two round-capped lines across a 9:15 box,
- * which on the 24-unit grid is x 4.8 → 19.2 at a 3.744 stroke. It is redrawn here because that
- * one is private to its own file; it belongs in Design.kt beside the other shared bits, and
- * this port was not allowed to touch that file.
- *
- * Rotated rather than mirrored, so RTL needs nothing: up and down are the same in every script.
- */
-
-/**
- * The field somebody types an invite code into.
- *
- * Not a Material `OutlinedTextField`: that one arrives with its own 56dp height, its own label
- * gutter and a 1dp border, and none of those are the numbers this design settled on — 52dp
- * minimum, a 14dp radius, 16/12 padding and a 1.5dp inset ring. So the box is drawn here and
- * `BasicTextField` puts the text inside it. `heightIn`, not `height`, so the field grows with
- * the font scale instead of clipping the code it holds.
- *
- * The ring goes to ink when the code was refused. **Not red:** none of these refusals is the
- * chain refusing a transaction — no money was ever in flight — and red is reserved for the one
- * that is.
- */
-@Composable
-private fun CodeField(code: String, onCode: (String) -> Unit, refused: Boolean) {
-    val shape = RoundedCornerShape(14.dp)
-    BasicTextField(
-        value = code,
-        onValueChange = onCode,
-        // A code is an identifier, so it is typed and shown in the identifier face — at the body
-        // step, because it is what this control is for and not a caption beside something else.
-        textStyle = MonoBody.copy(color = D.Black),
-        singleLine = true,
-        cursorBrush = SolidColor(D.Blue),
-        // Codes carry no lowercase and no punctuation, so the keyboard should not offer either.
-        keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Characters),
-        modifier = Modifier.fillMaxWidth(),
-        decorationBox = { field ->
-            Box(
-                Modifier.fillMaxWidth().heightIn(min = 52.dp).clip(shape)
-                    .border(1.5.dp, if (refused) D.Black else D.Blue, shape)
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
-                contentAlignment = Alignment.CenterStart,
-            ) {
-                // The hint says how long the code is, which is the one thing somebody typing
-                // one from a message needs to know.
-                if (code.isEmpty()) Text("8 characters", color = D.Quiet, style = MonoBody)
-                field()
-            }
-        },
-    )
-}
-
-/**
- * The explainer: three steps, and the one condition that makes them honest.
+ * Superseded by the stacked second sheet in [ReferSheet], and kept for the same reason
+ * [ReferralsTab] is: `MainActivity.kt` still hosts it, and that file is not this change's to
+ * edit. It goes with that call site.
  *
  * On the app's own [Tray] rather than a Material dialog — same scrim, same spring, same corner
  * as every other sheet here. The steps alternate side to side so the eye zig-zags down them

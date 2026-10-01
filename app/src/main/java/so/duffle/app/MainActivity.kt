@@ -160,7 +160,15 @@ class MainActivity : ComponentActivity() {
     /** The referral explainer, held here so its scrim covers the screen rather than the
      *  padded column the tab is drawn inside. Carries the summary because the numbers in
      *  it are the server's, and this Activity does not read them. */
-    private var howToRefer by mutableStateOf<Referrals.Summary?>(null)
+    /**
+     * Whether the Refer sheet is up.
+     *
+     * §2 of ui/PORT-2026-10-01-4.md makes Refer & earn a SHEET rather than a destination: it
+     * opens over whatever you are already on, from four places — the Referrals card on Home,
+     * "Invite a friend" on Rewards, the AirPay row on Offers, and "Refer and earn" in the
+     * profile panel. So it is one flag at the root, not a tab.
+     */
+    private var refer by mutableStateOf(false)
     /** The offer whose conditions are open. Hosted here for the same reason as the
      *  explainer: the scrim belongs to the screen, not to the padded column. */
     private var offerDetail by mutableStateOf<Rewards.Offer?>(null)
@@ -1125,14 +1133,15 @@ class MainActivity : ComponentActivity() {
                         // Rewards draws its OWN back row and title (§1 of
                         // ui/PORT-2026-10-01-3.md), so the generic one is skipped for it —
                         // otherwise the screen opens with "← Earn" above "← Rewards".
-                        if (tab != Tab.TAP && tab != Tab.REWARDS) {
+                        // Rewards and Offers both draw their OWN back row and title, so the
+                        // generic one is skipped for them — otherwise the screen opens with
+                        // "← Offers" above "← Offers".
+                        if (tab != Tab.TAP && tab != Tab.REWARDS && tab != Tab.OFFERS) {
                             BackHeader(
                                 when (tab) {
                                     Tab.REQUESTS -> "Activity"
                                     Tab.ALERTS -> "Notifications"
                                     Tab.HISTORY -> "Transactions"
-                                    Tab.REFERRALS -> "Refer & earn"
-                                    Tab.OFFERS -> "Offers"
                                     else -> shopSection?.title ?: "Pay a bill"
                                 },
                             ) { tab = Tab.TAP; shopSection = null; shopProduct = null }
@@ -1204,18 +1213,9 @@ class MainActivity : ComponentActivity() {
                                 connected = connected,
                                 isSeeker = myGenesis != null,
                                 onOpenOffer = { offerDetail = it },
-                                onReferrals = { tab = Tab.REFERRALS },
+                                onRefer = { refer = true },
                                 reloadKey = offersReload,
-                            )
-                            return@Column
-                        }
-
-                        if (tab == Tab.REFERRALS) {
-                            ReferralsTab(
-                                connected = connected,
-                                onShare = { shareText(it) },
-                                onHowToRefer = { howToRefer = it },
-                                myName = myDomain ?: Identity.label(this@MainActivity),
+                                onBack = { tab = Tab.TAP },
                             )
                             return@Column
                         }
@@ -1223,7 +1223,7 @@ class MainActivity : ComponentActivity() {
                         if (tab == Tab.REWARDS) {
                             RewardsTab(
                                 connected, myGenesis != null,
-                                onInvite = { tab = Tab.REFERRALS },
+                                onInvite = { refer = true },
                                 onOffers = { tab = Tab.OFFERS },
                                 onBack = { tab = Tab.TAP; shopSection = null; shopProduct = null },
                                 // §5's cards open the product in the shop, which is this
@@ -1404,7 +1404,7 @@ class MainActivity : ComponentActivity() {
                                 // Nothing on the server tracks a referral yet, so this shares an
                                 // invite and claims nothing else. A tile that promised a bonus
                                 // nobody is counting would be the one lie on this screen.
-                                onReferrals = { tab = Tab.REFERRALS },
+                                onReferrals = { refer = true },
                             )
                         }
 
@@ -1468,10 +1468,16 @@ class MainActivity : ComponentActivity() {
                         onEmail = { drawerOpen = false; editingEmail = true },
                         onWallets = {
                             drawerOpen = false
-                            walletDetails = walletList.firstOrNull { it.address == connected }
+                            // The wallets LIST, not one wallet's sheet. §3.3 makes this row the
+                            // only way to change wallet, and `WalletSheet` cannot change one —
+                            // it links and unlinks a single wallet. The Change wallet button
+                            // that used to do this went with the old panel, so pointing here at
+                            // the detail sheet would have left no route to switching at all.
+                            cards = true
                         },
                         onShare = { drawerOpen = false; shareText(it) },
                         onGo = { drawerOpen = false; tab = it },
+                        onRefer = { drawerOpen = false; refer = true },
                         onDiagnostics = { drawerOpen = false; checking = true },
                         onClose = { drawerOpen = false },
                     )
@@ -1502,17 +1508,19 @@ class MainActivity : ComponentActivity() {
                     )
                 }
 
-                howToRefer?.let { s ->
-                    HowToReferSheet(
-                        s = s,
-                        onShare = {
-                            howToRefer = null
-                            shareText(Referrals.message(
-                                myDomain ?: Identity.label(this@MainActivity), s.code, s.theirReward))
-                        },
-                        onClose = { howToRefer = null },
+                // At the root, outside the page's gutter, like every other sheet here.
+                if (refer) {
+                    ReferSheet(
+                        onClose = { refer = false },
+                        // Only the Activity knows the resolved .sol/.skr name; the sheet falls
+                        // back to the stored label when this is null.
+                        myName = myDomain ?: Identity.label(this@MainActivity),
                     )
                 }
+
+                // `HowToReferSheet` was hosted here. §2.1 removed the "How to refer" link that
+                // opened it and §2.3 replaced it with a second sheet stacked inside `ReferSheet`,
+                // so nothing could set it any more — it went with the `Tab.REFERRALS` branch.
 
                 walletDetails?.let { w ->
                     WalletSheet(

@@ -4,6 +4,7 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -11,7 +12,6 @@ import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
@@ -50,9 +50,12 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
@@ -161,30 +164,39 @@ internal fun SideSheet(onClose: () -> Unit, content: @Composable ColumnScope.() 
  *
  * The screen this follows lists settings. Almost nothing here is a setting — it is a payments
  * app with two things you can actually change (your name, and where codes get emailed). The
- * rest of the list is the app's own screens, which otherwise hang off a tile grid halfway down
- * the home page. Long-pressing the wordmark for diagnostics also finally gets a visible door:
- * a gesture nobody is told about is a feature nobody has.
+ * rest are doors: the wallets, a friend to invite, the things said about the app itself.
+ * Diagnostics used to live only behind a long-press on the wordmark — a gesture nobody is told
+ * about is a feature nobody has — and it keeps a visible door here, now under App settings.
  *
- * ### Ported from ui/components/screens/Drawer.tsx (2026-09-30)
+ * ### Ported from ui/components/screens/Drawer.tsx (2026-09-30, reworked 2026-10-01)
  *
- * The containers are gone: the address, the no-wallet message and the rows sit on white, split
- * by space and a `D.Line` divider, because a door is not a settings card. The QR card is a
- * poster — only "Scan to pay me" at 19sp bold stays on the blue, since white on `D.Blue` is
- * 3.30:1 and passes only as large text — so "Works in any Solana wallet" moved under it onto
- * white. The "Set a name" nudge lost its blue wash; the highlight marks the words instead.
+ * The containers are gone: the no-wallet message and the rows sit on white, split by space and
+ * a `D.Line` divider, because a door is not a settings card. The "Set a name" nudge lost its
+ * blue wash; the highlight marks the words instead. The page carries its own 12/32 top and
+ * bottom padding, the gaps above the nudge and above the badge are 24 and not 16, the empty
+ * state takes a row's padding of its own, and the first door in a group carries the same row
+ * padding as every other door.
  *
- * The arrangement was re-checked against that file afterwards: the page carries its own 12/32
- * top and bottom padding, the gaps above the nudge and above the QR card are 24 and not 16,
- * the empty state takes a row's padding of its own, "Copy" is a 48dp target rather than two
- * loose children of the address row, the address is mono at body size, and the first door in a
- * group carries the same row padding as every other door.
+ * **ui/PORT-2026-10-01-4.md §3 collapsed four things into one.** The QR card, the address row
+ * and the Share / Change-wallet buttons are now a single blue badge (§3.2): the code on white,
+ * what it is under it, and — inside the same card — a white strip naming the wallet it belongs
+ * to. "Scan to pay me" and "Works in any Solana wallet" are gone with them, and so is the only
+ * place small white type sat on `D.Blue`; the one line left on the blue is "Solana wallet" at
+ * 19sp bold, which is the floor 3.30:1 clears. The address shortens to first 6 … last 6 rather
+ * than the 10 … 6 it showed when it was a row of its own with nothing competing for the width.
+ *
+ * The doors are three groups now (§3.3), not a tile grid's worth of screens: Activity,
+ * Transactions, Rewards, Offers and Notifications are reached from the home page and no longer
+ * duplicated here, Diagnostics folds into App settings, and "Connected wallets" is the only way
+ * left to change wallet — which is why [onWallets] has to reach the wallets screen and not one
+ * wallet's detail sheet. The foot is the version and the network and nothing else (§3.4).
  *
  * [SideSheet]'s geometry is deliberate and untouched: only type, colour and spacing changed.
  */
 @Composable
 internal fun ProfileDrawer(
     name: String,
-    /** Null when no wallet is connected — the QR and the rows that need one say so. */
+    /** Null when no wallet is connected — the badge and the rows that need one say so. */
     address: String?,
     walletName: String?,
     isSeeker: Boolean,
@@ -193,13 +205,40 @@ internal fun ProfileDrawer(
     email: String?,
     onRename: () -> Unit,
     onEmail: () -> Unit,
+    /**
+     * The **wallets screen** — the list, where one can be picked.
+     *
+     * "Connected wallets" is the only way to change wallet since the Change-wallet button went
+     * (§3.3), so a call site that opens one wallet's detail sheet leaves no way to switch.
+     */
     onWallets: () -> Unit,
+    /**
+     * Unused: the Share button went with §3.2. Kept so the call site still compiles; delete the
+     * two together.
+     */
     onShare: (String) -> Unit,
+    /**
+     * Unused by any row: Activity, Transactions, Rewards, Offers and Notifications are gone
+     * (§3.3). It survives only as [onRefer]'s fallback, and goes when that is wired.
+     */
     onGo: (Tab) -> Unit,
     onDiagnostics: () -> Unit,
     onClose: () -> Unit,
+    /**
+     * Opens the Refer sheet (§2) over whatever is behind the panel.
+     *
+     * Defaulted to the old Referrals destination so the panel still reaches something until the
+     * call site hands it the sheet — not left as a no-op, which would be a door to nowhere.
+     */
+    onRefer: () -> Unit = { onGo(Tab.REFERRALS) },
 ) {
-    val clipboard = LocalClipboardManager.current
+    val context = LocalContext.current
+    // The linked list is read from the wallet store rather than taken as a parameter: it is the
+    // same SharedPreferences the caller's own list is a snapshot of, the panel is opened fresh
+    // each time, and the one thing it genuinely cannot know — which wallet is in use — is
+    // already hoisted as `address`. Only the count and the logo come from here.
+    val linked = remember { runCatching { Wallets(context).all() }.getOrDefault(emptyList()) }
+    val wallet = remember(linked, address) { linked.firstOrNull { it.address == address } }
     SideSheet(onClose) {
         Column(
             // The page's own edges: the gutter on both sides, 12 above the avatar and 32 below
@@ -262,7 +301,7 @@ internal fun ProfileDrawer(
                 Nudge("Set a name", "Without one, the people you tap see a wallet address.", onRename)
             }
 
-            // -------------------------------------------------------------- the QR
+            // -------------------------------------------------------------- the wallet badge
             if (address == null) {
                 Spacer(Modifier.height(Space.row))
                 // Two lines on the page, taking a row's worth of space above and below. A grey
@@ -275,115 +314,180 @@ internal fun ProfileDrawer(
                 }
             } else {
                 Spacer(Modifier.height(24.dp))
-                val uri = remember(address) { "solana:$address" }
-                Column(
-                    // Concentric: 20 outside = 12 inside + the 8 of blue between them.
-                    Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp))
-                        .background(D.Blue).padding(8.dp),
-                ) {
-                    // White, and generously padded: the quiet zone is part of the code, and a
-                    // QR sitting straight on a coloured card is one a scanner may refuse.
-                    Box(
-                        Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
-                            .background(D.White).padding(20.dp),
-                    ) {
-                        QrCode(uri, Modifier.fillMaxWidth().aspectRatio(1f))
-                    }
-                    // The only words left on the blue, and 19sp bold is the floor white on
-                    // D.Blue clears (3.30:1 passes as large text and nothing smaller).
-                    Text(
-                        "Scan to pay me", color = D.White, style = Type.heading,
-                        modifier = Modifier.padding(
-                            start = 12.dp, end = 12.dp, top = 12.dp, bottom = 8.dp),
-                    )
-                }
-                // Off the blue: at 11sp white this was the least legible line in the drawer.
-                Spacer(Modifier.height(8.dp))
-                Text("Works in any Solana wallet", color = D.Quiet, style = Type.caption)
-
-                Spacer(Modifier.height(Space.row))
-                // The address, copyable. Shown in full-ish rather than as an opaque blob: it is
-                // the thing somebody will check against what their wallet shows them. Ruled
-                // above and below instead of boxed.
-                Divider()
-                Row(
-                    Modifier.fillMaxWidth().heightIn(min = 48.dp)
-                        .clickable { clipboard.setText(AnnotatedString(address)) }
-                        .padding(vertical = Space.row),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(Modifier.weight(1f)) {
-                        Text(walletName ?: "Wallet", color = D.Quiet, style = Type.caption)
-                        Spacer(Modifier.height(Space.tight))
-                        // An identifier, read one character at a time: the mono face, not the
-                        // money face it used to borrow. At body size rather than caption,
-                        // because this is the line somebody checks character by character
-                        // against what their own wallet shows them.
-                        Text("${address.take(10)}…${address.takeLast(6)}", color = D.Black,
-                            style = Type.body.copy(fontFamily = Mono), maxLines = 1)
-                    }
-                    Spacer(Modifier.width(Space.inline))
-                    val copy = remember { MutableInteractionSource() }
-                    Row(
-                        // Its own 48dp-tall target with 12 of padding, pulled out by 12 so the
-                        // word — not the padding — is what meets the gutter.
-                        Modifier.then(PressScale(copy)).offset(x = 12.dp).heightIn(min = 48.dp)
-                            .clickable(copy, indication = null) {
-                                clipboard.setText(AnnotatedString(address))
-                            }
-                            .padding(horizontal = 12.dp)
-                            .semantics { contentDescription = "Copy address" },
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        // The word "Copy" is right beside it, so the mark stays decorative.
-                        HiIcon(Hi.Copy, D.BlueInk, 16.dp)
-                        Spacer(Modifier.width(Space.tight))
-                        Text("Copy", color = D.BlueInk, style = Type.caption)
-                    }
-                }
-                Divider()
-
-                Spacer(Modifier.height(Space.row))
-                Row(horizontalArrangement = Arrangement.spacedBy(Space.inline)) {
-                    SecondaryButton("Share", { onShare(uri) }, Modifier.weight(1f))
-                    SecondaryButton("Change wallet", onWallets, Modifier.weight(1f))
-                }
+                WalletBadge(address, walletName ?: wallet?.name, wallet)
             }
 
             // -------------------------------------------------------------- doors
-            Spacer(Modifier.height(Space.section))
-            Text("Everything else", color = D.Black, style = Type.heading)
-            Spacer(Modifier.height(Space.lead))
-
-            DrawerRow("Activity", "Requests waiting on you") { onGo(Tab.REQUESTS) }
+            // No heading on the first group: these three are not a category, they are the three
+            // things somebody came in here to do.
+            Spacer(Modifier.height(24.dp))
+            DrawerRow("Connected wallets", linkedLine(linked.size, walletName ?: wallet?.name),
+                onOpen = onWallets)
             Divider()
-            DrawerRow("Transactions", "Everything paid and received") { onGo(Tab.HISTORY) }
+            DrawerRow("Help center", "Questions, and how to reach us")
             Divider()
-            DrawerRow("Rewards", "SKR earned by tapping") { onGo(Tab.REWARDS) }
-            Divider()
-            DrawerRow("Offers", "Pay an app, earn SKR") { onGo(Tab.OFFERS) }
-            Divider()
-            DrawerRow("Refer and earn", "Bring a friend") { onGo(Tab.REFERRALS) }
-            Divider()
-            DrawerRow("Notifications", "What happened while you were away") { onGo(Tab.ALERTS) }
+            // A sheet, not a screen: the row opens it where it stands, over whatever is behind
+            // the panel, rather than navigating away from it.
+            DrawerRow("Refer and earn", "Bring a friend", onOpen = onRefer)
 
             Spacer(Modifier.height(Space.section))
             Text("Settings", color = D.Black, style = Type.heading)
             Spacer(Modifier.height(Space.lead))
             DrawerRow("Your name", name.ifBlank { "Not set" }, onOpen = onRename)
             Divider()
-            DrawerRow("Codes emailed to", email ?: "Not set", onOpen = onEmail)
+            // Diagnostics lost its own row and lives under App settings. There is no App
+            // settings screen yet (PORT-2026-10-01-4 §6: the destination is not designed), and
+            // diagnostics is the only thing behind this row that exists — so the row opens it
+            // rather than nothing, which is also the one destination §3.3 actually names for it.
+            DrawerRow("App settings", "Notifications, sounds, diagnostics", onOpen = onDiagnostics)
             Divider()
-            // The diagnostics used to live only behind a long-press on the wordmark. A gesture
-            // nobody is told about is a feature nobody has.
-            DrawerRow("Diagnostics", "NFC, wallet and server checks", onOpen = onDiagnostics)
+            DrawerRow("Codes emailed to", email ?: "Not set", onOpen = onEmail)
 
+            Spacer(Modifier.height(Space.section))
+            Text("About us", color = D.Black, style = Type.heading)
+            Spacer(Modifier.height(Space.lead))
+            // No line under any of these four, and no handler: §6 says their destinations are
+            // not designed. They are drawn and inert rather than wired somewhere invented —
+            // a door that opens on the wrong room is worse than one that has not been cut yet.
+            DrawerRow("About AirPay")
+            Divider()
+            DrawerRow("Community")
+            Divider()
+            DrawerRow("Fees and charges")
+            Divider()
+            DrawerRow("Terms and conditions")
+
+            // One line, and the version and the network are both read off something real:
+            // `BuildConfig.VERSION_NAME` and `Chain.NETWORK`, which derives the cluster from the
+            // endpoint the build actually talks to rather than from a string beside it.
             Spacer(Modifier.height(Space.section))
             Text("AirPay $version · $network", color = D.Quiet, style = CaptionTnum,
                 modifier = Modifier.fillMaxWidth())
-            Spacer(Modifier.height(Space.tight))
-            Text("Payments move real money on Solana mainnet.", color = D.Quiet,
-                style = Type.caption)
+        }
+    }
+}
+
+/**
+ * "3 linked · Phantom in use" — and less than that when less is known.
+ *
+ * Neither half is padded out with a guess: a count of zero means the store has not been read
+ * (the caller may be showing a wallet this list has never seen), and an unnamed wallet drops
+ * the second clause rather than printing "Wallet in use".
+ */
+private fun linkedLine(count: Int, inUse: String?): String? = when {
+    count > 0 && inUse != null -> "$count linked · $inUse in use"
+    count > 0 -> "$count linked"
+    inUse != null -> "$inUse in use"
+    else -> null
+}
+
+/**
+ * The QR, what it is, and whose it is — one card.
+ *
+ * It was four things: a QR poster, a line under it, an address row between two rules, and a pair
+ * of buttons. They all said the same thing twice. The badge keeps the parts that carry
+ * information and drops the rest (PORT-2026-10-01-4 §3.2).
+ *
+ * Corners are concentric: 24 outside, 16 inside, the 8 of blue between them. The QR tile is
+ * white and generously padded because the quiet zone is part of the code, and a QR sitting
+ * straight on a coloured card is one a scanner may refuse. `solana:<address>` is unchanged —
+ * the standard form, so it is not an AirPay code that happens to work elsewhere.
+ */
+@Composable
+private fun WalletBadge(address: String, walletName: String?, wallet: Linked?) {
+    val clipboard = LocalClipboardManager.current
+    val uri = remember(address) { "solana:$address" }
+    Column(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp))
+            .background(D.Blue).padding(8.dp),
+    ) {
+        Box(
+            Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp))
+                .background(D.White).padding(20.dp),
+        ) {
+            QrCode(uri, Modifier.fillMaxWidth().aspectRatio(1f))
+        }
+        // The only words left on the blue, and 19sp bold is the floor white on D.Blue clears
+        // (3.30:1 passes as large text and nothing smaller). Its own 12 all round is what
+        // separates the tile above from the strip below.
+        Text(
+            "Solana wallet", color = D.White, style = Type.heading,
+            modifier = Modifier.padding(12.dp),
+        )
+        Row(
+            Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp))
+                .background(D.White).padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (wallet != null) {
+                WalletMark(wallet)
+                Spacer(Modifier.width(Space.inline))
+            }
+            Column(Modifier.weight(1f)) {
+                Text(walletName ?: "Wallet", color = D.Quiet, style = Type.caption, maxLines = 1)
+                Spacer(Modifier.height(Space.tight))
+                // An identifier, read one character at a time: the mono face, not the money
+                // face it used to borrow, and at body size rather than caption because this is
+                // the line somebody checks against what their own wallet shows them. Six each
+                // end, not the ten it showed as a row of its own — the logo and the Copy pill
+                // are on this line now, and ten would truncate before the ellipsis could.
+                Text(
+                    "${address.take(6)}…${address.takeLast(6)}", color = D.Black,
+                    style = Type.body.monospaced(), maxLines = 1,
+                )
+            }
+            Spacer(Modifier.width(Space.inline))
+            CopyPill { clipboard.setText(AnnotatedString(address)) }
+        }
+    }
+}
+
+/**
+ * The wallet app's own mark, at 36 with a 9 corner.
+ *
+ * Fit, not crop: these icons are not all square (Backpack is 117x142, Seeker 681x607) and
+ * filling a square box with them cut the artwork's edges off. A wallet with a flat mark ships
+ * it as a tintable line icon instead, which is the other branch.
+ */
+@Composable
+private fun WalletMark(w: Linked) {
+    val shape = RoundedCornerShape(9.dp)
+    val tint = w.iconTint
+    if (tint == null) {
+        Image(
+            painterResource(w.iconRes), contentDescription = null,
+            modifier = Modifier.size(36.dp).clip(shape),
+            contentScale = ContentScale.Fit,
+        )
+    } else {
+        HIcon(w.iconRes, tint, 36.dp)
+    }
+}
+
+/**
+ * `Copy`, as an outlined pill.
+ *
+ * The outline is what makes it read as a control on white — the strip it sits in is white too,
+ * so there is no fill to lean on. 48dp of hit area around a pill that is shorter than that, and
+ * the word is right beside the mark, so the mark stays decorative and unlabelled.
+ */
+@Composable
+private fun CopyPill(onCopy: () -> Unit) {
+    val copy = remember { MutableInteractionSource() }
+    Box(
+        Modifier.then(PressScale(copy)).heightIn(min = 48.dp)
+            .clickable(copy, indication = null, onClick = onCopy)
+            .semantics { contentDescription = "Copy address" },
+        contentAlignment = Alignment.Center,
+    ) {
+        Row(
+            Modifier.border(1.5.dp, D.Line, CircleShape)
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            HiIcon(Hi.Copy, D.Black, 16.dp)
+            Spacer(Modifier.width(8.dp))
+            Text("Copy", color = D.Black, style = Type.caption)
         }
     }
 }
@@ -438,24 +542,36 @@ private fun Nudge(title: String, detail: String, onAct: () -> Unit) {
  * door by space and a hairline. Every door carries a full row's padding top and bottom, the
  * first one included: the heading's own 12 sits above that rather than instead of it, which is
  * the 12-against-40 ratio that makes a group read as a group without a box round it.
+ *
+ * [detail] is optional — the About us rows carry no line — and so is [onOpen]. A row with a null
+ * [onOpen] is drawn but takes no press and no tap: PORT-2026-10-01-4 §6 leaves several of these
+ * destinations undesigned, and a row that scales under the finger and then does nothing claims
+ * to be a door that is not one.
  */
 @Composable
 private fun DrawerRow(
-    title: String, detail: String, onOpen: () -> Unit,
+    title: String, detail: String? = null, onOpen: (() -> Unit)? = null,
 ) {
     val interaction = remember { MutableInteractionSource() }
     // The chevron means "forward", so it points the other way in a right-to-left layout.
     val rtl = LocalLayoutDirection.current == LayoutDirection.Rtl
     Row(
-        Modifier.then(PressScale(interaction)).fillMaxWidth()
-            .clickable(interaction, indication = null, onClick = onOpen)
+        Modifier
+            .then(if (onOpen == null) Modifier else PressScale(interaction))
+            .fillMaxWidth()
+            .then(
+                if (onOpen == null) Modifier
+                else Modifier.clickable(interaction, indication = null, onClick = onOpen),
+            )
             .padding(vertical = Space.row),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(Modifier.weight(1f)) {
             Text(title, color = D.Black, style = Type.body)
-            Spacer(Modifier.height(Space.tight))
-            Text(detail, color = D.Quiet, style = Type.caption, maxLines = 1)
+            if (detail != null) {
+                Spacer(Modifier.height(Space.tight))
+                Text(detail, color = D.Quiet, style = Type.caption, maxLines = 1)
+            }
         }
         Spacer(Modifier.width(Space.inline))
         // Quiet, and unlabelled: it is an affordance, not information, and the row's own title

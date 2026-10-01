@@ -216,6 +216,17 @@ object Rewards {
         val reward: Int, val symbol: String, val minimum: Long, val decimals: Int,
         val link: String, val windowHours: Int,
         val state: String, val earned: Int, val signature: String?, val refused: String?,
+        /**
+         * The app's own icon.
+         *
+         * ui/PORT-2026-10-01-4.md §1.2 redefines an offer as a task in a dApp Store app and
+         * says each one needs the app's name AND icon. The name arrives as [app]; the icon does
+         * not — `/v1/offers` sends no such key today. Nullable and parsed, so the row shows a
+         * real icon the moment the server adds one, and until then falls back to the app's
+         * initial on its own colour. Nothing maps a name to a bundled asset: that would be
+         * right for the five sample apps and wrong for the sixth, while looking like it worked.
+         */
+        val icon: String? = null,
     ) {
         val available get() = state == "available"
         val waiting get() = state == "open"
@@ -236,6 +247,7 @@ object Rewards {
                     link = j.optString("link"), windowHours = j.optDouble("window_hours", 48.0).toInt(),
                     state = j.optString("state", "available"), earned = j.optInt("skr_earned"),
                     signature = j.text("signature"), refused = j.text("refused"),
+                    icon = j.text("icon"),
                 )
             }
         }

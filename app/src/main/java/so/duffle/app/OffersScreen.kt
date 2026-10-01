@@ -1,11 +1,11 @@
 package so.duffle.app
 
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -13,12 +13,13 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -30,60 +31,97 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 
 /**
- * Offers: pay a particular app, earn SKR.
+ * Offers: a task in a dApp Store app — install it, do one thing in it, earn SKR.
  *
- * ### Grouped by what you can do, not by how good it looks
+ * ### An offer is a task in somebody else's app
  *
- * The screens this is modelled on sort offers into "exclusive" and "popular" — words that
- * describe how an offer was *merchandised*, not anything a reader can check. Ours has two
- * facts worth sorting on and they are both about the person looking: an offer you have already
- * claimed is **running against a clock** and needs paying; an offer you have not is a thing to
- * decide about. So claimed comes first, available second, finished last, and nothing is called
- * exclusive.
+ * Redefined by the user on 2026-10-01 (ui/PORT-2026-10-01-4.md §1.2). It is no longer "pay a
+ * particular app and earn"; it is install an app and do one thing in it — swap, stake, deposit,
+ * buy. Which means every offer now needs two things that belong to the app rather than to us:
+ * its **name** and its **icon**. The server sends the name (`Rewards.Offer.app`) and does not
+ * send an icon, so every row here falls back to §1.4's no-icon case. See [OfferFace].
+ *
+ * ### Two groups, and nothing about merchandising
+ *
+ * The screens this was modelled on sorted offers into "exclusive" and "popular" — words about
+ * how an offer was *promoted*, which a reader cannot check. This has two groups and they are
+ * both facts: an offer is **available** ("Popular offers") or it is **Finished**, meaning paid
+ * or its window closed.
+ *
+ * The earlier "Waiting on you" group is **gone** (§1.3). A claimed-but-unpaid offer stays in
+ * Popular offers until it is paid or its window closes, because claiming is not progress a
+ * reader needs a separate heading for — it is a clock, and the clock is stated in [OfferSheet].
  *
  * ### The referral is listed as an offer, because it is one
  *
- * There is exactly one funded offer on this server today. Padding the page out with variants
- * of it would be the shape of dishonesty this project keeps catching — so instead the standing
- * AirPay offer that genuinely exists sits in the list beside it, marked as ours and routed to
- * the screen that explains it.
+ * There is exactly one offer AirPay itself funds today. Padding the page out with variants of
+ * it would be the shape of dishonesty this project keeps catching — so instead the standing
+ * AirPay offer that genuinely exists sits first in the list, marked as ours and routed to the
+ * Refer sheet rather than to the offer sheet (it has no claim, no window and no minimum, so a
+ * sheet built around those would have nothing to put in them).
  *
- * ### Why rows open a sheet
+ * ### Why the dApp rows open a sheet
  *
  * Every offer carries conditions — a minimum, a window, a token — that decide whether it pays.
- * Crushed into a card they became a subtitle nobody read; behind a chevron they get room to be
- * stated before somebody spends money on the strength of them.
+ * Crushed into a row they became a subtitle nobody read; behind a sheet they get room to be
+ * stated before somebody spends money on the strength of them. §6 of the brief leaves
+ * [OfferSheet] un-redesigned on purpose: it is now **the only place the claim-first rule can be
+ * stated**, which is why that line came off this screen and not out of the app.
  *
- * ### Ported to the settled system, 2026-09-30
+ * ### Ported 2026-10-01 from `ui/components/screens/Offers.tsx`
  *
- * From `ui/components/screens/Offers.tsx` (ui/PORT.md §3, §4, §9). The banner is a poster: one
- * solid blue, one large line, the drawn tickets as its graphic — everything smaller than 19sp
- * bold has come off the blue, because white on `D.Blue` is 3.30:1 and passes only as large
- * text. The rows lost their grey bodies and their blue-tinted discs; they are divided rows with
- * a hairline avatar, like every other list in the app.
+ * Gone with the redesign: the solid blue poster, the "Claim first, then pay — that order is what
+ * proves it." line, the "That is the only funded offer right now…" line, the hairline between
+ * rows, the chevron on each row, and the "From <funder>" label (line 1 is the app's name now).
+ *
+ * @param onRefer the Refer sheet (§2) — what the first row, AirPay's own, opens. Defaulted so
+ *   this file compiles against a call site that has not been wired yet; wire it.
+ * @param onReferrals the old name of [onRefer], kept only so MainActivity.kt's existing
+ *   `onReferrals = { tab = Tab.REFERRALS }` still compiles while that file is edited elsewhere.
+ *   Pass [onRefer] instead and delete this.
+ * @param onBack §1.1's back arrow. Optional for the same reason [RewardsTab]'s is: MainActivity.kt
+ *   still draws its own `BackHeader("Offers")` above this screen, so until that call site passes
+ *   a lambda the arrow is drawn (it is part of §1.1's title row) and does nothing, and the screen
+ *   shows two back rows. Removing `Tab.OFFERS -> "Offers"` from that header and passing `onBack`
+ *   is the one-line change that fixes it.
  */
 @Composable
 internal fun OffersTab(
     connected: String?,
     isSeeker: Boolean,
     onOpenOffer: (Rewards.Offer) -> Unit,
-    onReferrals: () -> Unit,
+    onRefer: () -> Unit = {},
+    onReferrals: () -> Unit = onRefer,
     /** Set once the sheet has claimed something, so the list re-reads. */
     reloadKey: Int,
+    onBack: (() -> Unit)? = null,
 ) {
     var offers by remember { mutableStateOf<List<Rewards.Offer>>(emptyList()) }
     var referral by remember { mutableStateOf<Referrals.Summary?>(null) }
@@ -104,7 +142,7 @@ internal fun OffersTab(
     }
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-        // Before the poster, not after it. With no wallet there is nothing to claim with, so
+        // Before the top bar, not after it. With no wallet there is nothing to claim with, so
         // advertising offers above the reason none can be shown was the wrong order — and it
         // is the order RewardsScreen and ReferralsScreen already use for the same state.
         if (connected == null) {
@@ -116,33 +154,16 @@ internal fun OffersTab(
             return@Column
         }
 
-        OffersBanner()
-        // The rule the banner used to carry in 12.5sp white. It is the load-bearing sentence on
-        // the screen — claiming late earns nothing — so it sits on white where it can be read.
-        Spacer(Modifier.height(Space.row))
-        Text("Claim first, then pay — that order is what proves it.",
-            color = D.Black, style = Type.body)
+        OffersTopBar(onBack)
 
-        val waiting = offers.filter { it.waiting }
-        val available = offers.filter { it.available }
+        val available = offers.filter { it.available || it.waiting }
         val done = offers.filter { it.state == "paid" || it.state == "expired" }
-
-        // Claimed and running against a clock. First because it is the only group with a
-        // deadline attached, and the only one where doing nothing loses something.
-        if (waiting.isNotEmpty()) {
-            Spacer(Modifier.height(Space.section))
-            OffersHeading("Waiting on you")
-            waiting.forEachIndexed { i, offer ->
-                if (i > 0) OffersHairline()
-                OfferRow(offer, first = i == 0) { onOpenOffer(offer) }
-            }
-        }
 
         Spacer(Modifier.height(Space.section))
         // Spelled out rather than [OffersHeading], because the Seeker note is a line that
         // QUALIFIES the heading: it sits `tight` under it, and the `lead` gap down to the first
         // row comes after the pair instead of between them.
-        Text("Offers for you", color = D.Black, style = Type.heading)
+        Text("Popular offers", color = D.Black, style = Type.heading)
         if (!isSeeker) {
             // Said once, at the top, rather than repeated as a refusal on every row.
             Spacer(Modifier.height(Space.tight))
@@ -150,27 +171,33 @@ internal fun OffersTab(
                 color = D.Quiet, style = Type.caption)
         }
         Spacer(Modifier.height(Space.lead))
+        // AirPay's own offer is the FIRST row of this group, always (§1.4). Its reward comes
+        // from the server like every other reward — the brief's "Earn 300 SKR" is the sandbox's
+        // mock figure, the same way its "Earn 400 SKR" is — so the row waits on the referral
+        // summary rather than printing a number this screen made up.
         referral?.let { ReferralOfferRow(it, first = true, onOpen = onReferrals) }
         available.forEachIndexed { i, offer ->
-            if (i > 0 || referral != null) OffersHairline()
+            if (i > 0 || referral != null) DottedRule()
             OfferRow(offer, first = i == 0 && referral == null) { onOpenOffer(offer) }
         }
-        if (available.isEmpty() && !loading) {
-            Text(
-                if (referral == null) "Nothing live right now."
-                else "That is the only funded offer right now. More arrive as apps fund them.",
-                color = D.Quiet, style = Type.caption, modifier = Modifier.padding(top = Space.inline),
-            )
+        // "Nothing live right now." only when the group really is empty — AirPay's own row
+        // counts. On the phone it read as a flat contradiction: a live offer with a line
+        // underneath saying there were none.
+        if (available.isEmpty() && referral == null && !loading) {
+            Text("Nothing live right now.", color = D.Quiet, style = Type.caption,
+                modifier = Modifier.padding(top = Space.inline))
         }
         if (loading && offers.isEmpty()) {
             Text("Checking…", color = D.Quiet, style = Type.caption)
         }
 
+        // Only when there is at least one (§1.3). Both endings live here: paid, and the window
+        // closed without a payment.
         if (done.isNotEmpty()) {
             Spacer(Modifier.height(Space.section))
             OffersHeading("Finished")
             done.forEachIndexed { i, offer ->
-                if (i > 0) OffersHairline()
+                if (i > 0) DottedRule()
                 OfferRow(offer, first = i == 0) { onOpenOffer(offer) }
             }
         }
@@ -185,179 +212,373 @@ private fun OffersHeading(text: String) {
 }
 
 /**
- * The hairline between rows.
+ * The line between two offer rows: **dotted**, 1.5 thick, `D.Neutral` (§1.4).
  *
- * With the grey row bodies gone (ui/PORT.md §9) this and the row's own padding are the only
- * things separating one offer from the next, so it is drawn rather than implied.
+ * Drawn as circles rather than with `PathEffect.dashPathEffect`, because a dotted CSS border is
+ * round dots and the dash that produces those is a degenerate zero-length segment with a round
+ * cap — which is a Skia detail, not a guarantee. A dot of the rule's own thickness with a gap of
+ * the same width is what `divide-dotted` renders, and it is three lines of arithmetic here.
+ *
+ * With the boxes and the chevrons gone this and the row's own padding are the only things
+ * separating one offer from the next, so it is drawn rather than implied.
  */
 @Composable
-private fun OffersHairline() {
-    Box(Modifier.fillMaxWidth().height(1.dp).background(D.Line))
-}
-
-/**
- * The poster across the top.
- *
- * One solid blue and one large line — not a gradient, and nothing small on it: white on
- * `D.Blue` is 3.30:1, which passes as large text only, so the 11sp "OFFERS" label went (the
- * screen already says it) and the rule underneath moved onto white.
- *
- * The tickets are drawn rather than an illustration asset, from the ticket the Offers tile
- * already uses. A graphic, so their white alphas are depth rather than faded text.
- */
-@Composable
-private fun OffersBanner() {
-    Box(
-        Modifier.fillMaxWidth().heightIn(min = 128.dp).clip(RoundedCornerShape(22.dp))
-            .background(D.Blue),
-    ) {
-        // matchParentSize, not fillMaxSize: the text decides how tall the banner is, and a
-        // fixed height cropped the last line at this font scale.
-        Canvas(Modifier.matchParentSize()) {
-            val w = size.width
-            val h = size.height
-            // Three 56dp tickets, fanned: [fraction across, fraction down, white alpha], the
-            // same three as `TICKETS` in ui/components/screens/Offers.tsx. Each is centred on
-            // its point, so a ticket may run off the poster and be clipped by its 22dp corner.
-            //
-            // Redrawn here rather than called: `MarkCanvas` and its `Mark` enum are private to
-            // MainActivity.kt, so the ticket's own geometry — slab at (.08,.22) sized
-            // (.84,.56) radius .14, bites of r .12 at (.08,.5) and (.92,.5) — is copied.
-            //
-            // The bites really are punched, and no offscreen layer is needed for it: the ground
-            // is one solid D.Blue, so an OPAQUE blue circle restores it exactly. The earlier
-            // attempt painted the bites in the ticket's own faded white, which composites to
-            // nothing — which is why they shipped invisible and a dotted seam stood in.
-            listOf(Triple(.55f, .34f, .15f), Triple(.70f, .58f, .20f), Triple(.86f, .28f, .30f))
-                .forEach { (fx, fy, alpha) ->
-                    val side = 56.dp.toPx()
-                    val left = w * fx - side / 2
-                    val top = h * fy - side / 2
-                    drawRoundRect(Color.White.copy(alpha = alpha),
-                        Offset(left + side * .08f, top + side * .22f),
-                        Size(side * .84f, side * .56f), CornerRadius(side * .14f))
-                    drawCircle(D.Blue, side * .12f, Offset(left + side * .08f, top + side * .5f))
-                    drawCircle(D.Blue, side * .12f, Offset(left + side * .92f, top + side * .5f))
-                }
-        }
-        // 24 on every edge, off the spacing scale rather than a role: this is a component's
-        // own inside, not the page's gutter.
-        Column(Modifier.padding(24.dp)) {
-            // 24sp bold, clear of the 19sp floor for white on D.Blue.
-            Text("Pay an app, earn SKR", color = Color.White, style = Type.title,
-                modifier = Modifier.fillMaxWidth(.60f))
+private fun DottedRule() {
+    Canvas(Modifier.fillMaxWidth().height(RULE)) {
+        val r = size.height / 2f
+        // Dot, then a gap its own width.
+        val step = size.height * 2f
+        var x = r
+        while (x <= size.width - r) {
+            drawCircle(D.Neutral, r, Offset(x, r))
+            x += step
         }
     }
 }
 
-/** One offer, compact. The conditions live behind it, in [OfferSheet]. */
+/** The dotted rule's thickness, which is also a dot's diameter. */
+private val RULE = 1.5.dp
+
+// ----------------------------------------------------------------------------- §1.1 the top bar
+
+/** §1.1: full width, 184 tall, on the page's white. No coloured bar. */
+private val BAR_H = 184.dp
+
+/** The illustration at full size, and the 2:1 ratio `offers_banner` (1056 × 528) is drawn at. */
+private val ART_W = 272.dp
+private val ART_H = 136.dp
+
+/** How far down the bar the illustration starts, and how far past the screen's end edge it runs. */
+private val ART_TOP = 40.dp
+private val ART_PAST_END = 8.dp
+
+/** §1.1: the tagline is at most 158 wide, which puts it on two lines. */
+private val TAGLINE_MAX = 158.dp
+
+/**
+ * The three edge ramps, as fractions of the illustration's own box (§1.1).
+ *
+ * They exist so the picture's pale ground melts into the page's white, which is why the **end**
+ * edge has none: that edge is cut by the screen, so there is no join to hide.
+ */
+private const val FADE_START = .25f
+private const val FADE_TOP = .14f
+private const val FADE_BOTTOM = .18f
+
+/** The gap kept between where the words end and where the illustration becomes opaque. */
+private val ART_CLEARANCE = 8.dp
+
+private const val INTRO_A = "More ways"
+private const val INTRO_B = "to earn"
+private const val TAGLINE = "Complete simple actions and earn rewards"
+
+/**
+ * The top bar: the back arrow and "Offers" on one line, then what the screen is for, with the
+ * user's illustration on the end side.
+ *
+ * **It bleeds through the 20dp gutter.** The page applies that gutter (MainActivity.kt), so the
+ * bar buys it back the way `TokenBadges` does: measured two gutters wider than the page allows,
+ * reported at the page's own width, and placed one gutter to the start. Inside this box the
+ * coordinates are then the **screen's**, which is why the words carry `Space.gutter` as padding
+ * of their own and the illustration can run off the end edge.
+ *
+ * `clipToBounds` is on the widened box, not the page: the illustration is pushed 8 past the end
+ * edge on purpose and that 8 has to be cut by the screen. Relying on an ancestor to cut it would
+ * be relying on `clipScrollableContainer`'s 30dp of slack, which is a Compose implementation
+ * detail and not a promise.
+ *
+ * `heightIn(min = …)` rather than `height(…)`: 184 is the design's height, and at a large font
+ * scale the words need more than that. §1.1's rule is that the words win — so the bar grows and
+ * the illustration shrinks, never the other way round. See [artWidthFor].
+ */
 @Composable
-private fun OfferRow(offer: Rewards.Offer, first: Boolean, onOpen: () -> Unit) {
+private fun OffersTopBar(onBack: (() -> Unit)?) {
+    BoxWithConstraints(
+        Modifier
+            .layout { measurable, constraints ->
+                val gutter = Space.gutter.roundToPx()
+                // EXACT, not `minWidth = 0`: this box is the screen, so it must be the screen's
+                // width whatever its content measures to. (`TokenBadges` passes 0 because a
+                // scrolling row is sized by its cards; this is sized by the page.)
+                val wide = constraints.maxWidth + 2 * gutter
+                val placeable = measurable.measure(
+                    constraints.copy(minWidth = wide, maxWidth = wide),
+                )
+                // The parent's OWN width is reported, and the wider content placed one gutter
+                // to the start. Reporting the placeable's width here shifts the bar by two
+                // gutters instead of one — the mistake `TokenBadges` records having measured.
+                layout(constraints.maxWidth, placeable.height) { placeable.place(-gutter, 0) }
+            }
+            .heightIn(min = BAR_H)
+            .clipToBounds(),
+    ) {
+        val barW = maxWidth
+        val density = LocalDensity.current
+        val measurer = rememberTextMeasurer()
+
+        // How wide the words actually are, MEASURED — not inferred from `fontScale`. The same
+        // reasoning as the pay bar's two-line labels: the type, the tracking and the 158dp cap
+        // are all real numbers, and a threshold on the scale would be a different wrong answer
+        // on every device.
+        val wordsW = remember(measurer, density.density, density.fontScale) {
+            val intro = maxOf(
+                measurer.measure(INTRO_A, Type.title).size.width,
+                measurer.measure(INTRO_B, Type.title).size.width,
+            )
+            val tagline = measurer.measure(
+                TAGLINE, Type.caption,
+                constraints = Constraints(maxWidth = with(density) { TAGLINE_MAX.roundToPx() }),
+            ).size.width
+            with(density) { maxOf(intro, tagline).toDp() }
+        }
+        val artW = artWidthFor(barW, wordsW)
+
+        if (artW > 0.dp) {
+            val rtl = LocalLayoutDirection.current == LayoutDirection.Rtl
+            Image(
+                painterResource(R.drawable.offers_banner),
+                contentDescription = null,
+                // 1056 × 528 into a 2:1 box, so Fit and Crop are the same picture. Fit, because
+                // nothing of it is meant to be cut except by the screen's end edge.
+                contentScale = ContentScale.Fit,
+                modifier = Modifier.align(Alignment.TopEnd)
+                    .size(artW, artW * (ART_H / ART_W))
+                    // `offset` is layout-direction aware, so +8 is "past the END edge" in both
+                    // directions, and 40 down is 40 down in both.
+                    .offset(x = ART_PAST_END, y = ART_TOP)
+                    // The layer is OUTSIDE the wipe, so the alpha comes out of the picture
+                    // alone — the same reason the Rewards hero's gift and grid each own one.
+                    .graphicsLayer {
+                        // The illustration is lit and has a direction, so it mirrors. The mirror
+                        // also carries the start-edge ramp to the other side for free, which is
+                        // what makes one wipe correct in both layout directions.
+                        if (rtl) scaleX = -1f
+                        compositingStrategy = CompositingStrategy.Offscreen
+                    }
+                    .drawWithContent {
+                        drawContent()
+                        // Two wipes, which multiply — the same thing CSS `mask-composite:
+                        // intersect` does to the sandbox's two gradients.
+                        drawRect(
+                            Brush.horizontalGradient(
+                                0f to Color.Transparent, FADE_START to Color.Black,
+                            ),
+                            blendMode = BlendMode.DstIn,
+                        )
+                        drawRect(
+                            Brush.verticalGradient(
+                                0f to Color.Transparent,
+                                FADE_TOP to Color.Black,
+                                1f - FADE_BOTTOM to Color.Black,
+                                1f to Color.Transparent,
+                            ),
+                            blendMode = BlendMode.DstIn,
+                        )
+                    },
+            )
+        }
+
+        Column(Modifier.align(Alignment.TopStart).padding(horizontal = Space.gutter)) {
+            // The whole row is pulled 12 into the gutter rather than just the arrow's box, which
+            // is what the sandbox's `-ms-3` does and what `RewardsTitle` already does: the
+            // arrow's INK then starts on the page edge the tagline starts on, and the title
+            // follows it by the same 12. A negative padding would throw in Compose, so the shift
+            // is an offset — it moves the drawing without changing the row's measured size.
+            Row(Modifier.offset(x = -12.dp), verticalAlignment = Alignment.CenterVertically) {
+                val press = remember { MutableInteractionSource() }
+                Box(
+                    Modifier.then(PressScale(press)).size(48.dp)
+                        .then(
+                            if (onBack == null) Modifier
+                            else Modifier.clip(CircleShape)
+                                .clickable(press, indication = null, onClick = onBack)
+                                .semantics { contentDescription = "Back" },
+                        ),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    // `hi_arrow_left` through [HiIcon], so the stroke follows the size and the
+                    // arrow mirrors itself in a right-to-left layout.
+                    HiIcon(Hi.ArrowLeft, D.Black, 24.dp)
+                }
+                Text("Offers", color = D.Black, style = Type.title)
+            }
+            Spacer(Modifier.height(16.dp))
+            // Two lines, written as two lines: the break is the design's, not the wrap's.
+            Text("$INTRO_A\n$INTRO_B", color = D.Black, style = Type.title)
+            Spacer(Modifier.height(8.dp))
+            Text(TAGLINE, color = D.Quiet, style = Type.caption,
+                modifier = Modifier.widthIn(max = TAGLINE_MAX))
+        }
+    }
+}
+
+/**
+ * How wide the illustration may be drawn, given how wide the words turned out to be.
+ *
+ * §1.1 ends with a rule: the text column and the illustration **must not overlap**, and if they
+ * do at a larger font scale it is the illustration that shrinks. This is that rule as
+ * arithmetic.
+ *
+ * The thing that must clear the words is not the picture's box — its first [FADE_START] is wiped
+ * to nothing, and at full size that transparent run is 68 of its 272. It is the point where the
+ * picture becomes **opaque**:
+ *
+ * ```
+ * opaque edge = barW + ART_PAST_END - artW + FADE_START * artW
+ * words end   = Space.gutter + wordsW
+ * ```
+ *
+ * Requiring the first to stay [ART_CLEARANCE] past the second and solving for `artW` gives the
+ * line below. At 1× on the Seeker's 400dp it allows 307 and the illustration keeps its full 272,
+ * which is the check that this is a ceiling rather than a resize. At 2× text the tagline is
+ * still capped at 158dp but `More ways` measures about 236, and the illustration comes down to
+ * roughly 200 × 100 — smaller, and still not under the words.
+ */
+private fun artWidthFor(barW: Dp, wordsW: Dp): Dp {
+    val room = barW + ART_PAST_END - Space.gutter - wordsW - ART_CLEARANCE
+    return minOf(ART_W, room / (1f - FADE_START)).coerceAtLeast(0.dp)
+}
+
+// ------------------------------------------------------------------------------- §1.4 the rows
+
+/**
+ * One offer, as a row on the page (§1.4): no box, no chevron, the whole row the tap target.
+ *
+ * A 40 face at the top start; beside it the app's name (caption, quiet), what it earns (body,
+ * **bold**), and the task in at most two lines (caption, quiet). 16 above and below, none above
+ * the first; the dotted line between rows is [DottedRule]'s.
+ */
+@Composable
+private fun OfferCard(
+    from: String,
+    line: String,
+    detail: String,
+    first: Boolean,
+    quiet: Boolean = false,
+    onOpen: () -> Unit,
+    face: @Composable () -> Unit,
+) {
     val interaction = remember { MutableInteractionSource() }
-    val finished = offer.state == "paid" || offer.state == "expired"
     Row(
         Modifier.then(PressScale(interaction)).fillMaxWidth().heightIn(min = 48.dp)
             .clickable(interaction, indication = null, onClick = onOpen)
             .padding(top = if (first) 0.dp else Space.row, bottom = Space.row),
-        verticalAlignment = Alignment.CenterVertically,
+        // Top, not centre: the face lines up with the app's name, and a row whose task runs to
+        // two lines does not float its icon into the middle of the sentence.
+        verticalAlignment = Alignment.Top,
     ) {
-        OfferMark(offer.app)
+        face()
         Spacer(Modifier.width(Space.inline))
         Column(Modifier.weight(1f)) {
-            // Who funded it is a label, not a sentence.
-            Text(
-                if (offer.funder == "duffle") "From AirPay" else "From ${offer.funder}",
-                color = D.Quiet, style = Type.caption,
-            )
+            Text(from, color = D.Quiet, style = Type.caption)
             Spacer(Modifier.height(Space.tight))
             Text(
-                when {
-                    offer.state == "paid" -> "Earned ${offer.earned} SKR"
-                    offer.state == "expired" -> "Window closed"
-                    else -> "Earn ${offer.reward} SKR"
-                },
+                line,
                 // An amount inside a sentence keeps the sentence's face: swapping to the figure
                 // face mid-line reads as a rendering bug.
-                color = if (finished) D.Quiet else D.Black, style = Type.body,
+                color = if (quiet) D.Quiet else D.Black, style = BodyBold,
             )
             Spacer(Modifier.height(Space.tight))
             Text(
-                // The reason it has not paid beats the offer's own blurb once it is claimed:
-                // "pay again" is actionable, the blurb is not.
-                if (offer.waiting) Rewards.offerWhy(offer.refused)
-                    ?: "Claimed · pay ${offer.app} within ${offer.windowHours}h"
-                else offer.what,
-                // One line with an ellipsis, which is `truncate` in the sandbox and what every
-                // other row in the app does (16 of them). §8's "nothing clips" is about a
-                // container being too SHORT when text grows at 2x font scale — not about a
-                // long name ending in "…". `maxLines = 2` without an overflow was the worse
-                // of the two anyway: it cut the third line off with no sign it had.
-                color = D.Quiet, style = Type.caption,
-                maxLines = 1, overflow = TextOverflow.Ellipsis,
+                detail, color = D.Quiet, style = Type.caption,
+                // Two lines, which is what §1.4 asks for. It was one with an ellipsis, on the
+                // argument that every other row in the app truncates — the brief overrides
+                // that for this row, and the overflow stays so a third line cannot be cut off
+                // with no sign that it was.
+                maxLines = 2, overflow = TextOverflow.Ellipsis,
             )
         }
-        Spacer(Modifier.width(Space.inline))
-        Chevron()
     }
 }
 
+/** §1.4's line 2: `Type.body` **bold**. `Type.body` is weight 500, which is not bold. */
+private val BodyBold = Type.body.copy(fontWeight = FontWeight.Bold)
+
+/** One of the server's offers. The conditions live behind it, in [OfferSheet]. */
+@Composable
+private fun OfferRow(offer: Rewards.Offer, first: Boolean, onOpen: () -> Unit) {
+    val finished = offer.state == "paid" || offer.state == "expired"
+    OfferCard(
+        // Line 1 is the APP's name, not who funded it (§1.4). An offer is a task in that app,
+        // so the app is the thing being named; "From <funder>" was a label about us.
+        from = offer.app,
+        line = when {
+            offer.state == "paid" -> "Earned ${skr(offer.earned)} SKR"
+            offer.state == "expired" -> "Window closed"
+            // A claimed-but-unpaid offer reads the same as an unclaimed one, because it has
+            // earned nothing yet. The clock it is running against is stated in [OfferSheet].
+            else -> "Earn ${skr(offer.reward)} SKR"
+        },
+        // The task, as one sentence. It no longer swaps to the reason a claim has not paid:
+        // §1.4 defines this line as the task, and §6 makes [OfferSheet] the place the
+        // claim-first rule is stated.
+        detail = offer.what,
+        first = first,
+        quiet = finished,
+        onOpen = onOpen,
+    ) { OfferFace(offer) }
+}
+
 /**
- * The standing AirPay offer, in the list because it is genuinely one.
+ * The standing AirPay offer, in the list because it is genuinely one. Opens the Refer sheet.
  *
- * Routed to the referrals screen rather than the offer sheet: it has no claim, no window and
- * no minimum, so a sheet built around those would have nothing to put in them.
+ * The `rings` mark on the page, not on a tinted disc — the tint was a wash behind a graphic that
+ * already carries its own depth. 32 inside the 40 box the app icons fill, so the row's faces all
+ * line up whether they are a picture or a mark.
  */
 @Composable
 private fun ReferralOfferRow(s: Referrals.Summary, first: Boolean, onOpen: () -> Unit) {
-    val interaction = remember { MutableInteractionSource() }
-    Row(
-        Modifier.then(PressScale(interaction)).fillMaxWidth().heightIn(min = 48.dp)
-            .clickable(interaction, indication = null, onClick = onOpen)
-            .padding(top = if (first) 0.dp else Space.row, bottom = Space.row),
-        verticalAlignment = Alignment.CenterVertically,
+    OfferCard(
+        from = "AirPay",
+        line = "Earn ${skr(s.reward)} SKR",
+        detail = "Bring a friend. Paid when their first tap lands.",
+        first = first,
+        onOpen = onOpen,
     ) {
-        // The two rings mark on the page, not on a tinted disc — the tint was a wash behind a
-        // graphic that already carries its own depth.
         Box(Modifier.size(40.dp), contentAlignment = Alignment.Center) {
-            Canvas(Modifier.size(32.dp)) {
-                // The `rings` mark's own numbers (MainActivity.kt `MarkCanvas`), copied because
-                // that composable is private to it: r = w*.26, Stroke(w*.11), back ring at .35.
-                val r = size.minDimension * .26f
-                drawCircle(D.Blue.copy(alpha = .35f), r, Offset(size.width * .34f, size.height * .5f),
-                    style = Stroke(size.minDimension * .11f))
-                drawCircle(D.Blue, r, Offset(size.width * .66f, size.height * .5f),
-                    style = Stroke(size.minDimension * .11f))
-            }
+            // [MarkCanvas] itself, not a copy of its geometry. This file carried its own
+            // version of the rings because that composable used to be private to
+            // MainActivity.kt; it is `internal` now, and a second slightly-wrong copy of a
+            // mark is exactly the drift PARITY.md keeps a record of.
+            MarkCanvas(Mark.Rings, 32.dp, tint = D.Blue)
         }
-        Spacer(Modifier.width(Space.inline))
-        Column(Modifier.weight(1f)) {
-            Text("From AirPay", color = D.Quiet, style = Type.caption)
-            Spacer(Modifier.height(Space.tight))
-            // "Earn 300 SKR" is an amount inside a sentence, so it stays in the sentence's face.
-            Text("Earn ${s.reward} SKR", color = D.Black, style = Type.body)
-            Spacer(Modifier.height(Space.tight))
-            Text("Bring a friend. Paid when their first tap lands.",
-                color = D.Quiet, style = Type.caption)
-        }
-        Spacer(Modifier.width(Space.inline))
-        Chevron()
     }
 }
 
 /**
- * An app's mark. No logos to draw from, so it is the initial on its own disc.
+ * An offer's face: the app's icon, round and cropped to fill — except that **the server does not
+ * send one**.
  *
- * White inside a hairline rather than a blue tint: with the containers gone a tinted disc was
- * the last wash of colour on the page, and the ring is what the avatar reads as everywhere else.
+ * `Rewards.Offer` (Rewards.kt, `/v1/offers`) carries `app` and `funder` and no icon field, while
+ * the sandbox's `Offer` type has an optional `icon`. §1.2 says the app must take icons from the
+ * server, so this is a gap in the server and the model, not something to paper over with a
+ * hard-coded name→asset map: a map would be right for the five sample apps and wrong for the
+ * sixth, and it would read as working.
+ *
+ * So every row takes §1.4's no-icon case: the app's initial on its `faceColour`, through
+ * [FaceDisc]. Seeded on `funder` — the app's stable id — rather than on `app`, for the reason
+ * `faceColour` is seeded on an address and never a name: a display name can change and the id
+ * does not, so an app keeps its colour across a rename.
+ */
+@Composable
+private fun OfferFace(offer: Rewards.Offer) {
+    val seed = offer.funder.ifBlank { offer.app }.takeIf { it.isNotBlank() }
+    FaceDisc(offer.app, seed, 40.dp)
+}
+
+/**
+ * An app's mark **in [OfferSheet]**, which §6 of ui/PORT-2026-10-01-4.md deliberately leaves
+ * un-redesigned. So the sheet keeps the face it shipped with — the initial inside a hairline —
+ * rather than quietly inheriting the row's new coloured [OfferFace].
+ *
+ * `Initial` (Design.kt) — the app's one avatar. This drew its own, and set the letter at
+ * `Type.body` (a flat 15sp) where the rule is 0.38 x the disc (15.2 at 40dp). Near enough to
+ * look right and wrong enough to drift at any other size.
  */
 @Composable
 private fun OfferMark(app: String) {
-    // `Initial` (Design.kt) — the app's one avatar. This drew its own, and set the letter at
-    // `Type.body` (a flat 15sp) where the rule is 0.38 x the disc (15.2 at 40dp). Near enough
-    // to look right and wrong enough to drift at any other size.
     Initial(app.take(1).uppercase(), 40.dp)
 }
-
 
 /**
  * One offer in full: what it pays, and every condition that decides whether it does.
@@ -367,6 +588,10 @@ private fun OfferMark(app: String) {
  * somebody who learns the last of those after paying has been misled by omission. They are
  * listed before the button, not under it, and they are body text rather than a caption for the
  * same reason.
+ *
+ * Deliberately **not** redesigned by ui/PORT-2026-10-01-4.md (its §6): with the "Claim first,
+ * then pay" line off the Offers screen, this sheet is the only place that rule is stated, so it
+ * keeps "Funded by AirPay" and "Pay at least" until the user designs its replacement.
  */
 @Composable
 internal fun OfferSheet(
