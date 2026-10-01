@@ -60,6 +60,13 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import kotlinx.coroutines.delay
+import androidx.compose.animation.core.CubicBezierEasing
+import androidx.compose.ui.util.lerp
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -630,5 +637,124 @@ internal fun Initial(
             letter, color = if (seeker) D.Black else D.Quiet,
             fontSize = (size.value * 0.38f).sp, fontWeight = FontWeight.Bold, fontFamily = Ui,
         )
+    }
+}
+
+// ------------------------------------------------------------------------ copying a value
+
+/** How long the tick stays after a copy, and how long it takes to pop in. §5. */
+private const val COPIED_MS = 1_600L
+private const val COPIED_POP_MS = 180
+
+/**
+ * One copy behaviour for the whole app: the code, the PIN, a signature, the referral code, the
+ * wallet address.
+ *
+ * ui/PORT-2026-10-02.md §5. Three things it guarantees, each of which was wrong somewhere
+ * before:
+ *
+ *  - **The clipboard gets the value, not the display.** A code is shown in groups for reading
+ *    and pasted as one run of characters; copying what is on screen pastes the spaces with it.
+ *  - **It says it worked.** The mark becomes a tick for 1.6s. A copy that looks identical
+ *    before and after leaves somebody pressing it again to be sure.
+ *  - **It says so out loud too**, so the confirmation is not only a colour.
+ */
+@Composable
+internal fun rememberCopy(): (String) -> Unit {
+    val clipboard = LocalClipboardManager.current
+    val view = LocalView.current
+    return remember(clipboard, view) {
+        { value ->
+            clipboard.setText(AnnotatedString(value.filterNot { it.isWhitespace() }))
+            view.announceForAccessibility("Copied")
+        }
+    }
+}
+
+/**
+ * CSS `ease-out`, which is what `copy-pop` is timed on. Compose ships no equivalent — its
+ * `LinearOutSlowIn` is Material's curve, not the browser's.
+ */
+private val PopEase = CubicBezierEasing(0f, 0f, .58f, 1f)
+
+/**
+ * The tick that replaces a copy mark, popping in rather than cutting.
+ *
+ * One 0→1 run drives both channels, because `copy-pop` is one keyframe: `from { scale(.5);
+ * opacity: 0 }`. Scale and alpha are read off the same progress rather than alpha being read off
+ * the scale — doing the latter starts the tick at 50% opacity, so the pop is half a fade-in and
+ * the first frame is already visible.
+ */
+@Composable
+private fun CopiedTick(size: Dp) {
+    val pop = remember { Animatable(0f) }
+    LaunchedEffect(Unit) { pop.animateTo(1f, tween(COPIED_POP_MS, easing = PopEase)) }
+    HiIcon(
+        Hi.Tick, D.SuccessInk, size,
+        modifier = Modifier.graphicsLayer {
+            val s = lerp(.5f, 1f, pop.value)
+            scaleX = s; scaleY = s; alpha = pop.value
+        },
+    )
+}
+
+/**
+ * A copy mark alone, in a 48 touch target — the form used at the end of a row.
+ *
+ * The mark is blue ink, not black: it is the one thing in the row you can act on, and `Copy.tsx`
+ * marks it `text-blue-ink` for that reason. `label` names what is being copied, so a screen
+ * reader says "Copy PIN" rather than "Copy" four times down one card.
+ *
+ * @param size 24 at the end of a row, 20 beside a line of body text — `CopyIcon`'s own note.
+ */
+@Composable
+internal fun CopyMark(
+    value: String,
+    size: Dp = 24.dp,
+    modifier: Modifier = Modifier,
+    label: String? = null,
+) {
+    val copy = rememberCopy()
+    var done by remember(value) { mutableStateOf(false) }
+    LaunchedEffect(done) { if (done) { delay(COPIED_MS); done = false } }
+    val say = if (done) "Copied" else listOfNotNull("Copy", label).joinToString(" ")
+    Box(
+        modifier.size(48.dp).clip(CircleShape)
+            .clickable { copy(value); done = true }
+            .semantics { contentDescription = say },
+        contentAlignment = Alignment.Center,
+    ) {
+        if (done) CopiedTick(size) else HiIcon(Hi.Copy, D.BlueInk, size)
+    }
+}
+
+/**
+ * The outlined pill with the word — the referral code and the wallet address.
+ *
+ * The word changes with the mark and the outline goes green with it, because at pill size the
+ * mark alone is a small thing to notice.
+ */
+@Composable
+internal fun CopyPill(value: String, modifier: Modifier = Modifier) {
+    val copy = rememberCopy()
+    var done by remember(value) { mutableStateOf(false) }
+    LaunchedEffect(done) { if (done) { delay(COPIED_MS); done = false } }
+    val press = remember { MutableInteractionSource() }
+    val edge = if (done) D.SuccessInk else D.Line
+    val ink = if (done) D.SuccessInk else D.Black
+    Box(
+        modifier.then(PressScale(press)).heightIn(min = 48.dp)
+            .clickable(press, indication = null) { copy(value); done = true }
+            .semantics { contentDescription = if (done) "Copied" else "Copy" },
+        contentAlignment = Alignment.Center,
+    ) {
+        Row(
+            Modifier.border(1.5.dp, edge, CircleShape).padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (done) CopiedTick(16.dp) else HiIcon(Hi.Copy, ink, 16.dp)
+            Spacer(Modifier.width(Space.tight))
+            Text(if (done) "Copied" else "Copy", color = ink, style = Type.caption)
+        }
     }
 }

@@ -4,6 +4,14 @@ import androidx.annotation.DrawableRes
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.requiredSize
+import androidx.compose.animation.core.CubicBezierEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.keyframes
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.foundation.Canvas
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
@@ -348,5 +356,89 @@ internal fun CategoryMark(
             contentDescription = contentDescription,
             modifier = Modifier.requiredSize((24f * mark.unitFor(optical)).dp),
         )
+    }
+}
+
+/**
+ * The waiting clock — a face drawn on the disc it sits in, and it ticks.
+ *
+ * ui/PORT-2026-10-02.md §2. There is no ring: the disc behind this IS the face, so everything
+ * here is drawn in [tint] (white on a `D.Blue` disc). Twelve dots mark the hours at radius 10 on
+ * the 24 grid, the four quarters fatter than the rest; two hands and a centre pin.
+ *
+ * **It is drawn, not an asset, because it moves.** The long hand holds for about three quarters
+ * of a second and then snaps a whole hour with a small overshoot — a clock that sweeps smoothly
+ * reads as a spinner, and a spinner says "working", not "waiting". A full turn is 12s; the short
+ * hand advances one hour per turn, so it takes 144s to come round.
+ *
+ * Under 24dp the dots are below a pixel, so they are left off and only the hands and pin are
+ * drawn — the sandbox calls that `clockSmall`.
+ *
+ * [ticking] is false where the clock only illustrates waiting rather than reporting it (the
+ * Rewards info sheet's row), and under reduced motion: then it rests at the hour it starts on.
+ */
+@Composable
+internal fun TickingClock(
+    size: Dp,
+    tint: Color = D.White,
+    ticking: Boolean = true,
+    modifier: Modifier = Modifier,
+) {
+    val step = 30f
+    val turn = 12_000
+
+    // Hold, then snap. The overshoot is what makes it a tick rather than a slide.
+    val minute = if (!ticking) 0f else rememberInfiniteTransition(label = "clock").animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(
+            keyframes {
+                durationMillis = turn
+                for (i in 0..11) {
+                    val at = i * (turn / 12)
+                    (i * step) at at
+                    (i * step) at at + 760 using CubicBezierEasing(.3f, 1.9f, .5f, 1f)
+                    ((i + 1) * step) at at + (turn / 12)
+                }
+            },
+            RepeatMode.Restart,
+        ),
+        label = "minute",
+    ).value
+
+    // One hour per turn of the long hand, and it jumps rather than creeps, for the same reason.
+    val hour = if (!ticking) 120f else 120f + rememberInfiniteTransition(label = "clockHour")
+        .animateFloat(
+            initialValue = 0f,
+            targetValue = 360f,
+            animationSpec = infiniteRepeatable(
+                keyframes {
+                    durationMillis = turn * 12
+                    for (i in 0..11) (i * step) at i * turn
+                },
+                RepeatMode.Restart,
+            ),
+            label = "hour",
+        ).value
+
+    Canvas(modifier.size(size)) {
+        val u = this.size.minDimension / 24f
+        val c = Offset(12f * u, 12f * u)
+        fun at(deg: Float, len: Float): Offset {
+            val r = Math.toRadians((deg - 90f).toDouble())
+            return Offset(c.x + (len * u * kotlin.math.cos(r)).toFloat(),
+                          c.y + (len * u * kotlin.math.sin(r)).toFloat())
+        }
+        // Dots only where they are bigger than a pixel.
+        if (size >= 24.dp) {
+            for (i in 0 until 12) {
+                val quarter = i % 3 == 0
+                drawCircle(tint, (if (quarter) 1.05f else .65f) * u, at(i * step, 10f))
+            }
+        }
+        val stroke = 1.9f * u
+        drawLine(tint, c, at(hour, 4.2f), strokeWidth = stroke, cap = StrokeCap.Round)
+        drawLine(tint, c, at(minute, 6.6f), strokeWidth = stroke, cap = StrokeCap.Round)
+        drawCircle(tint, 1.5f * u, c)
     }
 }
