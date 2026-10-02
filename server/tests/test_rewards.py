@@ -36,7 +36,7 @@ DAY = 86_400.0
 USDC = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
 SEEKER = "4WZ9hkr9h743Kufw7zHYj9YAiYHMKW8fbHBUnGohD18D"
 FRIEND = "2qxPntVgWyxU2jQz2MLcUuCp71D9D1ZSTcbFvCcXWrUc"
-CFG = Config()
+CFG = Config(lock_days=7, min_payout=100)
 
 
 def payment(**kw) -> Payment:

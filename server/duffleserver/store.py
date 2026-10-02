@@ -147,6 +147,67 @@ class Store:
                     paid_at REAL
                 );
                 CREATE INDEX IF NOT EXISTS referrals_inviter ON referrals(inviter, at);
+                CREATE TABLE IF NOT EXISTS payouts (
+                    id         TEXT PRIMARY KEY,
+                    address    TEXT NOT NULL,
+                    skr        INTEGER NOT NULL,
+                    -- created (not yet accepted by the payer) -> sent -> confirmed | failed
+                    state      TEXT NOT NULL,
+                    signature  TEXT,
+                    error      TEXT,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS payouts_address ON payouts(address, created_at);
+                CREATE TABLE IF NOT EXISTS auth_nonces (
+                    nonce      TEXT PRIMARY KEY,
+                    address    TEXT NOT NULL,
+                    message    TEXT NOT NULL,
+                    issued_at  REAL NOT NULL,
+                    expires_at REAL NOT NULL,
+                    attempts   INTEGER NOT NULL DEFAULT 0,
+                    used       INTEGER NOT NULL DEFAULT 0
+                );
+                CREATE INDEX IF NOT EXISTS auth_nonces_address ON auth_nonces(address, expires_at);
+                CREATE TABLE IF NOT EXISTS sessions (
+                    token_hash TEXT PRIMARY KEY,
+                    address    TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    expires_at REAL NOT NULL,
+                    revoked_at REAL
+                );
+                CREATE INDEX IF NOT EXISTS sessions_address ON sessions(address, created_at);
+                -- One person's wallets. A wallet belongs to at most one account, which is what
+                -- lets a wallet that has been through the app before be recognised on a new phone.
+                CREATE TABLE IF NOT EXISTS accounts (
+                    id         TEXT PRIMARY KEY,
+                    created_at REAL NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS account_wallets (
+                    address    TEXT PRIMARY KEY,
+                    account_id TEXT NOT NULL,
+                    linked_at  REAL NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS account_wallets_account ON account_wallets(account_id);
+                -- Offers are told to a person one at a time, a few hours apart — not all at once on
+                -- the notification page. `offer_notices` is what has been sent; `notice_state` is
+                -- when the next one is due. Keyed by the account (or the wallet, if it has none).
+                CREATE TABLE IF NOT EXISTS offer_notices (
+                    account_key TEXT NOT NULL,
+                    offer_id    TEXT NOT NULL,
+                    sent_at     REAL NOT NULL,
+                    PRIMARY KEY (account_key, offer_id)
+                );
+                CREATE TABLE IF NOT EXISTS notice_state (
+                    account_key TEXT PRIMARY KEY,
+                    next_due    REAL NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS handles (
+                    name       TEXT PRIMARY KEY,
+                    address    TEXT NOT NULL,
+                    account    TEXT,
+                    created_at REAL NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS devices (
                     recipient  TEXT NOT NULL,
                     token      TEXT NOT NULL,
@@ -189,6 +250,23 @@ class Store:
                 self._db.execute("ALTER TABLE rewards ADD COLUMN revealed_at REAL")
 
     # -- requests ---------------------------------------------------------------------------
+
+        # Columns added after launch of the ledger. SQLite has no "ADD COLUMN IF NOT EXISTS", so
+        # ask first; an existing database keeps every row it had.
+        for table, wanted in (
+            ("rewards", (("payout_id", "TEXT"), ("paid_at", "REAL"))),
+            ("auth_nonces", (("purpose", "TEXT NOT NULL DEFAULT 'signin'"),)),
+            ("sessions", (("account_id", "TEXT"),)),
+            ("offers", (("kind", "TEXT NOT NULL DEFAULT 'pay'"), ("params", "TEXT NOT NULL DEFAULT '{}'"),
+                        ("featured", "INTEGER NOT NULL DEFAULT 0"), ("icon", "TEXT"))),
+            ("purchases", (("product_id", "TEXT"), ("category", "TEXT"), ("amount", "INTEGER"),
+                           ("created_at", "REAL"), ("delivered_at", "REAL"))),
+        ):
+            have = {r[1] for r in self._db.execute(f"PRAGMA table_info({table})")}
+            for col, ddl in wanted:
+                if col not in have:
+                    with self._db:
+                        self._db.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
 
     def register(self, reference: str, recipient: str, amount: str, lamports: int, label: str,
                  payer: str | None = None, genesis: str | None = None,
@@ -321,15 +399,32 @@ class Store:
 
     # -- shop purchases ---------------------------------------------------------------------
 
-    def remember_purchase(self, invoice_id: str, buyer: str | None) -> None:
-        """Notes who bought what, at invoice time, so a later webhook knows who to tell."""
+    def remember_purchase(self, invoice_id: str, buyer: str | None, product_id: str | None = None,
+                          category: str | None = None, amount: int | None = None) -> None:
+        """Notes who bought what, at invoice time, so a later webhook knows who to tell — and so a
+        shop offer can later prove the purchase happened, what kind it was and what it cost."""
+        now = time.time()
         with self._lock:
             self._db.execute(
-                "INSERT INTO purchases(invoice_id,buyer,status,updated_at) VALUES (?,?,?,?) "
+                "INSERT INTO purchases(invoice_id,buyer,status,updated_at,product_id,category,amount,created_at) "
+                "VALUES (?,?,?,?,?,?,?,?) "
                 "ON CONFLICT(invoice_id) DO UPDATE SET buyer=COALESCE(excluded.buyer,buyer)",
-                (invoice_id, buyer, "created", time.time()),
+                (invoice_id, buyer, "created", now, product_id, category, amount, now),
             )
             self._db.commit()
+
+    #: Bitrefill's words for "the customer has what they paid for".
+    DELIVERED = ("all_delivered", "complete", "delivered")
+
+    def delivered_purchases(self, buyer: str, since: float) -> list[dict]:
+        """What this wallet bought AND received after `since`. A purchase that was paid for but
+        never delivered, or was refunded, is not here, so it can never earn a shop offer."""
+        marks = ",".join("?" * len(self.DELIVERED))
+        with self._lock:
+            return [dict(r) for r in self._db.execute(
+                f"SELECT invoice_id, category, amount, created_at, delivered_at FROM purchases "
+                f"WHERE buyer=? AND status IN ({marks}) AND delivered_at IS NOT NULL AND created_at>=?",
+                (buyer, *self.DELIVERED, since))]
 
     def settle_purchase(self, invoice_id: str, status: str, code: str | None) -> tuple[str | None, bool]:
         """Records what became of a purchase. Returns (buyer, changed).
@@ -349,7 +444,9 @@ class Store:
             self._db.execute(
                 "INSERT INTO purchases(invoice_id,buyer,status,code,updated_at) VALUES (?,?,?,?,?) "
                 "ON CONFLICT(invoice_id) DO UPDATE SET status=excluded.status, "
-                "code=COALESCE(purchases.code, excluded.code), updated_at=excluded.updated_at",
+                "code=COALESCE(purchases.code, excluded.code), updated_at=excluded.updated_at, "
+                "delivered_at=CASE WHEN excluded.status IN ('all_delivered','complete','delivered') "
+                "THEN COALESCE(purchases.delivered_at, excluded.updated_at) ELSE purchases.delivered_at END",
                 (invoice_id, buyer, status, code, time.time()),
             )
             self._db.commit()
@@ -378,20 +475,24 @@ class Store:
     def reward_history(self, payer: str, counterparty: str, now: float, week: int, month_start: float) -> dict:
         """The payer's side of the rules: what they have earned, when, and with whom."""
         with self._lock:
+            fam = self._family(payer)
             rows = self._db.execute(
                 "SELECT kind, skr, week, created_at, counterparty FROM rewards"
-                " WHERE payer=? AND state!='reversed'", (payer,),
+                f" WHERE payer IN ({','.join('?' * len(fam))}) AND state!='reversed'", tuple(fam),
             ).fetchall()
             spent = self._db.execute(
-                "SELECT COALESCE(SUM(skr),0) FROM rewards WHERE week=? AND state!='reversed'", (week,),
+                "SELECT COALESCE(SUM(skr),0) FROM rewards WHERE week=? AND state!='reversed'"
+                " AND kind NOT IN ('offer','signup')", (week,),
             ).fetchone()[0]
         with_them = [r["created_at"] for r in rows if r["counterparty"] == counterparty]
         # The per-person caps are about the TAP reward budget: they stop one person taking the
         # share meant for twenty. An offer is bounded twice already — by its own budget and by
         # the weekly pool — so counting it here as well would mean claiming offers costs you
         # your tap rewards, which is backwards: offers are the half that pays for itself.
-        # `week_spent` below deliberately still counts everything, because that IS the budget.
-        taps = [r for r in rows if r["kind"] != "offer"]
+        # `week_spent` below counts TAP rewards only. Offers are earmarked: each has its own
+        # budget, so a popular offer cannot empty the pool and stop tap rewards, and the money
+        # for each is reserved in the vault separately.
+        taps = [r for r in rows if r["kind"] not in ("offer", "signup")]
         return {
             "rewarded_this_week": sum(1 for r in rows if r["week"] == week and r["kind"] == "per_payment"),
             "earned_in_campaign": sum(r["skr"] for r in taps),
@@ -471,6 +572,21 @@ class Store:
             out.append(d)
         return out
 
+    def matured_by_payer(self, now: float) -> dict[str, int]:
+        """Who has rewards about to become final, and how much — read just before they are
+        settled, so each person can be told the moment their SKR becomes claimable."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT payer, SUM(skr) FROM rewards WHERE state='locked' AND unlock_at <= ? GROUP BY payer", (now,))
+            return {r[0]: int(r[1]) for r in rows}
+
+    def reward_owners(self, reference: str) -> dict[str, int]:
+        """Who is owed rewards for one payment, and how much (locked ones: the only reversible)."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT payer, SUM(skr) FROM rewards WHERE reference=? AND state='locked' GROUP BY payer", (reference,))
+            return {r[0]: int(r[1]) for r in rows}
+
     def settle_matured(self, now: float) -> int:
         """Locked rewards past their unlock time become final. Nothing is paid out here — that
         is R6's decision — this only ends the window in which they can be reversed."""
@@ -521,16 +637,20 @@ class Store:
         shows these: "why didn't I get anything?" is the question a reward layer has to be able
         to answer, or people assume it is broken."""
         with self._lock:
+            fam = self._family(payer)
             rows = self._db.execute(
                 "SELECT reference, counterparty, refused, at FROM reward_attempts"
-                " WHERE payer=? AND refused IS NOT NULL ORDER BY at DESC LIMIT ?", (payer, limit),
+                f" WHERE payer IN ({','.join('?' * len(fam))}) AND refused IS NOT NULL ORDER BY at DESC LIMIT ?",
+                (*fam, limit),
             ).fetchall()
         return [dict(r) for r in rows]
 
     def rewards_for(self, payer: str, limit: int = 50) -> list[dict]:
         with self._lock:
+            fam = self._family(payer)
             rows = self._db.execute(
-                "SELECT * FROM rewards WHERE payer=? ORDER BY created_at DESC LIMIT ?", (payer, limit),
+                f"SELECT * FROM rewards WHERE payer IN ({','.join('?' * len(fam))}) ORDER BY created_at DESC LIMIT ?",
+                (*fam, limit),
             ).fetchall()
         return [dict(r) for r in rows]
 
@@ -586,9 +706,11 @@ class Store:
             return cur.rowcount > 0
 
     def referral_of(self, invitee: str) -> dict | None:
+        """Who invited this person — through ANY of their wallets: one person is invited once."""
         with self._lock:
+            fam = self._family(invitee)
             row = self._db.execute(
-                "SELECT * FROM referrals WHERE invitee=?", (invitee,)).fetchone()
+                f"SELECT * FROM referrals WHERE invitee IN ({','.join('?' * len(fam))})", tuple(fam)).fetchone()
         return dict(row) if row else None
 
     def mark_referral_paid(self, invitee: str, now: float) -> None:
@@ -601,8 +723,10 @@ class Store:
         """Everyone this wallet invited, newest first — including the ones who never paid,
         because "invited 6, 2 have paid" is the honest version of a referral count."""
         with self._lock:
+            fam = self._family(inviter)
             rows = self._db.execute(
-                "SELECT * FROM referrals WHERE inviter=? ORDER BY at DESC", (inviter,)).fetchall()
+                f"SELECT * FROM referrals WHERE inviter IN ({','.join('?' * len(fam))}) ORDER BY at DESC",
+                tuple(fam)).fetchall()
         return [dict(r) for r in rows]
 
     def reveal_reward(self, payer: str, reward_id: int, now: float) -> float | None:
@@ -614,8 +738,10 @@ class Store:
         a second phone shows the first phone's time instead of moving it forward.
         """
         with self._lock, self._db:
+            fam = self._family(payer)
             row = self._db.execute(
-                "SELECT revealed_at FROM rewards WHERE id=? AND payer=?", (reward_id, payer),
+                f"SELECT revealed_at FROM rewards WHERE id=? AND payer IN ({','.join('?' * len(fam))})",
+                (reward_id, *fam),
             ).fetchone()
             if row is None:
                 return None
@@ -629,24 +755,142 @@ class Store:
 
     def reward_balance(self, payer: str, now: float) -> dict:
         with self._lock:
+            fam = self._family(payer)
+            # Only rewards whose card has been SCRATCHED. An unopened card is a surprise, and a
+            # total (or a Claim button) that already counts it gives the surprise away. The amount
+            # was fixed when the payment settled; scratching changes what is SHOWN, never what was
+            # earned.
             rows = self._db.execute(
-                "SELECT state, skr, unlock_at FROM rewards WHERE payer=?", (payer,)).fetchall()
+                "SELECT state, skr, unlock_at, payout_id FROM rewards"
+                f" WHERE payer IN ({','.join('?' * len(fam))}) AND revealed_at IS NOT NULL", tuple(fam)).fetchall()
         locked = sum(r["skr"] for r in rows if r["state"] == "locked" and r["unlock_at"] > now)
         ready = sum(r["skr"] for r in rows if r["state"] == "locked" and r["unlock_at"] <= now)
-        return {"locked": locked, "ready": ready,
-                "settled": sum(r["skr"] for r in rows if r["state"] == "settled"),
-                "total": locked + ready + sum(r["skr"] for r in rows if r["state"] == "settled")}
+        claimable = sum(r["skr"] for r in rows if r["state"] == "settled")
+        claiming = sum(r["skr"] for r in rows if r["state"] == "claiming")
+        paid = sum(r["skr"] for r in rows if r["state"] == "paid")
+        return {"locked": locked, "ready": ready, "claimable": claimable, "claiming": claiming,
+                "paid": paid,
+                # `settled` kept for the app build that reads it: everything final, paid or not.
+                "settled": claimable + claiming + paid,
+                "total": locked + ready + claimable + claiming + paid}
+
+    # -- payouts ----------------------------------------------------------------------------
+
+    def begin_payout(self, address: str, min_skr: int, now: float, new_id: str) -> dict:
+        """Turns an address's settled, unpaid rewards into ONE payout, atomically.
+
+        Returns `{"existing": row}` if one is already in flight (so a second tap on Claim shows the
+        same payout instead of starting another), `{"below": total}` under the minimum, or
+        `{"payout": row}`. The rewards are marked `claiming` in the same transaction that creates
+        the payout row, so the same reward can never be part of two payouts.
+        """
+        with self._lock, self._db:
+            # The whole account, so rewards earned from either wallet are claimed together and a
+            # second tap from the other wallet cannot start a second payout. The money still goes
+            # to `address` — the wallet that is asking.
+            fam = self._family(address)
+            q = ",".join("?" * len(fam))
+            live = self._db.execute(
+                f"SELECT * FROM payouts WHERE address IN ({q}) AND state IN ('created','sent') LIMIT 1",
+                tuple(fam)).fetchone()
+            if live:
+                return {"existing": dict(live)}
+            # Scratched cards only, so what Claim pays is exactly what the screen shows.
+            rows = self._db.execute(
+                f"SELECT id, skr FROM rewards WHERE payer IN ({q}) AND state='settled' AND payout_id IS NULL"
+                " AND revealed_at IS NOT NULL", tuple(fam)).fetchall()
+            total = sum(r["skr"] for r in rows)
+            if total <= 0 or total < min_skr:
+                return {"below": total}
+            self._db.execute(
+                "INSERT INTO payouts(id,address,skr,state,created_at,updated_at) VALUES(?,?,?,?,?,?)",
+                (new_id, address, total, "created", now, now))
+            self._db.executemany(
+                "UPDATE rewards SET state='claiming', payout_id=? WHERE id=? AND state='settled'",
+                [(new_id, r["id"]) for r in rows])
+            return {"payout": dict(self._db.execute("SELECT * FROM payouts WHERE id=?", (new_id,)).fetchone())}
+
+    def settle_revealed(self, address: str) -> int:
+        """Releases the lock on everything this account has scratched and not yet been paid.
+
+        Rewards are paid when scratched, so a card does not wait out a lock window. Only cards
+        that have been uncovered are released; an unscratched one stays as it is.
+        """
+        with self._lock, self._db:
+            fam = self._family(address)
+            q = ",".join("?" * len(fam))
+            return self._db.execute(
+                f"UPDATE rewards SET state='settled' WHERE payer IN ({q}) AND state='locked'"
+                " AND payout_id IS NULL AND revealed_at IS NOT NULL", tuple(fam)).rowcount
+
+    def revealed_unpaid(self) -> list[str]:
+        """One address per account that has scratched cards waiting to be paid."""
+        with self._lock:
+            return [r[0] for r in self._db.execute(
+                "SELECT DISTINCT payer FROM rewards WHERE state IN ('locked','settled')"
+                " AND payout_id IS NULL AND revealed_at IS NOT NULL AND skr > 0")]
+
+    def payout(self, pid: str) -> dict | None:
+        with self._lock:
+            r = self._db.execute("SELECT * FROM payouts WHERE id=?", (pid,)).fetchone()
+        return dict(r) if r else None
+
+    def open_payouts(self, limit: int = 50) -> list[dict]:
+        with self._lock:
+            return [dict(r) for r in self._db.execute(
+                "SELECT * FROM payouts WHERE state IN ('created','sent') ORDER BY created_at LIMIT ?", (limit,))]
+
+    def set_payout(self, pid: str, state: str, now: float, signature: str | None = None,
+                   error: str | None = None) -> None:
+        with self._lock, self._db:
+            self._db.execute(
+                "UPDATE payouts SET state=?, updated_at=?, signature=COALESCE(?, signature), error=? WHERE id=?",
+                (state, now, signature, error, pid))
+
+    def finish_payout(self, pid: str, signature: str | None, now: float) -> int:
+        """The money arrived: the payout is confirmed and its rewards are paid, together."""
+        with self._lock, self._db:
+            self._db.execute(
+                "UPDATE payouts SET state='confirmed', updated_at=?, signature=COALESCE(?, signature), error=NULL WHERE id=?",
+                (now, signature, pid))
+            return self._db.execute(
+                "UPDATE rewards SET state='paid', paid_at=? WHERE payout_id=? AND state='claiming'",
+                (now, pid)).rowcount
+
+    def release_payout(self, pid: str, error: str, now: float) -> int:
+        """The payout provably did not happen: its rewards go back to claimable, untouched."""
+        with self._lock, self._db:
+            self._db.execute("UPDATE payouts SET state='failed', updated_at=?, error=? WHERE id=?", (now, error, pid))
+            return self._db.execute(
+                "UPDATE rewards SET state='settled', payout_id=NULL WHERE payout_id=? AND state='claiming'",
+                (pid,)).rowcount
+
+    def payouts_for(self, address: str, limit: int = 20) -> list[dict]:
+        with self._lock:
+            fam = self._family(address)
+            return [dict(r) for r in self._db.execute(
+                "SELECT id, skr, state, signature, error, created_at, updated_at FROM payouts "
+                f"WHERE address IN ({','.join('?' * len(fam))}) ORDER BY created_at DESC LIMIT ?", (*fam, limit))]
 
     # -- offers -----------------------------------------------------------------------------
 
     def put_offer(self, o: dict) -> None:
+        import json as _json
         cols = ("id", "funder", "app", "what", "address", "token", "minimum", "reward",
-                "budget", "starts", "ends", "window_hours", "link")
+                "budget", "starts", "ends", "window_hours", "link", "kind", "params", "featured", "icon")
+        row = {**o, "params": _json.dumps(o.get("params") or {}), "kind": o.get("kind") or "pay",
+               "featured": 1 if o.get("featured") else 0}
         with self._lock, self._db:
             self._db.execute(
                 f"INSERT OR REPLACE INTO offers({','.join(cols)}) VALUES ({','.join('?' * len(cols))})",
-                tuple(o.get(c) for c in cols),
+                tuple(row.get(c) for c in cols),
             )
+
+    def claims_since(self, offer_id: str, since: float) -> int:
+        """How many people opened this offer lately — what makes an offer 'popular'."""
+        with self._lock:
+            return self._db.execute(
+                "SELECT COUNT(*) FROM claims WHERE offer_id=? AND claimed_at>=?", (offer_id, since)).fetchone()[0]
 
     def offers(self, live_at: float | None = None) -> list[dict]:
         sql = "SELECT * FROM offers"
@@ -655,7 +899,14 @@ class Store:
             sql += " WHERE starts <= ? AND ends >= ?"
             args = (live_at, live_at)
         with self._lock:
-            return [dict(r) for r in self._db.execute(sql + " ORDER BY ends", args).fetchall()]
+            rows = [dict(r) for r in self._db.execute(sql + " ORDER BY featured DESC, ends", args).fetchall()]
+        import json as _json
+        for r in rows:
+            try:
+                r["params"] = _json.loads(r.get("params") or "{}")
+            except ValueError:
+                r["params"] = {}
+        return rows
 
     def offer(self, offer_id: str) -> dict | None:
         with self._lock:
@@ -676,14 +927,20 @@ class Store:
 
     def claim(self, offer_id: str, address: str) -> dict | None:
         with self._lock:
-            row = self._db.execute("SELECT * FROM claims WHERE offer_id=? AND address=?",
-                                   (offer_id, address)).fetchone()
-        return dict(row) if row else None
+            fam = self._family(address)
+            rows = self._db.execute(
+                f"SELECT * FROM claims WHERE offer_id=? AND address IN ({','.join('?' * len(fam))})",
+                (offer_id, *fam)).fetchall()
+        # The one this wallet made if it made one, else the account's: one person claims an offer once.
+        mine = [r for r in rows if r["address"] == address]
+        pick = (mine or list(rows) or [None])[0]
+        return dict(pick) if pick else None
 
     def claims_for(self, address: str) -> list[dict]:
         with self._lock:
+            fam = self._family(address)
             return [dict(r) for r in self._db.execute(
-                "SELECT * FROM claims WHERE address=?", (address,)).fetchall()]
+                f"SELECT * FROM claims WHERE address IN ({','.join('?' * len(fam))})", tuple(fam)).fetchall()]
 
     def open_claims(self, before: float, limit: int = 100) -> list[dict]:
         """Claims still waiting on a payment, least recently looked at first."""
@@ -773,6 +1030,230 @@ class Store:
         with self._lock:
             return [r[0] for r in self._db.execute("SELECT token FROM devices WHERE recipient=?", (recipient,))]
 
+    # -- .air names -------------------------------------------------------------------------
+
+    def claim_handle(self, name: str, address: str, now: float) -> str:
+        """Gives `name` to this wallet's account. Returns "ok", "same" or "taken".
+
+        One name per account: claiming a new one lets go of the old. A name held by another
+        account is never taken over.
+        """
+        with self._lock, self._db:
+            acct = self._db.execute("SELECT account_id FROM account_wallets WHERE address=?", (address,)).fetchone()
+            account = acct[0] if acct else address
+            row = self._db.execute("SELECT address, account FROM handles WHERE name=?", (name,)).fetchone()
+            if row is not None:
+                if (row["account"] or row["address"]) != account:
+                    return "taken"
+                self._db.execute("UPDATE handles SET address=? WHERE name=?", (address, name))
+                return "same"
+            self._db.execute("DELETE FROM handles WHERE account=?", (account,))
+            self._db.execute("INSERT INTO handles(name,address,account,created_at) VALUES(?,?,?,?)",
+                             (name, address, account, now))
+            return "ok"
+
+    def handle_address(self, name: str) -> str | None:
+        with self._lock:
+            r = self._db.execute("SELECT address FROM handles WHERE name=?", (name,)).fetchone()
+        return r[0] if r else None
+
+    def handles_like(self, prefix: str, limit: int = 5) -> list[dict]:
+        """Names that start with `prefix`. A range scan, so no wildcard in the text can matter."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT name, address FROM handles WHERE name >= ? AND name < ? ORDER BY name LIMIT ?",
+                (prefix, prefix + "\uffff", limit)).fetchall()
+        return [{"name": r[0], "address": r[1]} for r in rows]
+
+    def signature_settled(self, signature: str) -> bool:
+        """Whether this transaction already settled an AirPay request, which has its own notice."""
+        with self._lock:
+            return self._db.execute("SELECT 1 FROM requests WHERE signature=?", (signature,)).fetchone() is not None
+
     def drop_device(self, token: str) -> None:
         with self._lock, self._db:
             self._db.execute("DELETE FROM devices WHERE token=?", (token,))
+
+    # -- auth -------------------------------------------------------------------------------
+
+    def open_nonces(self, address: str, now: float) -> int:
+        with self._lock:
+            return self._db.execute(
+                "SELECT COUNT(*) FROM auth_nonces WHERE address=? AND used=0 AND expires_at>?",
+                (address, now)).fetchone()[0]
+
+    def drop_oldest_nonce(self, address: str, now: float) -> None:
+        """Retires the oldest unused, unexpired challenge for an address, to make room."""
+        with self._lock, self._db:
+            self._db.execute(
+                "DELETE FROM auth_nonces WHERE nonce = (SELECT nonce FROM auth_nonces"
+                " WHERE address=? AND used=0 AND expires_at>? ORDER BY issued_at ASC, rowid ASC LIMIT 1)",
+                (address, now))
+
+    def put_nonce(self, nonce: str, address: str, message: str, issued: float, expires: float,
+                  purpose: str = "signin") -> None:
+        with self._lock, self._db:
+            # Expired challenges are swept as new ones arrive, so the table cannot grow forever.
+            self._db.execute("DELETE FROM auth_nonces WHERE expires_at < ?", (issued - 3600,))
+            self._db.execute(
+                "INSERT INTO auth_nonces(nonce,address,message,issued_at,expires_at,purpose) VALUES(?,?,?,?,?,?)",
+                (nonce, address, message, issued, expires, purpose))
+
+    def try_nonce(self, nonce: str, now: float, max_attempts: int) -> dict | None:
+        """Counts one attempt against a live, unused challenge and returns it — atomically, in a
+        single UPDATE, so two simultaneous tries cannot both be treated as the first."""
+        with self._lock, self._db:
+            cur = self._db.execute(
+                "UPDATE auth_nonces SET attempts=attempts+1 "
+                "WHERE nonce=? AND used=0 AND expires_at>? AND attempts<?",
+                (nonce, now, max_attempts))
+            if cur.rowcount != 1:
+                return None
+            r = self._db.execute("SELECT address,message,purpose FROM auth_nonces WHERE nonce=?", (nonce,)).fetchone()
+            return dict(r) if r else None
+
+    def consume_nonce(self, nonce: str) -> bool:
+        with self._lock, self._db:
+            return self._db.execute(
+                "UPDATE auth_nonces SET used=1 WHERE nonce=? AND used=0", (nonce,)).rowcount == 1
+
+    def put_session(self, token_hash: str, address: str, now: float, expires: float, keep: int,
+                    account_id: str | None = None) -> None:
+        with self._lock, self._db:
+            self._db.execute(
+                "INSERT INTO sessions(token_hash,address,created_at,expires_at,account_id) VALUES(?,?,?,?,?)",
+                (token_hash, address, now, expires, account_id))
+            # Only the newest `keep` stay live for one address.
+            self._db.execute(
+                "UPDATE sessions SET revoked_at=? WHERE address=? AND revoked_at IS NULL AND token_hash NOT IN "
+                "(SELECT token_hash FROM sessions WHERE address=? AND revoked_at IS NULL "
+                " ORDER BY created_at DESC LIMIT ?)",
+                (now, address, address, keep))
+
+    def session_address(self, token_hash: str, now: float) -> str | None:
+        with self._lock:
+            r = self._db.execute(
+                "SELECT address FROM sessions WHERE token_hash=? AND revoked_at IS NULL AND expires_at>?",
+                (token_hash, now)).fetchone()
+        return r["address"] if r else None
+
+    def session_info(self, token_hash: str, now: float) -> dict | None:
+        """The wallet that signed in, and its account (looked up if the session predates accounts)."""
+        with self._lock:
+            r = self._db.execute(
+                "SELECT address, account_id FROM sessions WHERE token_hash=? AND revoked_at IS NULL AND expires_at>?",
+                (token_hash, now)).fetchone()
+            if not r:
+                return None
+            acct = r["account_id"]
+            if acct is None:
+                w = self._db.execute("SELECT account_id FROM account_wallets WHERE address=?", (r["address"],)).fetchone()
+                acct = w[0] if w else None
+        return {"address": r["address"], "account_id": acct}
+
+    # -- accounts: one person, several wallets -----------------------------------------------
+
+    def _family(self, address: str) -> list[str]:
+        """Every wallet in this wallet's account, itself included. The caller holds the lock."""
+        r = self._db.execute("SELECT account_id FROM account_wallets WHERE address=?", (address,)).fetchone()
+        if not r:
+            return [address]
+        out = [x[0] for x in self._db.execute(
+            "SELECT address FROM account_wallets WHERE account_id=? ORDER BY linked_at, address", (r[0],))]
+        return out if address in out else [address] + out
+
+    def family(self, address: str) -> list[str]:
+        with self._lock:
+            return self._family(address)
+
+    def account_of(self, address: str) -> str | None:
+        with self._lock:
+            r = self._db.execute("SELECT account_id FROM account_wallets WHERE address=?", (address,)).fetchone()
+        return r[0] if r else None
+
+    def ensure_account_ex(self, address: str, now: float) -> tuple[str, bool]:
+        """The account this wallet belongs to, made (with this wallet in it) if it has none, and
+        whether it was made just now — which is what a welcome card hangs on."""
+        import uuid
+        with self._lock, self._db:
+            r = self._db.execute("SELECT account_id FROM account_wallets WHERE address=?", (address,)).fetchone()
+            if r:
+                return r[0], False
+            acct = uuid.uuid4().hex
+            self._db.execute("INSERT INTO accounts(id,created_at) VALUES(?,?)", (acct, now))
+            self._db.execute("INSERT INTO account_wallets(address,account_id,linked_at) VALUES(?,?,?)", (address, acct, now))
+            return acct, True
+
+    def ensure_account(self, address: str, now: float) -> str:
+        """The account this wallet belongs to, made (with this wallet in it) if it has none."""
+        return self.ensure_account_ex(address, now)[0]
+
+    # -- offer notices ----------------------------------------------------------------------
+
+    def account_key(self, address: str) -> str:
+        """Who a notice is for: the account, or the wallet itself when it has none yet."""
+        a = self.account_of(address)
+        return a or address
+
+    def account_created_at(self, address: str) -> float | None:
+        with self._lock:
+            r = self._db.execute(
+                "SELECT a.created_at FROM accounts a JOIN account_wallets w ON w.account_id=a.id WHERE w.address=?",
+                (address,)).fetchone()
+        return r[0] if r else None
+
+    def device_recipients(self) -> list[str]:
+        with self._lock:
+            return [r[0] for r in self._db.execute("SELECT DISTINCT recipient FROM devices")]
+
+    def notice_due(self, key: str) -> float | None:
+        with self._lock:
+            r = self._db.execute("SELECT next_due FROM notice_state WHERE account_key=?", (key,)).fetchone()
+        return r[0] if r else None
+
+    def set_notice_due(self, key: str, due: float) -> None:
+        with self._lock, self._db:
+            self._db.execute(
+                "INSERT INTO notice_state(account_key,next_due) VALUES(?,?)"
+                " ON CONFLICT(account_key) DO UPDATE SET next_due=excluded.next_due", (key, due))
+
+    def notified_offers(self, key: str) -> dict[str, float]:
+        with self._lock:
+            return {r[0]: r[1] for r in self._db.execute(
+                "SELECT offer_id, sent_at FROM offer_notices WHERE account_key=?", (key,))}
+
+    def record_notice(self, key: str, offer_id: str, now: float) -> bool:
+        with self._lock, self._db:
+            return self._db.execute(
+                "INSERT OR IGNORE INTO offer_notices(account_key,offer_id,sent_at) VALUES(?,?,?)",
+                (key, offer_id, now)).rowcount == 1
+
+    def signup_spent(self, week: int) -> int:
+        """SKR handed out as welcome cards this week."""
+        with self._lock:
+            return self._db.execute(
+                "SELECT COALESCE(SUM(skr),0) FROM rewards WHERE kind='signup' AND week=?", (week,)).fetchone()[0]
+
+    def link_wallet(self, account_id: str, address: str, now: float) -> str:
+        """Puts a wallet in an account: "ok", or "other_account" if it already belongs to a
+        different one. A wallet is never moved: that is what makes one that has been through the
+        app before recognisable on a new phone."""
+        with self._lock, self._db:
+            r = self._db.execute("SELECT account_id FROM account_wallets WHERE address=?", (address,)).fetchone()
+            if r:
+                return "ok" if r[0] == account_id else "other_account"
+            self._db.execute("INSERT INTO account_wallets(address,account_id,linked_at) VALUES(?,?,?)",
+                             (address, account_id, now))
+            return "ok"
+
+    def revoke_session(self, token_hash: str, now: float) -> bool:
+        with self._lock, self._db:
+            return self._db.execute(
+                "UPDATE sessions SET revoked_at=? WHERE token_hash=? AND revoked_at IS NULL",
+                (now, token_hash)).rowcount == 1
+
+    def revoke_all_sessions(self, address: str, now: float) -> int:
+        with self._lock, self._db:
+            return self._db.execute(
+                "UPDATE sessions SET revoked_at=? WHERE address=? AND revoked_at IS NULL",
+                (now, address)).rowcount

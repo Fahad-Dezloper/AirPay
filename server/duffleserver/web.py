@@ -20,6 +20,9 @@ from .store import Conflict
 log = logging.getLogger("duffle.web")
 
 MAX_BODY = 2 * 1024 * 1024
+#: POST routes that need no session: the catalogue's detail (a cache, no secret), Bitrefill's
+#: webhook (a nudge, never data) and the two admin routes, which check the admin token instead.
+PUBLIC_POST = {"/v1/shop/product", "/v1/shop/webhook", "/v1/offers", "/v1/rewards/config"}
 HEARTBEAT = 15.0
 _PROOF_PATH = re.compile(r"^/v1/offers/([A-Za-z0-9_-]{1,64})/proof$")
 _CLAIM_PATH = re.compile(r"^/v1/offers/([A-Za-z0-9_-]{1,64})/claim$")
@@ -49,6 +52,11 @@ class RateLimit:
 def make_handler(service, helius_auth: str | None, limiter: RateLimit | None = None,
                  admin_token: str | None = None, shop=None):
     limiter = limiter or RateLimit()
+    #: Reads are limited too — they were not, and a list endpoint is as good a way to burn a
+    #: provider quota as a write. Sign-in is limited hardest: it is the one route that is open
+    #: to strangers and does cryptography.
+    read_limiter = RateLimit(600)
+    auth_limiter = RateLimit(20)
     # An unconfigured shop is an empty shelf, not a missing endpoint: the app asks either way
     # and draws nothing rather than showing an error it cannot act on.
     shop = shop or Shop(None)
@@ -60,6 +68,44 @@ def make_handler(service, helius_auth: str | None, limiter: RateLimit | None = N
             log.debug("%s " + fmt, self.client_address[0], *args)
 
         # -- helpers --------------------------------------------------------------------------
+        def _ip(self) -> str:
+            """The caller's address. Behind a tunnel or proxy every socket peer is the proxy, which
+            put everybody in one rate-limit bucket; with TRUST_PROXY set, the forwarded address is
+            used instead. Off by default, because trusting the header on a directly exposed
+            server lets anyone pick their own bucket."""
+            if os.environ.get("TRUST_PROXY"):
+                fwd = self.headers.get("CF-Connecting-IP") or (self.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
+                if fwd:
+                    return fwd
+            return self.client_address[0]
+
+        def _admin(self) -> bool:
+            got = self.headers.get("Authorization") or ""
+            return bool(admin_token) and hmac.compare_digest(got, f"Bearer {admin_token}")
+
+        def _token(self) -> str | None:
+            h = self.headers.get("Authorization") or ""
+            return h[7:] if h.startswith("Bearer ") else None
+
+        def _me(self) -> str | None:
+            """The wallet acting, or None. The token proves WHO — one person, with an account of
+            wallets — and `X-Wallet` says which of their wallets this request is about. A wallet
+            that is not in the token's account is ignored, never believed: the header is a
+            choice among wallets already proven, not a claim."""
+            ident = service.auth.identity(self._token())
+            if ident is None:
+                return None
+            want = (self.headers.get("X-Wallet") or "").strip()
+            if want and want != ident["address"] and want in service.store.family(ident["address"]):
+                return want
+            return ident["address"]
+
+        def _unauthorised(self):
+            return self._json(401, {"error": "sign in"})
+
+        def _forbidden(self):
+            return self._json(403, {"error": "not yours"})
+
         def _json(self, code: int, obj) -> None:
             data = json.dumps(obj).encode()
             self.send_response(code)
@@ -77,6 +123,9 @@ def make_handler(service, helius_auth: str | None, limiter: RateLimit | None = N
         # -- routes ---------------------------------------------------------------------------
         def do_GET(self):
             url = urlparse(self.path)
+            if url.path != "/healthz" and not read_limiter.allow(self._ip()):
+                return self._json(429, {"error": "slow down"})
+            me = self._me()
             if url.path == "/healthz":
                 return self._json(200, {
                     "ok": True,
@@ -93,36 +142,38 @@ def make_handler(service, helius_auth: str | None, limiter: RateLimit | None = N
                 return self._json(200, {"status": req["status"], "signature": req["signature"], "amount": req["amount"]})
             m = _REWARDS_PATH.match(url.path)
             if m:
-                from .verify import is_address
-                if not is_address(m.group(1)):
-                    return self._json(400, {"error": "invalid address"})
-                return self._json(200, service.reward_summary(m.group(1)))
+                if me is None:
+                    return self._unauthorised()
+                if me != m.group(1):
+                    return self._forbidden()
+                return self._json(200, service.reward_summary(me))
             m = _REFERRALS_PATH.match(url.path)
             if m:
-                from .verify import is_address
-                if not is_address(m.group(1)):
-                    return self._json(400, {"error": "invalid address"})
-                return self._json(200, service.referral_summary(m.group(1)))
+                if me is None:
+                    return self._unauthorised()
+                if me != m.group(1):
+                    return self._forbidden()
+                return self._json(200, service.referral_summary(me))
             if url.path == "/v1/shop":
                 # Public: a catalogue is not a secret, and the key that reads it stays here.
                 return self._json(200, {"enabled": shop.enabled, "sections": shop.sections()})
             if url.path == "/v1/offers":
                 # Public: the list is the same for everyone, and `address` only adds that
                 # person's own state to each row.
-                who = (parse_qs(url.query).get("address") or [""])[0]
-                return self._json(200, {"offers": service.offers_for(who)})
+                # The caller's own state comes from the session, never from a query string.
+                return self._json(200, {"offers": service.offers_for(me or "")})
             m = _PROOF_PATH.match(url.path)
             if m:
                 # What a dApp is shown when asked to fund the next one. Admin-only: it is a
                 # list of their customers' signatures.
-                if not admin_token or self.headers.get("Authorization") != f"Bearer {admin_token}":
+                if not self._admin():
                     return self._json(403, {"error": "admin token required"})
                 return self._json(200, service.store.offer_proof(m.group(1)))
             if url.path == "/v1/admin/rewards":
                 # What was paid, by rule and by day, and everything refused with its reason.
                 # Behind the admin token: it is the whole campaign's shape, including how to
                 # farm it, and the refusal counts are the farming attempts themselves.
-                if not admin_token or self.headers.get("Authorization") != f"Bearer {admin_token}":
+                if not self._admin():
                     return self._json(403, {"error": "admin token required"})
                 days = float((parse_qs(url.query).get("days") or ["30"])[0])
                 return self._json(200, service.reward_ledger(days))
@@ -130,29 +181,46 @@ def make_handler(service, helius_auth: str | None, limiter: RateLimit | None = N
                 # Public on purpose: the app shows these amounts, and a screen promising a
                 # number the server no longer pays would be worse than showing nothing.
                 return self._json(200, config_as_dict(service.reward_config()))
+            if url.path == "/v1/handles":
+                # Public, like a name service: who owns a name is not a secret, and a person has to be
+                # findable before they are paid. Rate-limited by the read limiter above.
+                q = parse_qs(url.query)
+                return self._json(200, {"names": service.resolve_handles((q.get("prefix") or [""])[0])})
             if url.path == "/v1/messages":
                 # What arrived while this phone was not listening. It asks for everything newer
                 # than the last message it holds, so a phone that never closed asks for nothing.
+                if me is None:
+                    return self._unauthorised()
                 q = parse_qs(url.query)
                 try:
-                    rows = service.messages_for((q.get("recipient") or [""])[0],
-                                                float((q.get("since") or ["0"])[0]))
+                    rows = service.messages_for(me, float((q.get("since") or ["0"])[0]))
                 except ValueError as e:
                     return self._json(400, {"error": str(e)})
                 return self._json(200, {"messages": rows})
             if url.path == "/v1/events":
-                return self._events((parse_qs(url.query).get("recipient") or [""])[0])
+                if me is None:
+                    return self._unauthorised()
+                return self._events(me)
             return self._json(404, {"error": "not found"})
 
         def do_POST(self):
             path = urlparse(self.path).path
             if path == "/v1/helius":
                 return self._helius()
-            if not limiter.allow(self.client_address[0]):
+            if not limiter.allow(self._ip()):
                 return self._json(429, {"error": "slow down"})
             try:
                 body = self._body()
+                me = self._me()
+                if path.startswith("/v1/auth/"):
+                    return self._auth(path, body, me)
+                if path not in PUBLIC_POST and me is None:
+                    return self._unauthorised()
                 if path == "/v1/requests":
+                    # Either side of a payment may register it — the asker (recipient) or the one
+                    # being asked (payer) — but a caller may not register on behalf of strangers.
+                    if me not in (body.get("recipient"), body.get("payer")):
+                        return self._forbidden()
                     out = service.register(body.get("reference"), body.get("recipient"),
                                            body.get("amount"), body.get("label", ""),
                                            payer=body.get("payer") or None, genesis=body.get("genesis") or None,
@@ -187,6 +255,15 @@ def make_handler(service, helius_auth: str | None, limiter: RateLimit | None = N
                         return self._json(200, service.facts.mainnet.forward(body))
                     except Exception:
                         return self._json(502, {"error": "upstream unavailable"})
+                if path in ("/v1/withdrawals", "/v1/rejections", "/v1/deferrals"):
+                    # Only a party to the request may change what it says.
+                    row = service.store.get(str(body.get("reference") or ""))
+                    if row is not None:
+                        owner = row["recipient"] if path == "/v1/withdrawals" else row["payer"]
+                        if path == "/v1/withdrawals" and me != owner:
+                            return self._forbidden()
+                        if path != "/v1/withdrawals" and ((owner and me != owner) or me == row["recipient"]):
+                            return self._forbidden()
                 if path == "/v1/withdrawals":
                     try:
                         return self._json(200, {"told": service.withdraw(body.get("reference"))})
@@ -198,6 +275,11 @@ def make_handler(service, helius_auth: str | None, limiter: RateLimit | None = N
                     except KeyError:
                         return self._json(404, {"error": "unknown reference"})
                 if path == "/v1/shop/invoice":
+                    # The refund address is where a failed order's money goes. It is the
+                    # buyer's own wallet, and only the buyer's: a caller cannot send a refund to
+                    # somebody else, or buy as somebody else.
+                    if body.get("refund_address") != me:
+                        return self._forbidden()
                     try:
                         public = os.environ.get("PUBLIC_URL")
                         out = shop.invoice(
@@ -211,7 +293,9 @@ def make_handler(service, helius_auth: str | None, limiter: RateLimit | None = N
                         # is the buyer's own wallet, which is also how push is addressed.
                         if out.get("invoice_id"):
                             service.store.remember_purchase(
-                                out["invoice_id"], body.get("refund_address") or None)
+                                out["invoice_id"], body.get("refund_address") or None,
+                                str(body.get("product_id") or "")[:80], shop.category_of(str(body.get("product_id") or "")),
+                                out.get("amount") if isinstance(out.get("amount"), int) else None)
                         return self._json(200, out)
                     except Exception as e:
                         # Includes "out of stock" and "no such product", which are answers
@@ -254,12 +338,14 @@ def make_handler(service, helius_auth: str | None, limiter: RateLimit | None = N
                     except KeyError:
                         return self._json(404, {"error": "unknown reference"})
                 if path == "/v1/taps":
+                    if body.get("address") != me:
+                        return self._forbidden()
                     heard = service.relay_tap(body.get("to"), body.get("address"), body.get("label", ""),
                                               genesis=body.get("genesis") or None, brand=body.get("brand") or None)
                     return self._json(200, {"live": heard})
                 if path == "/v1/messages":
                     try:
-                        row = service.send_message(body.get("from") or "", body.get("to") or "",
+                        row = service.send_message(me, body.get("to") or "",
                                                    body.get("body") or "", body.get("label") or "")
                     except ValueError as e:
                         return self._json(400, {"error": str(e)})
@@ -268,39 +354,80 @@ def make_handler(service, helius_auth: str | None, limiter: RateLimit | None = N
                     # A read, but a POST: the wallet addresses belong in a body, not in a URL
                     # that proxies and logs keep.
                     return self._json(200, service.reward_preview(
-                        body.get("payer") or "", body.get("counterparty") or "",
+                        me, body.get("counterparty") or "",
                         body.get("token") or "SOL", int(body.get("units") or 0)))
                 if path == "/v1/rewards/reveal":
                     # A POST for the same reason as the preview: an address does not belong in
                     # a URL. It changes only whether a card is shown covered.
-                    return self._json(200, service.reveal_reward(
-                        body.get("address") or "", int(body.get("id") or 0)))
+                    return self._json(200, service.reveal_reward(me, int(body.get("id") or 0)))
+                if path == "/v1/rewards/claim":
+                    return self._json(200, service.claim_rewards(me))
                 if path == "/v1/referrals/claim":
-                    return self._json(200, service.claim_referral(
-                        body.get("code") or "", body.get("address") or ""))
+                    return self._json(200, service.claim_referral(body.get("code") or "", me))
                 if path == "/v1/offers":
                     # Creating an offer is ours, not a user's — it spends the pool.
-                    if not admin_token or self.headers.get("Authorization") != f"Bearer {admin_token}":
+                    if not self._admin():
                         return self._json(403, {"error": "admin token required"})
                     return self._json(200, service.put_offer(body))
                 m = _CLAIM_PATH.match(path)
                 if m:
                     try:
-                        return self._json(200, service.claim_offer(m.group(1), body.get("address") or ""))
+                        return self._json(200, service.claim_offer(m.group(1), me))
                     except KeyError:
                         return self._json(404, {"error": "unknown offer"})
                 if path == "/v1/rewards/config":
                     # Changing what rewards cost is an owner's action, not a user's.
-                    if not admin_token or self.headers.get("Authorization") != f"Bearer {admin_token}":
+                    if not self._admin():
                         return self._json(403, {"error": "admin token required"})
                     return self._json(200, service.set_reward_config(body))
+                if path == "/v1/handles":
+                    out = service.claim_handle(me, body.get("name"))
+                    return self._json(200 if out["ok"] else 409, out)
                 if path == "/v1/devices":
-                    service.add_device(body.get("recipient"), body.get("push_token"))
+                    # Every wallet of the account, not only the one acting: money arriving in any
+                    # of a person's wallets should reach their phone.
+                    for w in service.store.family(me) or [me]:
+                        service.add_device(w, body.get("push_token"))
                     return self._json(200, {"ok": True})
             except Conflict as e:
                 return self._json(409, {"error": str(e)})
             except (ValueError, AttributeError, TypeError, json.JSONDecodeError) as e:
                 return self._json(400, {"error": str(e) or "bad request"})
+            return self._json(404, {"error": "not found"})
+
+        def _auth(self, path: str, body: dict, me: str | None):
+            """Sign-in. Strangers reach this, so it is limited harder than anything else and every
+            refusal is the same words — the response never says which check failed."""
+            from .auth import AuthError, RateLimited, WalletInUse
+            if path == "/v1/auth/logout":
+                if me is None:
+                    return self._unauthorised()
+                h = (self.headers.get("Authorization") or "")[7:]
+                return self._json(200, {"ok": service.auth.revoke(h)})
+            if not auth_limiter.allow(self._ip()):
+                return self._json(429, {"error": "slow down"})
+            try:
+                if path == "/v1/auth/challenge":
+                    purpose = str(body.get("purpose") or "signin")
+                    # A link challenge is only for somebody already signed in; strangers get the
+                    # sign-in one.
+                    if purpose == "link" and me is None:
+                        return self._unauthorised()
+                    return self._json(200, service.auth.challenge(str(body.get("address") or ""), purpose=purpose))
+                if path == "/v1/auth/verify":
+                    return self._json(200, service.sign_in(str(body.get("nonce") or ""),
+                                                           str(body.get("signature") or "")))
+                if path == "/v1/auth/link":
+                    if me is None:
+                        return self._unauthorised()
+                    return self._json(200, service.auth.link(self._token(), str(body.get("nonce") or ""),
+                                                             str(body.get("signature") or "")))
+            except WalletInUse:
+                return self._json(409, {"error": "wallet_in_use"})
+            except RateLimited:
+                return self._json(429, {"error": "slow down"})
+            except AuthError:
+                return self._json(401, {"error": "denied"})
             return self._json(404, {"error": "not found"})
 
         def _helius(self):

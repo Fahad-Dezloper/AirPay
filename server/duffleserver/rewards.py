@@ -52,6 +52,9 @@ STREAK = "streak"
 #: on the invitee's say-so alone — a wallet is free, so "I joined" has to cost a real payment
 #: before it is worth anything.
 REFERRAL = "referral"
+#: A new account's welcome card. Not earned by a payment, so it never counts against the tap
+#: pool or the per-person tap caps; it has a weekly budget of its own instead.
+SIGNUP = "signup"
 
 
 @dataclass(frozen=True)
@@ -74,6 +77,11 @@ class Config:
     #: than per_payment because it costs the inviter something real to bring somebody, and
     #: smaller than first_payment because the invitee is the one who had to turn up.
     referral: int = 300
+    #: The welcome card every new account gets, once. SKR, like the rest.
+    signup: int = 10
+    #: The most that may be handed out as welcome cards in one week, across everyone. A wallet
+    #: costs nothing to make, so this is what bounds the price of someone making a great many.
+    signup_pool: int = 1_000
     #: Rewarded payments in one week that complete a streak.
     streak_needed: int = 4
     #: Rewarded payments allowed per week (the streak is the last of them).
@@ -90,11 +98,15 @@ class Config:
     #: Their wallet must have been active at least this long — unless they are a Seeker too.
     counterparty_min_age_days: int = 7
     #: A reward can be reversed while it is locked.
-    lock_days: int = 7
+    lock_days: int = 0
+    #: Smallest amount a claim may pay out, in whole SKR. Every first payout also costs real SOL to
+    #: open the person's token account, so dust claims would cost more than they are worth.
+    min_payout: int = 0
     #: Smallest payment that earns, in each token's own units. Roughly $5.
     minimums: dict[str, int] = field(
         default_factory=lambda: {
             "SOL": 50_000_000,  # 0.05 SOL
+            "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": 5_000_000,  # mainnet USDC, 6dp
             "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": 5_000_000,  # devnet USDC, 6dp
             "HzwqbKZw8HxMN6bF2yFZNrht3c2iXXzpKcFu7uBEDKtr": 5_000_000,  # devnet EURC, 6dp
         }
@@ -107,7 +119,7 @@ class Config:
     #: silently invent a setting nobody reads.
     TUNABLE = ("first_payment", "per_payment", "streak", "streak_needed", "weekly_payments",
                "monthly_cap", "user_cap", "weekly_pool", "cooldown_days",
-               "counterparty_min_age_days", "lock_days", "referral")
+               "counterparty_min_age_days", "lock_days", "referral", "min_payout", "signup", "signup_pool")
 
     def with_overrides(self, values: dict) -> "Config":
         """A copy with whatever the database says on top. Unknown or unusable values are

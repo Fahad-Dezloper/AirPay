@@ -1,7 +1,7 @@
 FROM python:3.12-slim
 WORKDIR /app
 # google-auth is only needed for push; the server runs without it.
-RUN pip install --no-cache-dir "google-auth[requests]>=2.30"
+RUN pip install --no-cache-dir "google-auth[requests]>=2.30" "pynacl>=1.5"
 COPY duffleserver ./duffleserver
 ENV DUFFLE_DB=/data/duffle.db PORT=8787 PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
 VOLUME /data

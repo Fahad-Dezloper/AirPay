@@ -75,6 +75,10 @@ def main() -> None:
     # The Bitrefill token lives here rather than in the APK, where decompiling it would hand
     # over the account's order history.
     shop = Shop(env("BITREFILL_API_KEY"), country=env("SHOP_COUNTRY", "IN"))
+    if not env("HELIUS_AUTH"):
+        logging.getLogger("duffle").warning(
+            "HELIUS_AUTH is not set: the webhook route accepts anyone. Payments are still verified"
+            " on-chain, but set it so strangers cannot make the server do that work.")
     httpd = serve(service, host, port, env("HELIUS_AUTH"),
                   admin_token=env("DUFFLE_ADMIN_TOKEN"), shop=shop)
     logging.getLogger("duffle").info(

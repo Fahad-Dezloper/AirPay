@@ -19,6 +19,7 @@ from duffleserver.service import Service
 from duffleserver.store import Store
 from tests.test_reward_flow import FakeFacts, FRIEND, SEEKER
 from tests.test_server import FakeRpc
+from tests.revealutil import scratch_all
 
 NOW = 1_800_000_000.0
 HOUR = 3600.0
@@ -231,29 +232,29 @@ class OnChainTest(unittest.TestCase):
         costs nothing beyond the budget was not actually being kept."""
         self.open_claim(self.AT - 60)
         self.svc.check_claims(now=self.AT + 60)
+        scratch_all(self.store)
         self.assertEqual(300, self.store.reward_balance(SEEKER, self.AT + 60)["total"])
         self.assertEqual(["offer"], [r["kind"] for r in self.store.rewards_for(SEEKER)])
+        scratch_all(self.store)
         self.assertEqual(300, self.svc.reward_summary(SEEKER)["balance"]["total"])
-        # It spends the pool — checked against the week the payout was recorded in, not the
-        # wall clock, which is a different week in this fixture.
+        # It does NOT spend the weekly tap pool: offers are earmarked, each with its own budget.
         from duffleserver import rewards as R
         at = self.AT + 60
         past = self.store.reward_history(SEEKER, "", at, R.week_of(at), 0)
-        self.assertEqual(300, past["week_spent"])
+        self.assertEqual(0, past["week_spent"])
         # ...but is not a payment, so it neither advances the weekly count nor the streak.
         self.assertEqual(0, past["rewarded_this_week"])
 
     def test_an_offer_does_not_eat_the_tap_reward_allowance(self):
-        """Offers draw on the weekly pool — that is the budget — but not on the per-person
-        monthly and campaign caps, which exist to stop one person taking the tap-reward share
-        meant for twenty. Counting them twice would mean claiming an offer costs you your tap
-        rewards, penalising the one behaviour that pays for itself."""
+        """Offers are earmarked: they draw on their OWN budget, not the weekly tap pool, and not on
+        the per-person monthly and campaign caps either. A popular offer must never be able to
+        empty the pool and stop tap rewards, and claiming one must never cost you your own."""
         from duffleserver import rewards as R
         self.open_claim(self.AT - 60)
         self.svc.check_claims(now=self.AT + 60)
         at = self.AT + 60
         past = self.store.reward_history(SEEKER, "", at, R.week_of(at), 0)
-        self.assertEqual(300, past["week_spent"], "the pool sees it")
+        self.assertEqual(0, past["week_spent"], "the tap pool does not see it")
         self.assertEqual(0, past["earned_this_month"], "the monthly cap does not")
         self.assertEqual(0, past["earned_in_campaign"], "nor the campaign cap")
 
@@ -278,3 +279,31 @@ class OnChainTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OfferIconTest(unittest.TestCase):
+    """An offer's logo is a URL the phone fetches, so only a plain https address is kept."""
+
+    def setUp(self):
+        self.svc = Service(Store(), rpc=None)
+
+    def put(self, icon):
+        return self.svc.put_offer({
+            "id": "icon-test", "app": "Jupiter", "what": "Swap", "kind": "shop",
+            "params": {"scope": "gift"}, "icon": icon,
+        })["offer"]["icon"]
+
+    def test_an_https_logo_is_kept_and_sent_to_the_app(self):
+        self.assertEqual(self.put("https://static.jup.ag/jup/icon.png"), "https://static.jup.ag/jup/icon.png")
+        got = [o for o in self.svc.offers_for("") if o["id"] == "icon-test"][0]
+        self.assertEqual(got["icon"], "https://static.jup.ag/jup/icon.png")
+
+    def test_anything_else_is_dropped_not_stored(self):
+        for bad in ("http://x.example/a.png", "file:///etc/passwd", "javascript:alert(1)",
+                    "https://x.example/a b.png", "https://x.example/" + "a" * 400, "", None, 42):
+            self.assertIsNone(self.put(bad), bad)
+
+    def test_the_launch_jupiter_offer_has_its_logo(self):
+        from duffleserver import seed
+        jup = [o for o in seed.launch_offers(0.0) if o["id"] == "jupiter-first-swap"][0]
+        self.assertTrue(jup["icon"].startswith("https://"))

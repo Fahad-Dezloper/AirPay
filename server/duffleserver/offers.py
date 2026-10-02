@@ -16,7 +16,7 @@ decision comes out.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 DAY = 86_400.0
 
@@ -32,6 +32,12 @@ OUTSIDE_WINDOW = "outside_window"
 #: Paying the dApp before opening the offer. Honest, but unprovable as attribution — and
 #: attribution is the entire product here.
 BEFORE_CLAIM = "before_claim"
+
+#: Seen the action, but could not put a dollar value on it. Not a refusal: asked again.
+UNPRICED = "unpriced"
+STABLE_SWAP = "stable_swap"
+
+KINDS = ("pay", "swap", "shop")
 
 #: A claim that has been opened but not yet satisfied.
 OPEN = "open"
@@ -63,6 +69,10 @@ class Offer:
     #: claim sitting open forever against the budget.
     window_hours: float = 48.0
     link: str = ""
+    #: What action earns it. "pay" = paid `address`; "swap" = a Jupiter swap; "shop" = a purchase in
+    #: the AirPay shop. Everything the verifier needs beyond that lives in `params`.
+    kind: str = "pay"
+    params: dict = field(default_factory=dict)
 
     def live(self, now: float) -> bool:
         return self.starts <= now <= self.ends
@@ -150,4 +160,53 @@ def settle(offer: Offer, claim: Claim, payments: list[Payment], now: float,
         if payable <= 0:
             return Decision(refused=OFFER_BUDGET)
         return Decision(payable, None, p.signature)
+    return Decision(refused=best)
+
+
+@dataclass(frozen=True)
+class Seen:
+    """Something the claimer did, as read from the chain or from our own records."""
+
+    ref: str                 # a transaction signature or an invoice id: the proof
+    at: float
+    #: Its value in dollars; None = could not be priced (retry, do not refuse).
+    usd: float | None
+    #: Why it cannot count even though it happened (e.g. a stable-to-stable swap).
+    refused: str | None = None
+
+
+def settle_seen(offer: Offer, claim: Claim, seen: list[Seen], now: float,
+                spent: int) -> Decision:
+    """Does anything the claimer did satisfy a swap or shop offer?
+
+    Same discipline as [settle]: only actions AFTER the claim count (attribution is the product),
+    inside the window, with the offer's own budget as a hard ceiling.
+    """
+    deadline = claim.claimed_at + offer.window_hours * 3600
+    if now > deadline and not seen:
+        return Decision(refused=OUTSIDE_WINDOW)
+    minimum = float(offer.params.get("min_usd", 0) or 0)
+    best: str | None = None
+    for s in seen:
+        if s.at < claim.claimed_at:
+            best = best or BEFORE_CLAIM
+            continue
+        if s.at > deadline:
+            best = OUTSIDE_WINDOW
+            continue
+        if s.refused:
+            best = s.refused
+            continue
+        if s.usd is None:
+            best = UNPRICED
+            continue
+        if s.usd < minimum:
+            best = BELOW_MINIMUM
+            continue
+        payable = offer.reward
+        if offer.budget:
+            payable = min(payable, max(0, offer.budget - spent))
+        if payable <= 0:
+            return Decision(refused=OFFER_BUDGET)
+        return Decision(payable, None, s.ref)
     return Decision(refused=best)

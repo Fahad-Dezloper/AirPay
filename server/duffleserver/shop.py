@@ -64,6 +64,22 @@ USER_AGENT = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.3
 #: A catalogue changes far more slowly than people browse it, and it costs four calls to read.
 CATALOG_TTL = 3600.0
 
+#: How many times the product list is read to get all of it. Bitrefill's list is paged by offset,
+#: and the pages overlap and skip: one read of a 148-product catalogue came back with two repeats
+#: and, at random, a different two to six products missing — PhonePe, Klook, Shell, a MakeMyTrip
+#: card. Whatever one read dropped stayed dropped for the whole cache window, so a Home tile
+#: would vanish for an hour and then come back. A few reads, merged by id, always add up.
+MAX_PASSES = 6
+
+#: The products behind Home's eight tiles. Each is also fetched on its own when the list missed
+#: it: a single product by id is not paged, so it does not go missing the way a list row does.
+PINNED = (
+    "hotstar-india", "phonepe-india",
+    "pvr-cinemas-india", "bookmyshow-voucher-india",
+    "makemytrip-voucher-india", "makemytrip-hotel-card-india",
+    "makemytrip-holiday-india", "makemytrip-bus-india",
+)
+
 #: Which network a number is on. Porting takes days, so minutes of cache are free — and the
 #: lookup rate-limits long before the catalogue does.
 OPERATOR_TTL = 600.0
@@ -157,18 +173,25 @@ class Shop:
         if hit and not refresh and time.time() - hit[0] < CATALOG_TTL:
             return hit[1]
         try:
-            items = self._fetch_all()
+            items, complete = self._fetch_all()
         except (urllib.error.URLError, ValueError, KeyError) as e:
             log.info("catalogue unavailable: %s", e)
             return hit[1] if hit else []
+        if not complete and hit:
+            # Still short of what Bitrefill says it has, after every pass. Keep what the last
+            # good read had rather than shrinking the shelf; a product really gone is dropped by
+            # the next complete read.
+            have = {p["id"] for p in items}
+            items = items + [p for p in hit[1] if p["id"] not in have]
         with self._lock:
             self._catalog = (time.time(), items)
-        log.info("catalogue: %d products for %s", len(items), self.country)
+        log.info("catalogue: %d products for %s%s", len(items), self.country,
+                 "" if complete else " (incomplete read, merged with the last)")
         return items
 
-    def _fetch_all(self) -> list[dict]:
-        out: list[dict] = []
-        start, total = 0, None
+    def _read_pages(self, seen: dict) -> int:
+        """One pass over the paged list, merged into `seen` by id. Returns Bitrefill's own total."""
+        total, start = None, 0
         # Paged 50 at a time whatever limit is asked for, so the loop follows `total` rather
         # than trusting a `_next` link on a different hostname.
         while start < (total if total is not None else 1) and start < 1000:
@@ -177,13 +200,39 @@ class Shop:
             rows = page.get("data") or []
             if not rows:
                 break
-            out += rows
+            for row in rows:
+                if row.get("id"):
+                    seen[row["id"]] = row
             start += len(rows)
-        # Raw, not trimmed. The full description and terms are ~286 KB across the catalogue —
-        # far too much to send to a phone that is drawing a grid of tiles, and exactly what is
-        # wanted the moment somebody opens one product. Keeping them here means [details] costs
-        # no extra call to Bitrefill.
-        return [p for p in out if p.get("in_stock")]
+        return total or 0
+
+    def _fetch_all(self) -> tuple[list[dict], bool]:
+        """The whole catalogue, and whether it is verifiably all of it.
+
+        Raw, not trimmed: the full description and terms are ~286 KB across the catalogue — far
+        too much to send to a phone drawing a grid of tiles, and exactly what is wanted the moment
+        somebody opens one product. Keeping them here means [details] costs no extra call.
+        """
+        seen: dict[str, dict] = {}
+        expected = 0
+        for _ in range(MAX_PASSES):
+            expected = max(expected, self._read_pages(seen))
+            if expected and len(seen) >= expected:
+                break
+        # The tiles' own products, by id, if the list missed them.
+        for pid in PINNED:
+            if pid in seen:
+                continue
+            try:
+                got = self._get(f"/products/{pid}")
+            except Exception as e:  # a 404 means it is genuinely not sold; anything else, try later
+                log.info("pinned product %s not fetched: %s", pid, str(e)[:80])
+                continue
+            row = got.get("data") or got
+            if row.get("id") == pid:
+                seen[pid] = row
+        complete = bool(expected) and len(seen) >= expected
+        return [p for p in seen.values() if p.get("in_stock")], complete
 
     @staticmethod
     def _trim(p: dict) -> dict:
@@ -267,6 +316,16 @@ class Shop:
                     "terms": clean_text(p.get("termsAndConditions")),
                 }
         return {"id": product_id}
+
+    #: Bitrefill categories that mean "credit a phone", as opposed to a gift card or a code.
+    RECHARGE = {"refill", "bundles", "data", "esim", "voip"}
+
+    def category_of(self, product_id: str) -> str:
+        """"recharge" or "gift" — what kind of purchase this was, for offers that ask for one."""
+        for p in self.products():
+            if p.get("id") == product_id:
+                return "recharge" if self.RECHARGE & set(p.get("categories") or []) else "gift"
+        return "gift"
 
     def sections(self) -> list[dict]:
         """The catalogue grouped the way someone shops for it, not the way a shop files it."""

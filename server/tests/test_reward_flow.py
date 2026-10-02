@@ -18,6 +18,7 @@ from duffleserver.service import Service
 from duffleserver.store import Store
 from duffleserver.web import serve
 from tests.test_server import FakeRpc
+from tests.revealutil import scratch_all
 
 SEEKER = "4WZ9hkr9h743Kufw7zHYj9YAiYHMKW8fbHBUnGohD18D"
 FRIEND = "2qxPntVgWyxU2jQz2MLcUuCp71D9D1ZSTcbFvCcXWrUc"
@@ -49,6 +50,7 @@ class FlowTest(unittest.TestCase):
     def setUp(self, facts=None):
         self.store = Store()
         self.svc = Service(self.store, FakeRpc(), facts=facts or FakeFacts())
+        self.svc.set_reward_config({"lock_days": 7, "min_payout": 100})
 
     def pay(self, reference=REF1, payer=SEEKER, recipient=FRIEND, amount="0.1", origin="tap"):
         """Register a request the way a phone does, then settle it the way the watcher does.
@@ -115,6 +117,7 @@ class FlowTest(unittest.TestCase):
 
     def test_the_summary_is_what_the_rewards_screen_shows(self):
         self.pay()
+        scratch_all(self.store)
         s = self.svc.reward_summary(SEEKER)
         self.assertEqual(300, s["balance"]["total"])
         self.assertEqual(300, s["balance"]["locked"], "rewards are reversible for a week")
@@ -164,9 +167,11 @@ class FlowTest(unittest.TestCase):
         only defence against farming is that every reward is a fixed consequence of a rule.
         """
         self.pay()
+        scratch_all(self.store)
         before = self.svc.reward_summary(SEEKER)
         for r in self.rewards_of():
             self.svc.reveal_reward(SEEKER, r["id"])
+        scratch_all(self.store)
         after = self.svc.reward_summary(SEEKER)
         self.assertEqual(before["balance"], after["balance"])
         self.assertEqual(before["pool_left"], after["pool_left"])
@@ -200,6 +205,7 @@ class FlowTest(unittest.TestCase):
         self.pay()
         self.setUp(FakeFacts())  # a fresh store so the cooldown is not what refuses
         self.pay(REF2, recipient=OTHER)
+        scratch_all(self.store)
         s = self.svc.reward_summary(SEEKER)
         self.assertEqual([], s["recent"])
         self.assertEqual([rewards.NEW_COUNTERPARTY], [r["refused"] for r in s["refused"]])
@@ -207,10 +213,12 @@ class FlowTest(unittest.TestCase):
 
     def test_a_payment_that_earned_is_not_listed_as_a_refusal(self):
         self.pay()
+        scratch_all(self.store)
         self.assertEqual([], self.svc.reward_summary(SEEKER)["refused"])
 
     def test_the_summary_states_the_rates_so_the_app_need_not_hardcode_them(self):
         self.svc.set_reward_config({"per_payment": 75})
+        scratch_all(self.store)
         self.assertEqual(75, self.svc.reward_summary(SEEKER)["rates"]["per_payment"])
 
     def test_someone_who_never_earned_gets_an_empty_summary_not_an_error(self):
@@ -258,7 +266,14 @@ class EndpointTest(unittest.TestCase):
     def test_a_wallet_can_read_what_it_has_earned(self):
         self.svc.register(REF1, FRIEND, "0.1", payer=SEEKER, origin="tap")
         self.svc._settle(self.svc.store.get(REF1), SIG)
-        status, body = self.call(f"/v1/rewards/{SEEKER}")
+        scratch_all(self.svc.store)
+        from tests.authutil import session_for
+        # Own earnings only: with the session, 200; with a stranger's session, 403; with none, 401.
+        self.assertEqual(401, self.call(f"/v1/rewards/{SEEKER}")[0])
+        stranger = {"Authorization": f"Bearer {session_for(self.svc, FRIEND)}"}
+        self.assertEqual(403, self.call(f"/v1/rewards/{SEEKER}", None, stranger)[0])
+        status, body = self.call(f"/v1/rewards/{SEEKER}", None,
+                                 {"Authorization": f"Bearer {session_for(self.svc, SEEKER)}"})
         self.assertEqual(200, status)
         self.assertEqual(300, body["balance"]["total"])
 

@@ -16,6 +16,7 @@ from duffleserver.service import Service
 from duffleserver.store import Store
 from tests.test_reward_flow import FakeFacts, FRIEND, OTHER, REF1, REF2, SEEKER, SIG
 from tests.test_server import FakeRpc
+from tests.revealutil import scratch_all
 
 NOW = 1_800_000_000.0
 HOUR = 3600.0
@@ -116,6 +117,7 @@ class EndToEndTest(unittest.TestCase):
     def setUp(self):
         self.store = Store()
         self.svc = Service(self.store, FakeRpc(), facts=FakeFacts())
+        self.svc.set_reward_config({"lock_days": 7, "min_payout": 100})
 
     def settle(self, reference, recipient=FRIEND, payer=SEEKER, amount="0.1", both_phones=True):
         # A real tap registers twice: the phone that served the request, then the phone that
@@ -152,6 +154,7 @@ class EndToEndTest(unittest.TestCase):
         """The wiring test. The pure tests above would still pass if locked_rewards joined the
         payment details wrongly, or settled_payments missed the return leg."""
         self.settle(REF1)                       # Seeker pays friend 0.1, earns 300
+        scratch_all(self.store)
         self.assertEqual(300, self.store.reward_balance(SEEKER, NOW)["total"])
         # The friend sends the same 0.1 straight back. Their own payment earns nothing (they
         # are not a Seeker), but it is what makes the first one a wash.
@@ -163,11 +166,13 @@ class EndToEndTest(unittest.TestCase):
         rows = self.store.rewards_for(SEEKER)
         self.assertEqual({"reversed"}, {r["state"] for r in rows})
         self.assertTrue(all("round_trip" in (r["reason"] or "") for r in rows))
+        scratch_all(self.store)
         self.assertEqual(0, self.store.reward_balance(SEEKER, NOW)["total"])
 
     def test_an_ordinary_payment_survives_the_patrol(self):
         self.settle(REF1)
         self.assertEqual({"reversed": 0, "settled": 0}, self.svc.patrol())
+        scratch_all(self.store)
         self.assertEqual(300, self.store.reward_balance(SEEKER, NOW)["total"])
 
     def test_the_ledger_counts_what_was_paid_and_what_was_refused(self):

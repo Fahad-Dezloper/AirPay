@@ -399,14 +399,22 @@ class HttpTest(unittest.TestCase):
         self.httpd = serve(self.svc, "127.0.0.1", 0, helius_auth="secret")
         self.base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+        from tests.authutil import session_for
+        self.tokens = {a: session_for(self.svc, a) for a in (TO, PAYER)}
 
     def tearDown(self):
         self.httpd.shutdown()
         self.httpd.server_close()
 
-    def post(self, path, body, headers=None):
+    def stream(self, who):
+        """An event stream opened as `who`; the address comes from the session, not the URL."""
+        return urllib.request.urlopen(urllib.request.Request(
+            f"{self.base}/v1/events", headers={"Authorization": f"Bearer {self.tokens[who]}"}), timeout=5)
+
+    def post(self, path, body, headers=None, as_=TO):
+        hdr = {"Authorization": f"Bearer {self.tokens[as_]}"} if as_ else {}
         req = urllib.request.Request(self.base + path, json.dumps(body).encode(),
-                                     {"Content-Type": "application/json", **(headers or {})})
+                                     {"Content-Type": "application/json", **hdr, **(headers or {})})
         try:
             with urllib.request.urlopen(req, timeout=5) as r:
                 return r.status, json.loads(r.read())
@@ -418,11 +426,11 @@ class HttpTest(unittest.TestCase):
         self.assertEqual(200, self.post("/v1/requests", {"reference": REF, "recipient": TO, "amount": "0.01"})[0])
         with urllib.request.urlopen(f"{self.base}/v1/requests/{REF}", timeout=5) as r:
             self.assertEqual("open", json.loads(r.read())["status"])
-        code, body = self.post("/v1/requests", {"reference": REF, "recipient": PAYER, "amount": "0.01"})
+        code, body = self.post("/v1/requests", {"reference": REF, "recipient": PAYER, "amount": "0.01"}, as_=PAYER)
         self.assertEqual(409, code)
 
     def test_bad_input_is_400_not_500(self):
-        self.assertEqual(400, self.post("/v1/requests", {"reference": "x"})[0])
+        self.assertEqual(400, self.post("/v1/requests", {"reference": "x", "recipient": TO})[0])
 
     def test_webhook_without_the_secret_is_403(self):
         # 403 specifically: Helius retries every other 4xx.
@@ -431,7 +439,7 @@ class HttpTest(unittest.TestCase):
 
     def test_sse_delivers_the_paid_event_end_to_end(self):
         self.post("/v1/requests", {"reference": REF, "recipient": TO, "amount": "0.01"})
-        stream = urllib.request.urlopen(f"{self.base}/v1/events?recipient={TO}", timeout=5)
+        stream = self.stream(TO)
         self.assertEqual(b": connected\n", stream.readline())
         stream.readline()
         self.assertTrue(wait_for(lambda: self.svc.hub.count() == 1))
@@ -445,7 +453,7 @@ class HttpTest(unittest.TestCase):
 
     def test_a_request_made_while_the_payer_was_offline_is_replayed_on_connect(self):
         self.post("/v1/requests", {"reference": REF, "recipient": TO, "amount": "0.01", "label": "Seeker", "payer": PAYER})
-        stream = urllib.request.urlopen(f"{self.base}/v1/events?recipient={PAYER}", timeout=5)
+        stream = self.stream(PAYER)
         self.assertEqual(b": connected\n", stream.readline())
         stream.readline()
         kind, data = stream.readline(), stream.readline()
@@ -465,21 +473,21 @@ class HttpTest(unittest.TestCase):
 
     def test_rejection_endpoint(self):
         self.post("/v1/requests", {"reference": REF, "recipient": TO, "amount": "0.01", "payer": PAYER})
-        self.assertEqual((200, {"told": 0}), self.post("/v1/rejections", {"reference": REF, "label": "CPH2401"}))
-        self.assertEqual(404, self.post("/v1/rejections", {"reference": PAYER, "label": "x"})[0])
+        self.assertEqual((200, {"told": 0}), self.post("/v1/rejections", {"reference": REF, "label": "CPH2401"}, as_=PAYER))
+        self.assertEqual(404, self.post("/v1/rejections", {"reference": PAYER, "label": "x"}, as_=PAYER)[0])
 
     def test_tap_relay_endpoint(self):
-        code, body = self.post("/v1/taps", {"to": TO, "address": PAYER, "label": "CPH2401"})
+        code, body = self.post("/v1/taps", {"to": TO, "address": PAYER, "label": "CPH2401"}, as_=PAYER)
         self.assertEqual((200, {"live": 0}), (code, body))
-        self.assertEqual(400, self.post("/v1/taps", {"to": TO, "address": "nope"})[0])
+        self.assertEqual(400, self.post("/v1/taps", {"to": "nope", "address": PAYER}, as_=PAYER)[0])
 
-    def test_sse_rejects_a_bad_address(self):
+    def test_sse_needs_a_session(self):
         try:
-            urllib.request.urlopen(f"{self.base}/v1/events?recipient=nope", timeout=5)
-            self.fail("expected 400")
+            urllib.request.urlopen(f"{self.base}/v1/events?recipient={TO}", timeout=5)
+            self.fail("expected 401")
         except urllib.error.HTTPError as e:
             with e:
-                self.assertEqual(400, e.code)
+                self.assertEqual(401, e.code)
 
 
 # ---------------------------------------------------------------------------------- tokens
