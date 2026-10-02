@@ -93,8 +93,9 @@ dependencies {
     // be drawn where the code actually is without redoing the sensor-to-view maths by hand.
     implementation("androidx.camera:camera-mlkit-vision:1.6.0")
     implementation("com.google.mlkit:barcode-scanning:17.3.0")
-    // ML Kit reads QR codes but cannot write one, and the receive sheet has to draw ours.
-    implementation("com.google.zxing:core:3.5.3")
+    // ML Kit reads QR codes but cannot write one, and the receive sheet has to draw ours. QRose
+    // encodes and draws it, finder patterns included — see Qr.kt for why a hand-drawn one failed.
+    implementation("io.github.alexzhirkevich:qrose:1.0.1")
 
     // Token logos come from whatever host a mint lists, so they are loaded at runtime.
     implementation("io.coil-kt:coil-compose:2.7.0")

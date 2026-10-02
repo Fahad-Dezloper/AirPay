@@ -1,81 +1,57 @@
 package so.duffle.app
 
-import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.Image
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.CornerRadius
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
-import com.google.zxing.BarcodeFormat
-import com.google.zxing.EncodeHintType
-import com.google.zxing.qrcode.QRCodeWriter
-import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import io.github.alexzhirkevich.qrose.options.QrBallShape
+import io.github.alexzhirkevich.qrose.options.QrBrush
+import io.github.alexzhirkevich.qrose.options.QrErrorCorrectionLevel
+import io.github.alexzhirkevich.qrose.options.QrFrameShape
+import io.github.alexzhirkevich.qrose.options.QrPixelShape
+import io.github.alexzhirkevich.qrose.options.roundCorners
+import io.github.alexzhirkevich.qrose.options.square
+import io.github.alexzhirkevich.qrose.options.solid
+import io.github.alexzhirkevich.qrose.rememberQrCodePainter
 
 /**
- * Drawing a QR code, which is the one thing ML Kit cannot do.
+ * A QR code, made and drawn by [QRose](https://github.com/alexzhirkevich/qrose).
  *
- * The scanner reads codes; nothing in the app could write one, so the receive sheet needed an
- * encoder. ZXing's core is pure Java — no Android dependency, no view, no bitmap — so it hands
- * back a matrix of booleans and the drawing stays ours.
- */
-object Qr {
-
-    /**
-     * The square matrix for [text], or null if it cannot be encoded.
-     *
-     * **Margin zero on purpose.** ZXing's default quiet zone is four modules drawn *inside* the
-     * requested size, which shrinks the code and then sits it on whatever the caller's
-     * background happens to be. The quiet zone is real and a scanner needs it — so it is added
-     * as padding by the composable, in white, where it is guaranteed to be white.
-     *
-     * Error correction is **M**, not H. A wallet address is short, the code is displayed on a
-     * screen rather than printed on a cup, and H would spend a third of the capacity on
-     * redundancy nobody here needs — making the modules smaller and the scan harder.
-     */
-    fun matrix(text: String): Array<BooleanArray>? = try {
-        val bits = QRCodeWriter().encode(
-            text, BarcodeFormat.QR_CODE, 0, 0,
-            mapOf(
-                EncodeHintType.ERROR_CORRECTION to ErrorCorrectionLevel.M,
-                EncodeHintType.MARGIN to 0,
-                EncodeHintType.CHARACTER_SET to "UTF-8",
-            ),
-        )
-        Array(bits.height) { y -> BooleanArray(bits.width) { x -> bits.get(x, y) } }
-    } catch (e: Exception) {
-        // A code that cannot be drawn must not take the screen down with it. The caller says
-        // so in words instead.
-        null
-    }
-}
-
-/**
- * A QR code, drawn as rounded dots rather than hard squares.
+ * **A library does all of it now.** This used to be ZXing for the matrix and a hand-written
+ * Canvas for the drawing, and the drawing was the problem: every module — the three corner finder
+ * patterns included — was its own rounded dot, and a code built that way decoded 0 times in 83
+ * tries against ZXing's own reader, because a scanner finds a code by the 1:1:3:1:1 ratio across
+ * the finders and separate dots break it. QRose encodes the code and draws the finders as the
+ * solid ring-and-ball shapes they are, with the soft rounded data modules kept.
  *
- * Every module is drawn at its exact grid position and size computed from the module count, so
- * nothing accumulates rounding error across the matrix — the classic cause of a code whose
- * right-hand column is a pixel thin and which then will not scan.
+ * Error correction is **M**: a wallet address is short and the code is shown on a screen, not
+ * printed on a cup, so more redundancy would only make the modules smaller. QRose adds the quiet
+ * zone itself, which a scanner needs.
+ *
+ * Verified the only way that means anything: the phone's own screen, captured and decoded, gives
+ * back the exact `solana:<address>` that was encoded.
  */
 @Composable
 internal fun QrCode(text: String, modifier: Modifier = Modifier, ink: Color = D.Black) {
-    val cells = remember(text) { Qr.matrix(text) }
-    Box(modifier) {
-        if (cells == null) return@Box
-        Canvas(Modifier.fillMaxSize()) {
-            val n = cells.size
-            val step = size.minDimension / n
-            // Slightly over one module, so neighbouring dots meet instead of leaving a hairline
-            // gap that a camera reads as a break in a finder pattern.
-            val dot = step * 1.02f
-            val r = CornerRadius(step * .28f)
-            for (y in 0 until n) for (x in 0 until n) {
-                if (!cells[y][x]) continue
-                drawRoundRect(ink, Offset(x * step, y * step), Size(dot, dot), r)
-            }
+    val painter = rememberQrCodePainter(text) {
+        errorCorrectionLevel = QrErrorCorrectionLevel.Medium
+        shapes {
+            // Separate small boxes, a touch under a full module so each reads as its own box.
+            // `roundCorners` would instead melt neighbouring modules into one blob.
+            darkPixel = QrPixelShape.square(.88f)
+            ball = QrBallShape.roundCorners(.3f)
+            frame = QrFrameShape.roundCorners(.3f)
+        }
+        colors {
+            dark = QrBrush.solid(ink)
+            ball = QrBrush.solid(ink)
+            frame = QrBrush.solid(ink)
         }
     }
+    Image(
+        painter, contentDescription = null,
+        modifier = modifier.semantics { contentDescription = "QR code for this wallet address" },
+    )
 }
