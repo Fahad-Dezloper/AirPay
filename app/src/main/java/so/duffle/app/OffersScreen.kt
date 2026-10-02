@@ -151,7 +151,7 @@ internal fun OffersTab(
         loading = false
     }
 
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+    Column(Modifier.fillMaxSize().verticalScroll(rememberHeldScroll("offers"))) {
         // Before the top bar, not after it. With no wallet there is nothing to claim with, so
         // advertising offers above the reason none can be shown was the wrong order — and it
         // is the order RewardsScreen and ReferralsScreen already use for the same state.
@@ -394,22 +394,8 @@ private fun OffersTopBar(onBack: (() -> Unit)?) {
             // arrow's INK then starts on the page edge the tagline starts on, and the title
             // follows it by the same 12. A negative padding would throw in Compose, so the shift
             // is an offset — it moves the drawing without changing the row's measured size.
-            Row(Modifier.offset(x = -12.dp), verticalAlignment = Alignment.CenterVertically) {
-                val press = remember { MutableInteractionSource() }
-                Box(
-                    Modifier.then(PressScale(press)).size(48.dp)
-                        .then(
-                            if (onBack == null) Modifier
-                            else Modifier.clip(CircleShape)
-                                .clickable(press, indication = null, onClick = onBack)
-                                .semantics { contentDescription = "Back" },
-                        ),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    // `hi_arrow_left` through [HiIcon], so the stroke follows the size and the
-                    // arrow mirrors itself in a right-to-left layout.
-                    HiIcon(Hi.ArrowLeft, D.Black, 24.dp)
-                }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                BackArrow(onBack)
                 Text("Offers", color = D.Black, style = Type.title)
             }
             Spacer(Modifier.height(16.dp))

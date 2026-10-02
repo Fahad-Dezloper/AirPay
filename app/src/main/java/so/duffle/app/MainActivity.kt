@@ -11,6 +11,10 @@ import android.Manifest
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
+import kotlin.coroutines.cancellation.CancellationException
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.activity.compose.PredictiveBackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.ui.draw.clip
@@ -25,6 +29,12 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.fadeIn
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.draw.shadow
 import androidx.compose.foundation.clickable
@@ -202,6 +212,12 @@ class MainActivity : ComponentActivity() {
     /** The section being browsed, and the product opened inside it. */
     private var shopSection by mutableStateOf<Shop.Section?>(null)
     private var shopProduct by mutableStateOf<Shop.Product?>(null)
+    /**
+     * The open page was reached straight from a Home tile (Hotstar, PhonePe, MakeMyTrip), not by
+     * choosing a row in a list. Back then goes Home: there is no list the person has seen to go
+     * back to, and showing the full one they never asked for would be a detour.
+     */
+    private var shopDirect by mutableStateOf(false)
     /** The recharge screen's three answers: which number, which network, and what the SIMs say. */
     private var rechargeNumber by mutableStateOf("")
     private var rechargeOperator by mutableStateOf<Shop.Product?>(null)
@@ -854,8 +870,21 @@ class MainActivity : ComponentActivity() {
                 // ask again. The catalogue is the server's and the server can be cold (its
                 // first call after a restart pages through Bitrefill), which is exactly when
                 // someone opens the app and finds the section missing.
+                //
+                // Stale-while-revalidate: the copy from the last good answer is drawn first, so
+                // "Pay a bill" is on the very first frame instead of arriving after the server
+                // does, and the fresh answer replaces it when it comes. Asked again on every
+                // resume, not only while empty — a catalogue that changed (a new guide, a
+                // product out of stock) would otherwise wait for the app to be killed.
                 LaunchedEffect(resumeTick) {
-                    if (shopSections.isEmpty()) Shop.sections()?.let { shopSections = it }
+                    if (shopSections.isEmpty()) {
+                        withContext(Dispatchers.IO) { Shop.cached(this@MainActivity) }
+                            ?.let { shopSections = it }
+                    }
+                    Shop.sections(this@MainActivity)?.let { fresh ->
+                        // A null or empty answer never blanks what is already showing.
+                        if (fresh.isNotEmpty()) shopSections = fresh
+                    }
                 }
 
                 // Anything written to us while the app was closed. The live stream below only
@@ -927,15 +956,24 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                // Back walks the page back out, in the order it was opened. Without this the
-                // system back left the app from inside a thread — the one place it most looks
-                // like a screen you can back out of.
-                BackHandler(enabled = thread != null || cards || tab != Tab.TAP) {
+                // How far an edge swipe has pulled the current screen away (0..1). Read inside a
+                // graphicsLayer so a drag redraws the layer and never recomposes the screen.
+                val backPull = remember { Animatable(0f) }
+                val rootView = LocalView.current
+
+                // One step back, in the order things were opened. Without this the system back
+                // left the app from inside a thread — the one place it most looks like a screen
+                // you can back out of.
+                fun stepBack() {
                     when {
                         // The item page backs out before the thread it was opened from.
                         threadItem != null -> threadItem = null
                         thread != null -> thread = null
                         cards -> cards = false
+                        shopProduct != null && shopDirect -> {
+                            shopProduct = null; shopSection = null; shopDirect = false
+                            tab = Tab.TAP
+                        }
                         shopProduct != null -> shopProduct = null
                         // Leaving the section leaves the tab with it. The shop body is
                         // `shopSection?.let { … }`, so clearing the section while the tab stayed
@@ -946,10 +984,53 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
+                // Predictive back, the way Google Pay and Photos do it: while the edge is dragged
+                // the screen shrinks and slides away so the person sees they are leaving; letting
+                // go commits with a tick, pulling back cancels and it eases home. Only the final
+                // `stepBack()` changes state, so a cancelled swipe costs nothing.
+                PredictiveBackHandler(enabled = thread != null || cards || tab != Tab.TAP) { events ->
+                    try {
+                        events.collect { backPull.snapTo(it.progress) }
+                        rootView.backHaptic()
+                        stepBack()
+                        backPull.snapTo(0f)
+                    } catch (e: CancellationException) {
+                        backPull.animateTo(0f, tween(160))
+                        throw e
+                    }
+                }
+
+                // Every screen change eases in instead of cutting. The screens are swapped by `if`
+                // branches, so with nothing between them each change was a one-frame hard cut —
+                // the flicker. Keyed on what is on screen; a new key makes a new animation that
+                // STARTS at 0, so the first frame of the new screen is already faded rather than
+                // flashing at full strength before an effect can reset it.
+                val screenKey = "$tab|${thread?.address}|$threadItem|$cards|${shopSection?.title}|${shopProduct?.id}"
+                val enter = remember(screenKey) { Animatable(0f) }
+                LaunchedEffect(screenKey) { enter.animateTo(1f, tween(150, easing = FastOutSlowInEasing)) }
+
+                // Back at Home: every other screen forgets where it was scrolled to, so opening
+                // one afresh starts at its top. Home keeps its place — it is what you return to.
+                val atHome = tab == Tab.TAP && thread == null && !cards
+                LaunchedEffect(atHome) { if (atHome) ScrollHold.keepOnly("home") }
+
                 Surface(Modifier.fillMaxSize(), color = D.White) {
                     // statusBarsPadding, not a guessed top margin: the pill sits at the very
                     // top of the app and was drawing straight through the clock and battery.
-                    Column(Modifier.fillMaxSize().statusBarsPadding()) {
+                    Column(
+                        Modifier.fillMaxSize().statusBarsPadding().graphicsLayer {
+                            // Entering: fade up from 10dp below. Leaving by swipe: shrink a little
+                            // and slide toward the edge being dragged.
+                            // Starts at 35%, never 0: from nothing, the frame between two screens
+                            // is plain white, which reads as a flash rather than a transition.
+                            alpha = .35f + .65f * enter.value
+                            translationY = (1f - enter.value) * 8.dp.toPx()
+                            val pull = backPull.value
+                            val scale = 1f - .06f * pull
+                            scaleX = scale; scaleY = scale
+                            translationX = pull * 20.dp.toPx()
+                        },
+                    ) {
                     // A Box, so the pay bar can float over the page rather than queue up at
                     // the end of it. Only the home page is scrollable behind it.
                     val home = tab == Tab.TAP && thread == null && !cards
@@ -990,7 +1071,7 @@ class MainActivity : ComponentActivity() {
                     Column(
                         Modifier.fillMaxSize()
                             .then(if (tab == Tab.TAP && !cards && !checking && thread == null)
-                                Modifier.verticalScroll(rememberScrollState()) else Modifier)
+                                Modifier.verticalScroll(rememberHeldScroll("home")) else Modifier)
                             // Top is deliberately smaller than the rest. statusBarsPadding
                             // has already cleared the clock and the cutout, so a further
                             // 20dp sat the wordmark a third of the way down the screen for
@@ -1177,7 +1258,7 @@ class MainActivity : ComponentActivity() {
                         // header off the recharge screen too — which draws none — and left it
                         // with no way back but the system gesture.
                         val ownsHeader = tab == Tab.SHOP && shopProduct != null &&
-                            shopSection?.products?.none { it.isMobileRecharge } == true
+                            shopSection?.isRechargeShelf() == false
                         if (tab != Tab.TAP && tab != Tab.REWARDS && tab != Tab.OFFERS &&
                             !ownsHeader
                         ) {
@@ -1197,7 +1278,7 @@ class MainActivity : ComponentActivity() {
                                 // and then denominations, which is right for a gift card and
                                 // wrong for a recharge: the number and the network have to be
                                 // settled before a plan list means anything.
-                                if (sec.products.any { it.isMobileRecharge }) {
+                                if (sec.isRechargeShelf()) {
                                     RechargeSection(
                                         section = sec,
                                         number = rechargeNumber,
@@ -1214,7 +1295,15 @@ class MainActivity : ComponentActivity() {
                                     ShopSection(
                                         section = sec,
                                         picked = shopProduct,
-                                        onPick = { shopProduct = it },
+                                        onPick = {
+                                            shopProduct = it
+                                            // Closing a page opened from a tile goes Home; opening
+                                            // one from a list is never "direct".
+                                            if (it == null && shopDirect) {
+                                                shopSection = null; shopDirect = false
+                                                tab = Tab.TAP
+                                            }
+                                        },
                                         email = myEmail,
                                         onEmail = { editingEmail = true },
                                         onBuy = { p, v -> buy(p, v, sec.title) },
@@ -1288,11 +1377,12 @@ class MainActivity : ComponentActivity() {
                                         sec.products.any { it.id == p.id }
                                     } ?: moreSection(shopSections)
                                     shopProduct = p
+                                    shopDirect = false
                                     tab = Tab.SHOP
                                 },
                                 // The same shelf the More tile opens, from the same function.
                                 onSeeAll = moreSection(shopSections)?.let { more ->
-                                    { shopSection = more; tab = Tab.SHOP }
+                                    { shopSection = more; shopProduct = null; shopDirect = false; tab = Tab.SHOP }
                                 },
                             )
                             return@Column
@@ -1302,7 +1392,6 @@ class MainActivity : ComponentActivity() {
                         // it, and a request somebody deferred is reached through its notification
                         // and through that person's thread.
 
-                        Tag("2")
                         BalanceCard(
                             totalUsd = totalUsd,
                             wallet = walletList.firstOrNull { it.address == connected },
@@ -1366,18 +1455,78 @@ class MainActivity : ComponentActivity() {
                             Spacer(Modifier.height(12.dp))
                         }
 
-                        // §2d — the breakdown behind the one figure above.
+                        // The breakdown behind the one figure above — behind a toggle, closed.
+                        // What you hold is reference, not the reason you opened the app; the
+                        // cards were the loudest thing on Home and pushed Pay a bill below the
+                        // fold. The total stays up top, and one tap opens what it is made of.
                         if (holdings.isNotEmpty()) {
-                            // Lead, not a section gap: these cards are what the balance is made of.
-                            Spacer(Modifier.height(Space.lead))
-                            Tag("2d")
-                            TokenBadges(holdings, quotes) { mint ->
-                                clipboard.setText(AnnotatedString(mint))
-                                Haptics.tick(this@MainActivity)
-                                push("— copied $mint")
+                            var assetsOpen by rememberSaveable { mutableStateOf(false) }
+                            Row(
+                                Modifier.fillMaxWidth().heightIn(min = 48.dp)
+                                    // No ripple: a grey box across the full width read as a glitch
+                                    // next to the quiet press every other row here has.
+                                    .clickable(
+                                        remember { MutableInteractionSource() }, indication = null,
+                                    ) { assetsOpen = !assetsOpen }
+                                    .semantics {
+                                        contentDescription =
+                                            if (assetsOpen) "Hide your assets" else "Show your assets"
+                                    },
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    "Your assets · ${holdings.size}", color = D.Quiet,
+                                    style = Type.caption,
+                                )
+                                Spacer(Modifier.width(Space.tight))
+                                // Hugeicons' chevron (ArrowDown01), turned over when open.
+                                val flip by animateFloatAsState(if (assetsOpen) 180f else 0f, label = "assets")
+                                HiIcon(
+                                    Hi.ArrowDown, D.Quiet, 20.dp,
+                                    modifier = Modifier.graphicsLayer { rotationZ = flip },
+                                )
+                            }
+                            // The token row deliberately runs OUT of the page's gutters to the
+                            // screen edge, but `AnimatedVisibility` clips its content to the box
+                            // it animates — which is the padded column. So while it opened the
+                            // cards were cut off at the right gutter (a strip of "padding"), and
+                            // the moment the animation ended the clip lifted and they ran out to
+                            // the edge: the flicker. The default clip is turned off and replaced
+                            // by one that is tight vertically, where the animation is, and wide
+                            // horizontally, where the row is meant to go.
+                            val bleed = with(LocalDensity.current) { Space.gutter.toPx() }
+                            AnimatedVisibility(
+                                assetsOpen,
+                                modifier = Modifier.drawWithContent {
+                                    clipRect(-bleed, 0f, size.width + bleed, size.height) {
+                                        this@drawWithContent.drawContent()
+                                    }
+                                },
+                                enter = fadeIn() + expandVertically(clip = false),
+                                exit = fadeOut() + shrinkVertically(clip = false),
+                            ) {
+                                Column {
+                                    Spacer(Modifier.height(Space.tight))
+                                    TokenBadges(holdings, quotes) { mint ->
+                                        clipboard.setText(AnnotatedString(mint))
+                                        Haptics.tick(this@MainActivity)
+                                        push("— copied $mint")
+                                    }
+                                }
                             }
                         }
 
+                        if (shopSections.isNotEmpty()) {
+                            Spacer(Modifier.height(HOME_GAP))
+                            Text("Pay a bill", color = D.Black, style = Type.heading)
+                            Spacer(Modifier.height(Space.lead))
+                            ShopTiles(shopSections) { sec, product ->
+                                shopSection = sec
+                                shopProduct = product
+                                shopDirect = product != null
+                                tab = Tab.SHOP
+                            }
+                        }
                         // §3 is people you have actually PAID or BEEN PAID BY — not everyone
                         // this phone has ever met.
                         //
@@ -1405,8 +1554,7 @@ class MainActivity : ComponentActivity() {
                                 )
                         }
                         if (people.isNotEmpty()) {
-                            Spacer(Modifier.height(Space.section))
-                            Tag("3")
+                            Spacer(Modifier.height(HOME_GAP))
                             People(
                                 list = people,
                                 waiting = { addr ->
@@ -1417,20 +1565,8 @@ class MainActivity : ComponentActivity() {
                             )
                         }
 
-                        if (shopSections.isNotEmpty()) {
-                            Spacer(Modifier.height(Space.section))
-                            Tag("4")
-                            Text("Pay a bill", color = D.Black, style = Type.heading)
-                            Spacer(Modifier.height(Space.lead))
-                            ShopTiles(shopSections) { sec ->
-                                shopSection = sec
-                                shopProduct = null
-                                tab = Tab.SHOP
-                            }
-                        }
                         if (Rewards.enabled) {
-                            Spacer(Modifier.height(Space.section))
-                            Tag("5")
+                            Spacer(Modifier.height(HOME_GAP))
                             EarnStrip(rewardSummary) { tab = Tab.REWARDS }
                             Spacer(Modifier.height(Space.lead))
                             EarnTiles(
@@ -1444,8 +1580,7 @@ class MainActivity : ComponentActivity() {
                         }
 
                         if (history.isNotEmpty()) {
-                            Spacer(Modifier.height(Space.section))
-                            Tag("6")
+                            Spacer(Modifier.height(HOME_GAP))
                             HistoryStrip(
                                 list = history,
                                 onViewAll = {
@@ -2296,7 +2431,7 @@ private fun BalanceCard(
                     ) {
                         // 28 at corner 8, up from 20/6. The card's padding is unchanged, so
                         // 8 + 28 still fits inside the 35dp sliver of each card that shows.
-                        WalletLogo(c, 28.dp, 8.dp)
+                        WalletLogo(c, 28.dp, 8.dp, card = true)
                     }
                 }
             }
@@ -2329,11 +2464,13 @@ private fun BalanceCard(
  * drawn as an image and clipped to a rounded square — a small app icon, which is what it is.
  */
 @Composable
-private fun WalletLogo(w: Linked, size: Dp, radius: Dp = 6.dp) {
+private fun WalletLogo(w: Linked, size: Dp, radius: Dp = 6.dp, card: Boolean = false) {
     val tint = w.iconTint
+    // On the pile of cards the mark is the wallet's card icon; everywhere else its regular one.
+    val res = if (card) w.cardIconRes else w.iconRes
     if (tint == null) {
         Image(
-            painterResource(w.iconRes), contentDescription = null,
+            painterResource(res), contentDescription = null,
             modifier = Modifier.size(size).clip(RoundedCornerShape(radius)),
             // Fit, not Crop. These icons are not all square — Backpack is 117x142, Seeker
             // 681x607 — and filling a square box with them zoomed in and cut the edges off
@@ -2341,7 +2478,7 @@ private fun WalletLogo(w: Linked, size: Dp, radius: Dp = 6.dp) {
             contentScale = ContentScale.Fit,
         )
     } else {
-        HIcon(w.iconRes, tint, size)
+        HIcon(res, tint, size)
     }
 }
 
@@ -2603,7 +2740,7 @@ private fun WalletsScreen(
         WalletPicker(picker, onPickApp, onClosePicker)
         return
     }
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+    Column(Modifier.fillMaxSize().verticalScroll(rememberHeldScroll("wallets"))) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("Wallets", color = D.Black, style = Type.title)
             Spacer(Modifier.weight(1f))
@@ -2728,7 +2865,6 @@ private fun Header(
     onProfile: () -> Unit,
 ) {
     Column {
-        Tag("1")
         Row(verticalAlignment = Alignment.CenterVertically) {
             // Their initial rather than a generic silhouette: this app already draws every
             // OTHER person as a letter in a circle, and drawing yourself the same way says
@@ -2890,12 +3026,7 @@ private fun ConfirmSheet(
 @Composable
 private fun BackHeader(title: String, onBack: () -> Unit) {
     Row(verticalAlignment = Alignment.CenterVertically) {
-        Box(
-            Modifier.size(48.dp).clip(CircleShape).clickable(onClick = onBack)
-                .semantics { contentDescription = "Back" },
-            contentAlignment = Alignment.Center,
-        ) { HiIcon(Hi.ArrowLeft, D.Black, 24.dp) }
-        Spacer(Modifier.width(Space.tight))
+        BackArrow(onBack)
         Text(title, color = D.Black, style = Type.title)
     }
 }
@@ -2992,7 +3123,7 @@ private fun RechargeSection(
     val operators = remember(section) { section.products.filter { it.isMobileRecharge } }
     val e164 = Sims.e164(number)
 
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+    Column(Modifier.fillMaxSize().verticalScroll(rememberHeldScroll("recharge"))) {
         MainnetNote()
 
         Text("MOBILE NUMBER", color = D.Quiet, style = Type.micro)
@@ -3653,7 +3784,6 @@ private fun PayBar(modifier: Modifier, onTap: () -> Unit, onScan: () -> Unit) {
         // No floor and no backdrop: the capsule floats and the page runs under it. It used to
         // sit on a white strip with a gradient above it, which stopped content showing through
         // — at the cost of a white slab across the bottom of every screenshot.
-        Row(Modifier.fillMaxWidth().padding(start = Space.gutter)) { Tag("7") }
 
         // A white ring around the capsule, under a soft shadow. On a white page the ring is
         // invisible as a colour and does its work as a gap: it holds the dark shape off the
@@ -4121,7 +4251,7 @@ private fun HistoryTab(
                 color = D.Quiet, style = Type.micro,
                 modifier = Modifier.padding(top = Space.tight, bottom = Space.lead),
             )
-            LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
+            LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = rememberHeldList("history:$month")) {
                 itemsIndexed(rows) { i, t ->
                     TxnRow(t, onFile = { onFile(t, it) }) { onOpen(t) }
                     if (i < rows.lastIndex) RowLine()
@@ -4196,29 +4326,11 @@ private fun MonthSheet(
 
 
 /**
- * A section's number, from SECTIONS.md, so a change can be asked for by number instead of
- * described.
- *
- * **Always on in a debug build**, and never present in a release — BuildConfig.DEBUG is a
- * compile-time constant, so R8 strips these calls entirely rather than shipping a branch that
- * is never taken. It used to ride on `checking`, the long-press that shows the exchange log,
- * which meant the numbers were invisible unless you remembered a gesture — and a label you
- * have to summon is a label you will assume was deleted.
+ * The gap between Home's sections. `Space.section` is 40: right between the parts of a long
+ * reading page, too much on a screen that is a stack of short separate rows. Home-only on
+ * purpose — every other screen keeps the system's role.
  */
-@Composable
-private fun Tag(n: String) {
-    if (!BuildConfig.DEBUG) return
-    // Ink, not blue. An 11sp white label on #008FFF is 3.30:1 and fails as small text — and a
-    // debug tag has no business teaching the screen a colour pairing the palette forbids.
-    // `Type.micro` with its tracking taken off: micro is a tracked uppercase LABEL, and "§2d"
-    // is an identifier, so it takes micro's size and weight but not its letter-spacing.
-    Text(
-        "§$n", color = D.White, style = CountStyle,
-        modifier = Modifier.padding(top = 2.dp)
-            .clip(RoundedCornerShape(5.dp)).background(D.Black)
-            .padding(horizontal = 5.dp, vertical = 1.dp),
-    )
-}
+private val HOME_GAP = 28.dp
 
 @Composable
 private fun SectionLabel(text: String) {

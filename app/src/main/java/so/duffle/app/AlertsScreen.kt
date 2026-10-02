@@ -167,7 +167,7 @@ internal fun AlertsTab(list: List<Alerts.Alert>, seenAt: Long, onOpen: (Alerts.A
         }
         return
     }
-    LazyColumn(Modifier.fillMaxSize()) {
+    LazyColumn(Modifier.fillMaxSize(), state = rememberHeldList("alerts")) {
         itemsIndexed(list) { i, a ->
             val fresh = a.at > seenAt
             Row(

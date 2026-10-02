@@ -166,7 +166,7 @@ internal fun RewardsTab(
         Shop.sections()?.let { all -> products = all.flatMap { it.products } }
     }
 
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+    Column(Modifier.fillMaxSize().verticalScroll(rememberHeldScroll("rewards"))) {
         // The three blank states are unchanged, and deliberately carry no title row: they are a
         // heading and one line, the way `Rewards.tsx` draws them.
         if (connected == null) {
@@ -302,22 +302,8 @@ internal fun RewardsTab(
  */
 @Composable
 private fun RewardsTitle(onBack: (() -> Unit)?) {
-    Row(Modifier.offset(x = -12.dp), verticalAlignment = Alignment.CenterVertically) {
-        val press = remember { MutableInteractionSource() }
-        Box(
-            Modifier.then(PressScale(press)).size(48.dp)
-                .then(
-                    if (onBack == null) Modifier
-                    else Modifier.clip(CircleShape)
-                        .clickable(press, indication = null, onClick = onBack)
-                        .semantics { contentDescription = "Back" },
-                ),
-            contentAlignment = Alignment.Center,
-        ) {
-            // `hi_arrow_left` through [HiIcon], so the stroke follows the size and the arrow
-            // mirrors itself in a right-to-left layout.
-            HiIcon(Hi.ArrowLeft, D.Black, 24.dp)
-        }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        BackArrow(onBack)
         Text("Rewards", color = D.Black, style = Type.title)
     }
     Text("Earn. Save. Spend with AirPay", color = D.Quiet, style = Type.caption)
