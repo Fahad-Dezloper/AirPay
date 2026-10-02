@@ -125,51 +125,24 @@ private const val EARN_ART = .78f
  */
 @Composable
 internal fun EarnTiles(onRewards: () -> Unit, onOffers: () -> Unit, onReferrals: () -> Unit) {
-    // In [EARN_CARDS]' order: Rewards, Offers, Referrals. Each card opens exactly what the
-    // tile it replaced opened.
-    val cards = EARN_CARDS.zip(listOf(onRewards, onOffers, onReferrals))
-
-    // Aligned with every other section at rest, and running off the SCREEN when scrolled —
-    // the token cards' row ([TokenBadges]), where the measurements behind this were made. The
-    // parent's gutter would do the first but not the second: a card scrolling away would stop
-    // at an invisible margin 20dp in. So the row breaks out of that gutter and carries it as
-    // CONTENT instead — spacers, which a scroller is guaranteed to scroll. Horizontal padding
-    // does not survive the scroller; spacers do.
-    Row(
-        Modifier
-            .layout { measurable, constraints ->
-                val gutter = Space.gutter.roundToPx()
-                val placeable = measurable.measure(
-                    // TWO gutters wider than the parent allows: one buys back the gutter the
-                    // row is shifted into, the other buys the one at the end. One gutter left
-                    // the end edge 20dp short of the screen — measured on the phone.
-                    constraints.copy(minWidth = 0, maxWidth = constraints.maxWidth + 2 * gutter),
-                )
-                // The parent's OWN width is what gets reported. Reporting `placeable.width`
-                // here instead shifted the row by two gutters, not one.
-                layout(constraints.maxWidth, placeable.height) { placeable.place(-gutter, 0) }
-            }
-            .horizontalScroll(rememberScrollState()),
-    ) {
-        Spacer(Modifier.width(Space.gutter))
-        cards.forEachIndexed { i, (card, onOpen) ->
-            if (i > 0) Spacer(Modifier.width(Space.inline))
-            EarnCardFace(card, onOpen)
+    // Rewards across the whole width, then Offers and Referrals sharing the row below it — all
+    // three on screen at once instead of two and a cut-off third behind a scroll.
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(Space.inline)) {
+        EarnCardFace(EARN_CARDS[0], onRewards, Modifier.fillMaxWidth(), height = 150.dp, art = .46f)
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(Space.inline)) {
+            EarnCardFace(EARN_CARDS[1], onOffers, Modifier.weight(1f), height = EARN_H, art = EARN_ART)
+            EarnCardFace(EARN_CARDS[2], onReferrals, Modifier.weight(1f), height = EARN_H, art = EARN_ART)
         }
-        // The same gutter after the last card as before the first. It costs nothing at rest —
-        // it sits off the end of the viewport — and it is what stops the last card dead
-        // against the screen edge once the row is scrolled all the way.
-        Spacer(Modifier.width(Space.gutter))
     }
 }
 
 /** One card: the ground, the two lines, and the artwork behind them. */
 @Composable
-private fun EarnCardFace(card: EarnCard, onOpen: () -> Unit) {
+private fun EarnCardFace(card: EarnCard, onOpen: () -> Unit, modifier: Modifier, height: androidx.compose.ui.unit.Dp, art: Float) {
     val press = remember { MutableInteractionSource() }
-    Box(
-        Modifier.then(PressScale(press))
-            .size(EARN_W, EARN_H)
+    androidx.compose.foundation.layout.BoxWithConstraints(
+        modifier.then(PressScale(press))
+            .height(height)
             // The clip lives HERE, on the card itself, because it is the card that is meant to
             // cut the illustration off at its bottom edge.
             .clip(RoundedCornerShape(EARN_R))
@@ -179,6 +152,7 @@ private fun EarnCardFace(card: EarnCard, onOpen: () -> Unit) {
             .background(Brush.verticalGradient(0f to card.top, .45f to card.top, 1f to card.bottom))
             .clickable(press, indication = null, onClick = onOpen),
     ) {
+        val w = maxWidth
         // Drawn FIRST, so it sits behind the words: the gift tag's loop and the link bubble
         // pass under the title rather than across it. It runs off the bottom on purpose.
         Image(
@@ -186,10 +160,10 @@ private fun EarnCardFace(card: EarnCard, onOpen: () -> Unit) {
             contentDescription = null,
             modifier = Modifier
                 .align(Alignment.BottomEnd)
-                .offset(x = -(EARN_W * card.endPct), y = EARN_H * card.belowPct)
-                // Width only: the height then follows the drawable's own ratio (720 x 496,
-                // 615 and 610), which is what keeps each illustration undistorted at one width.
-                .width(EARN_W * EARN_ART),
+                .offset(x = -(w * card.endPct), y = height * card.belowPct)
+                // Width only: the height then follows the drawable's own ratio, which is what
+                // keeps each illustration undistorted at any width.
+                .width(w * art),
         )
         Column(Modifier.padding(EARN_PAD)) {
             Text(card.title, color = D.Black, style = Type.heading)

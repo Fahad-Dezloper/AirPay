@@ -59,6 +59,10 @@ object ServerClient {
      * whether the news arrived by push or by polling.
      */
     data class Shopped(val invoice: String, val status: String) : Event
+    /** Something about this person's rewards moved. See [Progress]. */
+    data class Moved(val progress: Progress) : Event
+    /** Money moved in one of our wallets, from anywhere. */
+    data class Activity(val direction: String, val amount: String, val symbol: String) : Event
 
     /**
      * Tells the server to watch a request. Idempotent — both phones call it, the payee when
@@ -167,6 +171,20 @@ object ServerClient {
         }
     }
 
+    /** `.air` names starting with [prefix], as (name, address). Empty when the server cannot be asked. */
+    suspend fun airNames(prefix: String): List<Pair<String, String>> {
+        val o = read("/v1/handles?prefix=${URLEncoder.encode(prefix, "UTF-8")}") ?: return emptyList()
+        val arr = o.optJSONArray("names") ?: return emptyList()
+        return (0 until arr.length()).mapNotNull { i ->
+            val h = arr.optJSONObject(i) ?: return@mapNotNull null
+            val addr = h.optString("address")
+            h.optString("name").takeIf { it.isNotBlank() && PayRequest.isBase58Address(addr) }?.let { it to addr }
+        }
+    }
+
+    /** Claims `name.air` for the signed-in account. False when it is taken or invalid. */
+    suspend fun claimAirName(name: String): Boolean = post("/v1/handles", JSONObject().put("name", name))
+
     /** Where to send a push when a payment to `recipient` lands. */
     suspend fun registerDevice(recipient: String, pushToken: String): Boolean =
         post("/v1/devices", JSONObject().apply {
@@ -193,6 +211,8 @@ object ServerClient {
                     readTimeout = 45_000
                     setRequestProperty("Accept", "text/event-stream")
                 }
+                Session.apply(c)
+                if (c.responseCode == 401) Session.stale()
                 if (c.responseCode != 200) throw IllegalStateException("HTTP ${c.responseCode}")
                 backoff = 1_000L
                 c.inputStream.bufferedReader().use { r ->
@@ -265,6 +285,14 @@ object ServerClient {
             o.getString("invoice").takeIf { it.isNotBlank() }
                 ?.let { Shopped(it, o.optString("status")) }
         } catch (e: Exception) { null }
+        "wallet" -> try {
+            val o = JSONObject(json)
+            Activity(o.getString("direction"), o.getString("amount"), o.optString("symbol", "SOL"))
+        } catch (e: Exception) { null }
+        "reward", "offer", "referral", "payout" -> try {
+            val o = JSONObject(json)
+            Progress.from(type) { if (o.has(it)) o.optString(it) else null }?.let { Moved(it) }
+        } catch (e: Exception) { null }
         else -> null
     }
 
@@ -299,11 +327,42 @@ object ServerClient {
                     readTimeout = timeoutMs
                     setRequestProperty("Content-Type", "application/json")
                 }
+                Session.apply(c)
                 c.outputStream.use { it.write(body.toString().toByteArray()) }
+                // A 401 anywhere but sign-in itself means the session died: sign in again.
+                if (c.responseCode == 401 && !path.startsWith("/v1/auth/")) Session.stale()
                 if (c.responseCode !in 200..299) return@withContext null
                 JSONObject(c.inputStream.bufferedReader().use { it.readText() })
             } catch (e: Exception) {
                 null
+            }
+        }
+    }
+
+    /**
+     * [ask], but telling the caller the status too — for the few answers where WHICH refusal it was
+     * matters (a wallet that already belongs to another account is 409, not just "no").
+     * Returns (status, body); status 0 when the server could not be reached.
+     */
+    internal suspend fun askRaw(path: String, body: JSONObject, timeoutMs: Int = 8_000): Pair<Int, JSONObject?> {
+        if (!enabled) return 0 to null
+        return withContext(Dispatchers.IO) {
+            try {
+                val c = (URL(base + path).openConnection() as HttpURLConnection).apply {
+                    requestMethod = "POST"
+                    doOutput = true
+                    connectTimeout = timeoutMs
+                    readTimeout = timeoutMs
+                    setRequestProperty("Content-Type", "application/json")
+                }
+                Session.apply(c)
+                c.outputStream.use { it.write(body.toString().toByteArray()) }
+                val code = c.responseCode
+                val text = (if (code in 200..299) c.inputStream else c.errorStream)
+                    ?.bufferedReader()?.use { it.readText() }.orEmpty()
+                code to runCatching { JSONObject(text) }.getOrNull()
+            } catch (e: Exception) {
+                0 to null
             }
         }
     }
@@ -317,6 +376,8 @@ object ServerClient {
                     connectTimeout = 8_000
                     readTimeout = 8_000
                 }
+                Session.apply(c)
+                if (c.responseCode == 401) Session.stale()
                 if (c.responseCode !in 200..299) return@withContext null
                 JSONObject(c.inputStream.bufferedReader().use { it.readText() })
             } catch (e: Exception) {
@@ -336,7 +397,9 @@ object ServerClient {
                     readTimeout = 8_000
                     setRequestProperty("Content-Type", "application/json")
                 }
+                Session.apply(c)
                 c.outputStream.use { it.write(body.toString().toByteArray()) }
+                if (c.responseCode == 401) Session.stale()
                 c.responseCode in 200..299
             } catch (e: Exception) {
                 false

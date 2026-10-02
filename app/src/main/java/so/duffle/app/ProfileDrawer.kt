@@ -151,7 +151,7 @@ internal fun SideSheet(onClose: () -> Unit, content: @Composable ColumnScope.() 
                         else scope.launch { offset.animateTo(0f, Glide, initialVelocity = velocity) }
                     },
                 )
-                .background(D.White, RoundedCornerShape(topEnd = Tray.OUTER, bottomEnd = Tray.OUTER))
+                .background(D.White)
                 .clickable(remember { MutableInteractionSource() }, indication = null) {}
                 .statusBarsPadding()
                 .navigationBarsPadding(),

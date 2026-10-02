@@ -130,7 +130,7 @@ data class PayRequest(
         symbol.isBlank() || symbol.length > 12 -> "The request has an unreadable token name."
         amount.isNotBlank() && amount.toDoubleOrNull() == null -> "The request has an unreadable amount."
         (amount.toDoubleOrNull() ?: 0.0) < 0 -> "The request asks for a negative amount."
-        (amount.toDoubleOrNull() ?: 0.0) > MAX_AMOUNT -> "That amount looks wrong — refusing it."
+        (amount.toDoubleOrNull() ?: 0.0) > MAX_AMOUNT -> "That amount looks wrong, refusing it."
         // Readable and in range but not expressible in lamports, e.g. "0.0000000001" or "0".
         amount.isNotBlank() && units() == null -> "That amount can't be paid in $symbol."
         label.length > 64 -> "The request has an oversized label."

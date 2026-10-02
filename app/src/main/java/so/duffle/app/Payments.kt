@@ -91,7 +91,7 @@ object Payments {
                 }
             Chain.Submitted.Offline -> return PayResult.Error("You're offline", "It was signed but never sent. Try again.")
         }
-        log("✓ SENT — $signature")
+        log("✓ SENT, $signature")
 
         stage("Confirming on Solana…")
         return when (val c = Chain.confirm(signature, req.reference, req.recipient, units, req.mint)) {
@@ -102,8 +102,8 @@ object Payments {
             // not a failed payment. Say that, rather than implying it went wrong.
             Chain.Confirmation.Unknown -> PayResult.Failed(
                 "Sent, still confirming",
-                if (Chain.rateLimited) "Sent — we just can't get an answer right now. It is very likely fine; check the explorer."
-                else "Sent — we couldn't confirm it yet. Check the explorer before paying again.",
+                if (Chain.rateLimited) "Sent, we just can't get an answer right now. It is very likely fine; check the explorer."
+                else "Sent, we couldn't confirm it yet. Check the explorer before paying again.",
                 signature,
             )
         }

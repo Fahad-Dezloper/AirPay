@@ -151,17 +151,6 @@ class ScanActivity : ComponentActivity() {
                                 .padding(horizontal = 22.dp, vertical = 26.dp),
                             horizontalAlignment = Alignment.CenterHorizontally,
                         ) {
-                            // Said before anything is approved, not after: this app pays on
-                            // devnet, and a real shop's code is for mainnet. Paying one here
-                            // would settle perfectly and send the shop nothing.
-                            Text(
-                                "AirPay pays on devnet. A real shop's code settles on mainnet — it would not reach them.",
-                                // 11sp is `Type.micro`, which is a tracked uppercase LABEL and
-                                // not a sentence. There is no seventh-and-a-half step, so the
-                                // warning takes the nearest real one and reads better for it.
-                                color = Color(0x99FFFFFF), style = Type.caption, textAlign = TextAlign.Center,
-                            )
-                            Spacer(Modifier.height(14.dp))
                             Text(
                                 // Every button label is `Type.heading` (§3).
                                 "Cancel", color = Color.White, style = Type.heading,
@@ -327,7 +316,7 @@ class ScanActivity : ComponentActivity() {
                     }
                     if (decimals == null) {
                         handled = false
-                        problem = "Couldn't read that token on devnet. Nothing was sent."
+                        problem = "Couldn't read that token. Nothing was sent."
                         return@launch
                     }
                     val req = PayRequest(

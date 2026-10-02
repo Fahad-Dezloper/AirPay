@@ -42,6 +42,8 @@ data class Linked(
      * before the picker existed has none, and keeps working the way it always did.
      */
     val pkg: String? = null,
+    /** A name the person gave this wallet. Local to this phone; beats everything the wallet says. */
+    val alias: String? = null,
 ) {
     val short: String get() = "${address.take(4)}…${address.takeLast(4)}"
 
@@ -53,7 +55,8 @@ data class Linked(
      * already said. Null for the second kind, so the caller can fall back to the address.
      */
     val username: String?
-        get() = name.trim().takeIf { it.isNotBlank() && BRANDS.none { b -> it.equals(b, true) } }
+        get() = alias?.takeIf { it.isNotBlank() }
+            ?: name.trim().takeIf { it.isNotBlank() && BRANDS.none { b -> it.equals(b, true) } }
 
     /**
      * A colour per wallet, keyed on what the wallet says it is.
@@ -112,7 +115,7 @@ data class Linked(
             matches("phantom") -> R.drawable.ic_wallet_phantom
             matches("solflare") -> R.drawable.ic_wallet_solflare
             matches("backpack") -> R.drawable.ic_wallet_backpack
-            matches("seeker", "solanamobile", "seed vault", ".skr") -> R.drawable.brand_seeker_classic
+            matches("seeker", "solanamobile", "seed vault", ".skr") -> R.drawable.ic_wallet_seeker
             matches("ledger") -> R.drawable.ic_wallet_ledger
             else -> R.drawable.ic_wallet_chip
         }
@@ -171,6 +174,23 @@ data class Linked(
             return Color(c.red * k, c.green * k, c.blue * k)
         }
 
+    /** Seeker's own wallet: the one card with a gradient, and so the one with two inks. */
+    val isSeeker: Boolean get() = matches("seeker", "solanamobile", "seed vault", ".skr")
+
+    /**
+     * Words that identify THIS wallet's app among the installed ones, from what it said about
+     * itself when it connected (its name and wallet URI). Null when it can't be told — Seeker
+     * Wallet is deliberately null: it is the system default on a Seeker, where the untargeted
+     * route already lands on it.
+     */
+    val appHints: List<String>?
+        get() = when {
+            matches("phantom") -> listOf("phantom")
+            matches("solflare") -> listOf("solflare")
+            matches("backpack") -> listOf("backpack")
+            else -> null
+        }
+
     private fun matches(vararg needles: String): Boolean {
         val hay = "$name ${uri.orEmpty()} ${pkg.orEmpty()}".lowercase()
         return needles.any { it in hay }
@@ -210,6 +230,7 @@ class Wallets(ctx: Context) {
                 uri = o.optString("u").ifBlank { null },
                 addedAt = o.optLong("at"),
                 pkg = o.optString("p").ifBlank { null },
+                alias = o.optString("l").ifBlank { null },
             )
         }
     } catch (e: Exception) {
@@ -243,6 +264,7 @@ class Wallets(ctx: Context) {
             uri = uri ?: existing?.uri,
             addedAt = existing?.addedAt ?: System.currentTimeMillis(),
             pkg = pkg ?: existing?.pkg,
+            alias = existing?.alias,
         )
         save(all().filterNot { it.address == address } + linked)
         if (prefs.getString(KEY_SELECTED, null) == null) select(address)
@@ -252,6 +274,12 @@ class Wallets(ctx: Context) {
     /** The picker's name for a wallet beats a domain: "Phantom", not "phantom.app". */
     fun rename(address: String, name: String) {
         save(all().map { if (it.address == address) it.copy(name = name) else it })
+    }
+
+    /** The person's own name for a wallet. Blank clears it, back to what the wallet calls itself. */
+    fun setAlias(address: String, alias: String?) {
+        val clean = alias?.trim()?.take(24)?.ifBlank { null }
+        save(all().map { if (it.address == address) it.copy(alias = clean) else it })
     }
 
     /** The token went stale. The wallet stays listed — it is still theirs, it just needs a tap. */
@@ -276,6 +304,7 @@ class Wallets(ctx: Context) {
                 put("n", w.name)
                 w.uri?.let { put("u", it) }
                 w.pkg?.let { put("p", it) }
+                w.alias?.let { put("l", it) }
                 put("at", w.addedAt)
             })
         }

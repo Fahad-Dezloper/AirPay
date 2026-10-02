@@ -268,7 +268,7 @@ class TapPopupActivity : ComponentActivity() {
                     lifecycleScope.launch { delay(1_400); earned = Rewards.Earned(300, listOf("first_payment", "per_payment")) }
                     Phase.Success("Sent", "$amount SOL to ${payload.label}", "67WKe2RHq4Z8vY1pXbT5mN3cJdedqWM5")
                 }
-                "error" -> Phase.Error("Nothing was sent", "The approval window closed — tap again.")
+                "error" -> Phase.Error("Nothing was sent", "The approval window closed. Tap again.")
                 // The §7 wording, so the preview shows what ships rather than its own phrasing.
                 "failed" -> Phase.Failed("The chain refused it", "It went out and didn't land. Nothing left your wallet.", "67WKe2RHq4Z8vY1pXbT5mN3cJdedqWM5")
                 "connect" -> { address = null; Phase.Ready }
@@ -372,7 +372,19 @@ class TapPopupActivity : ComponentActivity() {
             }
             phase = when (result) {
                 is PayResult.Sent -> {
-                    if (p is TapPayload.Request) Inbox(this@TapPopupActivity).markPaid(req.reference, result.signature)
+                    // Every payment that leaves this phone is filed, not only the ones that began
+                    // as a request. A wallet address scanned from a QR has no request behind it,
+                    // so a payment to it left no row in Transactions, no person on Home and no
+                    // thread to open — the money had gone and the app had no memory of it.
+                    Inbox(this@TapPopupActivity).apply {
+                        if (get(req.reference) == null) add(req)
+                        markPaid(req.reference, result.signature)
+                    }
+                    // The name the address owns on chain, if any, in place of "Scanned code".
+                    launch {
+                        val name = withContext(Dispatchers.IO) { runCatching { Names.label(req.recipient) }.getOrNull() }
+                        if (name != null) Contacts(this@TapPopupActivity).record(req.recipient, name, req.genesis != null)
+                    }
                     // The contact's running total is in SOL; token payments don't add to it.
                     Contacts(this@TapPopupActivity).record(req.recipient, req.label, req.genesis != null,
                         paid = if (req.isSol) req.amount.toDoubleOrNull() ?: 0.0 else 0.0)
@@ -386,7 +398,7 @@ class TapPopupActivity : ComponentActivity() {
                 }
                 is PayResult.AlreadyPaid -> {
                     if (p is TapPayload.Request) Inbox(this@TapPopupActivity).markPaid(req.reference, result.signature)
-                    Phase.Success("Already paid", "This request was paid before — nothing new was sent.", result.signature)
+                    Phase.Success("Already paid", "This request was paid before, nothing new was sent.", result.signature)
                 }
                 is PayResult.Error -> { Haptics.failure(this@TapPopupActivity); Phase.Error(result.title, result.detail) }
                 is PayResult.Failed -> { Haptics.failure(this@TapPopupActivity); Phase.Failed(result.title, result.detail, result.signature) }
@@ -431,7 +443,7 @@ class TapPopupActivity : ComponentActivity() {
         }
         if (!ServerClient.enabled) {
             // The phones have parted by now, so the request has no radio to travel over.
-            phase = Phase.Error("Requests need the AirPay server", "Paying works without it. To request after a tap, run the server — see server/README.md.")
+            phase = Phase.Error("Requests need the AirPay server", "Paying works without it. To request after a tap. Run the server, see server/README.md.")
             return
         }
         lifecycleScope.launch {

@@ -58,7 +58,7 @@ class TapReader(
             is TapExchange.Outcome.Got -> when (val p = out.payload) {
                 is TapPayload.Request -> {
                     onLog("✓ ${p.request.label} wants ${p.request.amount} ${p.request.token}")
-                    onLog("— you can separate the phones now")
+                    onLog("- you can separate the phones now")
                     onRequest(p.request)
                 }
                 is TapPayload.Card -> {
@@ -66,7 +66,7 @@ class TapReader(
                     onCard(p.card)
                 }
             }
-            TapExchange.Outcome.NothingToOffer -> onLog("— that phone has no wallet connected yet")
+            TapExchange.Outcome.NothingToOffer -> onLog("- that phone has no wallet connected yet")
             is TapExchange.Outcome.Failed -> onLog("✗ ${out.why}")
         }
     }

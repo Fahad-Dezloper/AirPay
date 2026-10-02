@@ -41,7 +41,7 @@ object TapExchange {
             var introduced = false
             if (me != null && me.address != payload.address) {
                 introduced = runCatching { Apdu.isOk(iso.transceive(Apdu.hello(me))) }.getOrDefault(false)
-                log(if (introduced) "→ introduced ourselves" else "— couldn't introduce ourselves over NFC")
+                log(if (introduced) "→ introduced ourselves" else "- couldn't introduce ourselves over NFC")
             }
             Outcome.Got(payload, introduced)
         } catch (e: Exception) {

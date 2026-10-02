@@ -80,7 +80,7 @@ class TapHostApduService : HostApduService() {
         inNdefApp = false
         val p = currentPayload() ?: run {
             Log.i(TAG, "SELECT but nothing to offer")
-            events.tryEmit("SELECT — no wallet connected")
+            events.tryEmit("SELECT, no wallet connected")
             return Apdu.SW_NOT_READY
         }
         val body = p.toBytes()
@@ -149,7 +149,7 @@ class TapHostApduService : HostApduService() {
     override fun onDeactivated(reason: Int) {
         val why = if (reason == DEACTIVATION_LINK_LOSS) "phones parted" else "deselected"
         Log.i(TAG, "deactivated: $why")
-        events.tryEmit("— $why")
+        events.tryEmit("- $why")
         payload = null
         ndef = null
         inNdefApp = false

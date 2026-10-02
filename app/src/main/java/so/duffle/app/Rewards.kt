@@ -116,6 +116,12 @@ object Rewards {
 
     data class Refusal(val counterparty: String, val why: String, val at: Long)
 
+    /** One SKR payout to this wallet, from the server's record of it. */
+    data class Payout(val id: String, val skr: Int, val state: String, val signature: String?, val at: Long)
+
+    /** What pressing Claim came to. */
+    data class Claimed(val ok: Boolean, val skr: Int, val state: String, val refused: String?, val have: Int, val need: Int)
+
     data class Summary(
         val locked: Int, val ready: Int, val settled: Int, val total: Int,
         /** Rewarded payments this week, out of what the week allows. */
@@ -135,7 +141,34 @@ object Rewards {
          * the SKR figure rather than printing a dollar sign in front of a number nobody priced.
          */
         val totalUsd: Double? = null,
+        /** Final and unpaid: what Claim would send. */
+        val claimable: Int = 0,
+        /** Reserved for a payout in flight. */
+        val claiming: Int = 0,
+        /** Already sent to the wallet. */
+        val paid: Int = 0,
+        /** Under this, Claim is not offered: a first payout costs real SOL to open the account. */
+        val minPayout: Int = 100,
+        /** False until the server has a payer configured; the button says "soon" instead of failing. */
+        val payoutsEnabled: Boolean = false,
+        val payouts: List<Payout> = emptyList(),
     )
+
+    /**
+     * Asks the server to send every claimable SKR to this wallet.
+     *
+     * The server decides everything — which rewards are final, how much, whether the payer is up —
+     * and is safe to ask twice: the same claim returns the same payout, never a second one.
+     */
+    suspend fun claim(address: String): Claimed? {
+        if (!enabled || address.isBlank()) return null
+        val o = ServerClient.ask("/v1/rewards/claim", JSONObject(), timeoutMs = 20_000) ?: return null
+        val p = o.optJSONObject("payout")
+        return Claimed(
+            ok = o.optBoolean("ok"), skr = p?.optInt("skr") ?: 0, state = p?.optString("state").orEmpty(),
+            refused = o.text("refused"), have = o.optInt("have"), need = o.optInt("need"),
+        )
+    }
 
     suspend fun summary(address: String): Summary? {
         if (!enabled || address.isBlank()) return null
@@ -180,6 +213,17 @@ object Rewards {
             perPayment = rates?.optInt("per_payment") ?: 0, streak = rates?.optInt("streak") ?: 0,
             streakNeeded = rates?.optInt("streak_needed") ?: 4, lockDays = rates?.optInt("lock_days") ?: 7,
             rows = rows, refusals = refusals,
+            claimable = bal?.optInt("claimable") ?: 0, claiming = bal?.optInt("claiming") ?: 0,
+            paid = bal?.optInt("paid") ?: 0, minPayout = o.optInt("min_payout", 100),
+            payoutsEnabled = o.optBoolean("payouts_enabled", false),
+            payouts = buildList {
+                o.optJSONArray("payouts")?.let { a ->
+                    for (i in 0 until a.length()) a.optJSONObject(i)?.let {
+                        add(Payout(it.optString("id"), it.optInt("skr"), it.optString("state"),
+                            it.text("signature"), (it.optDouble("created_at") * 1000).toLong()))
+                    }
+                }
+            },
         )
     }
 
@@ -240,6 +284,13 @@ object Rewards {
          * right for the five sample apps and wrong for the sixth, while looking like it worked.
          */
         val icon: String? = null,
+        /**
+         * When this person was TOLD about the offer (a push went out for it), in millis — **0 when
+         * not yet**. The notification page lists an offer only once it has been told, so offers
+         * arrive one at a time, hours apart, instead of all at once at sign-up. The Offers page
+         * itself still lists everything: that is where someone goes to look.
+         */
+        val notifiedAt: Long = 0L,
     ) {
         val available get() = state == "available"
         val waiting get() = state == "open"
@@ -265,6 +316,7 @@ object Rewards {
                     // unclaimed offer lands on 0 rather than on the epoch.
                     claimedAt = (j.optDouble("claimed_at", 0.0) * 1000).toLong(),
                     icon = j.text("icon"),
+                    notifiedAt = (j.optDouble("notified_at", 0.0) * 1000).toLong(),
                 )
             }
         }
@@ -286,12 +338,12 @@ object Rewards {
         "already_claimed" -> "You have already claimed this"
         "not_live" -> "This offer has ended"
         "offer_budget" -> "This offer has run out"
-        "before_claim" -> "That payment was before you claimed — pay again to earn"
+        "before_claim" -> "That payment was before you claimed. Pay again to earn"
         "outside_window" -> "The window closed"
         "wrong_recipient" -> "Waiting for a payment to the app"
         "below_minimum" -> "That payment was under the minimum"
         "wrong_token" -> "Paid in the wrong token"
-        "chain_unreachable" -> "Couldn't check the chain — try again"
+        "chain_unreachable" -> "Couldn't check the chain. Try again"
         else -> why.replace('_', ' ')
     }
 
@@ -301,6 +353,7 @@ object Rewards {
         "per_payment" -> "Paid in person"
         "streak" -> "Weekly streak"
         "offer" -> "Offer completed"
+        "signup" -> "Welcome bonus"
         else -> kind.replace('_', ' ').replaceFirstChar { it.uppercase() }
     }
 

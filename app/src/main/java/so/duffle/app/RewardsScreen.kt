@@ -70,6 +70,8 @@ import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
@@ -147,6 +149,10 @@ internal fun RewardsTab(
     onProduct: ((Shop.Product) -> Unit)? = null,
     /** §5's "See all": the same shelf Pay a bill's More tile opens. Optional for previews. */
     onSeeAll: (() -> Unit)? = null,
+    /** A card was tapped: where it sits in the window, so the stage can lift it from there. */
+    onOpenCard: ((Rewards.Row, androidx.compose.ui.geometry.Rect) -> Unit)? = null,
+    /** The card being scratched right now, hidden in its slot while the stage holds it. */
+    openId: Int? = null,
 ) {
     var summary by remember { mutableStateOf<Rewards.Summary?>(null) }
     var loading by remember { mutableStateOf(true) }
@@ -157,7 +163,7 @@ internal fun RewardsTab(
     // list, so a server that has no shop simply drops the section.
     var products by remember { mutableStateOf<List<Shop.Product>>(emptyList()) }
     val scope = rememberCoroutineScope()
-    LaunchedEffect(connected, refresh) {
+    LaunchedEffect(connected, refresh, Session.version, Live.tick) {
         loading = true
         summary = connected?.let { Rewards.summary(it) }
         loading = false
@@ -178,15 +184,23 @@ internal fun RewardsTab(
             return@Column
         }
         val s = summary
+        if (s == null && !loading && !Session.valid(connected)) {
+            Spacer(Modifier.height(Space.section))
+            SignInNeeded("see your rewards")
+            return@Column
+        }
+        if (s == null && loading) {
+            // The page's own shape while it loads, under the title it will have, so nothing jumps.
+            RewardsTitle(onBack)
+            RewardsSkeleton()
+            return@Column
+        }
         if (s == null) {
             Spacer(Modifier.height(Space.section))
-            Text(if (loading) "Checking…" else "Can't reach the server", color = D.Black,
-                style = Type.heading)
-            if (!loading) {
-                Spacer(Modifier.height(Space.tight))
-                Text("Your rewards are safe on the server — this screen just can't read them right now.",
-                    color = D.Quiet, style = Type.caption)
-            }
+            Text("Can't reach the server", color = D.Black, style = Type.heading)
+            Spacer(Modifier.height(Space.tight))
+            Text("Your rewards are safe on the server, this screen just can't read them right now.",
+                color = D.Quiet, style = Type.caption)
             return@Column
         }
 
@@ -197,6 +211,7 @@ internal fun RewardsTab(
         // `section`, and §2 states it outright.
         Spacer(Modifier.height(24.dp))
         TotalCard(s, isSeeker)
+        ClaimRow(s, connected) { refresh++ }
 
         // ------------------------------------------------------------- §3 scratch & reveal
         Spacer(Modifier.height(Space.section))
@@ -235,9 +250,7 @@ internal fun RewardsTab(
                             // `connected` is a val and the null case returned above, so it is
                             // smart-cast here — the old `?: return@ScratchCard` guard could
                             // never fire and the compiler said so.
-                            ScratchCard(row, onScratched = {
-                                scope.launch { Rewards.reveal(connected, row.id) }
-                            })
+                            RewardCard(row, hidden = openId == row.id) { bounds -> onOpenCard?.invoke(row, bounds) }
                         }
                     }
                     // A lone card on the last row must stay one column wide, not stretch.
@@ -402,10 +415,14 @@ private fun TotalCard(s: Rewards.Summary, isSeeker: Boolean) {
                 // Ink, not quiet: quiet grey fails contrast on this ground.
                 Text(
                     when {
+                        // A card is waiting: it is not counted until it is scratched, so say so
+                        // rather than "Nothing yet", which would be false.
+                        empty && s.rows.any { !it.revealed } ->
+                            "Scratch your card below to see what you've earned"
                         empty && !isSeeker ->
-                            "Rewards are for Seeker owners — this wallet holds no Genesis Token"
+                            "Rewards are for Seeker owners, this wallet holds no Genesis Token"
                         empty ->
-                            "Nothing yet — a payment made by tapping earns ${skr(s.perPayment)} SKR"
+                            "Nothing yet, a payment made by tapping earns ${skr(s.perPayment)} SKR"
                         else -> "Total rewards value"
                     },
                     color = D.Black, style = Type.caption,
@@ -522,104 +539,51 @@ private fun HeroPattern(modifier: Modifier) {
 private val CARD_R = 24.dp
 
 /**
- * One reward, covered until it is scratched.
+ * One reward in the grid: a card to open.
  *
- * The cover is drawn into an offscreen layer so the scratch path can be erased out of it with
- * [BlendMode.Clear] — clearing pixels only works against a layer the composable owns; done
- * straight onto the window it punches a hole through everything behind it.
- *
- * It gives up on precision deliberately. Coverage is measured on an 8×8 grid of the card, and
- * at [SCRATCHED_ENOUGH] the rest wipes on its own — nobody should have to scrub the corners of
- * a card whose number is already decided, and a card left half-scratched forever is a worse
- * outcome than one that opens a little early.
- *
- * ### What §3 changed, and what it did not
- *
- * The cover is now the artwork, edge to edge, with no words on it: a thing to open rather than
- * a poster that says "Scratch". The old solid-blue foil, its scattered coins and its one 19sp
- * word are gone with §7, and so is the caption that used to sit under the grid carrying the
- * honest half ("the amount was set when the payment settled") — §4.1's sheet says it now.
- *
- * The **gesture and its mechanism are untouched**: same offscreen layer, same `BlendMode.Clear`
- * stroke, same [SCRATCHED_ENOUGH] on the same [GRID].
- *
- * **Two states only**, per §3.1: covered or opened. There is no locked face and no taken-back
- * face. A row the server has reversed therefore draws as an ordinary card — §10 leaves what
- * somebody should see in that case undecided, and a face invented here would be this port
- * answering a question the design has not.
- *
- * **One known difference from the sandbox.** `Rewards.tsx` puts no overflow clip on the card,
- * because a CSS `aspect-square` box GROWS past square when the text scale does and the words
- * survive. Compose's `aspectRatio(1f)` is a hard constraint, not a minimum, so the box cannot
- * grow — dropping the clip here would spill the words over the cards beside it instead of
- * keeping them. The clip stays until the square is a minimum rather than a size; see
- * ui/PORT.md §8.
- *
- * **§3.2's press scale is not drawn.** The covered card's pointer belongs to
- * `detectDragGestures`, and a `clickable` layered over it to feed [PressScale] would compete
- * for the same pointer and could swallow the first stroke of a scratch. The gesture is the one
- * thing this port was told not to change, so the press scale lost.
+ * Tapping lifts it into the middle of the screen (see [ScratchStage]) where it is scratched; the
+ * grid itself no longer takes the scratch gesture, which is what let a card be half-scratched
+ * while the page scrolled under the finger. While the stage holds it the slot goes quiet
+ * ([hidden]) so the card is never in two places, and it comes back exactly where it was.
  */
 @Composable
-private fun ScratchCard(row: Rewards.Row, onScratched: () -> Unit) {
-    var scratched by remember(row.id) { mutableStateOf(row.revealed) }
-    // The path is mutable and drawn every frame; `strokes` exists only to tell Compose that it
-    // changed, since mutating a Path in place is invisible to recomposition.
-    val path = remember(row.id) { Path() }
-    var strokes by remember(row.id) { mutableIntStateOf(0) }
-    val cells = remember(row.id) { mutableSetOf<Int>() }
-    val cover by animateFloatAsState(if (scratched) 0f else 1f, label = "cover")
-
-    val special = row.isSpecial
-    val coverArt = painterResource(if (special) R.drawable.special else R.drawable.simple)
-
+private fun RewardCard(row: Rewards.Row, hidden: Boolean, onOpen: (androidx.compose.ui.geometry.Rect) -> Unit) {
+    var bounds by remember { mutableStateOf(androidx.compose.ui.geometry.Rect.Zero) }
+    val press = remember { MutableInteractionSource() }
     Box(
         Modifier.fillMaxWidth().aspectRatio(1f)
-            // The hairline belongs to the OPENED face: §3.2's cover is artwork to the card's
-            // edge with nothing drawn over it. It fades in with the reveal rather than popping
-            // in at the end, so the card never changes shape in one frame.
+            .onGloballyPositioned { bounds = it.boundsInWindow() }
+            .graphicsLayer { alpha = if (hidden) 0f else 1f }
+            .then(PressScale(press))
+            .clickable(press, indication = null) { onOpen(bounds) },
+    ) {
+        CardBody(row, cover = if (row.revealed) 0f else 1f)
+    }
+}
+
+/**
+ * The card itself: the opened face, with the cover artwork over it by [cover] (1 = covered,
+ * 0 = open). Used by the grid and by the stage, so a card looks the same in both places and the
+ * lift from one to the other has nothing to jump between.
+ */
+@Composable
+internal fun CardBody(row: Rewards.Row, cover: Float, modifier: Modifier = Modifier.fillMaxSize()) {
+    val special = row.isSpecial
+    Box(
+        modifier
+            // The hairline belongs to the OPENED face: the cover is artwork to the edge with
+            // nothing drawn over it. It fades in with the reveal rather than popping in at the end.
             .border(1.5.dp, D.Line.copy(alpha = 1f - cover), RoundedCornerShape(CARD_R))
             .clip(RoundedCornerShape(CARD_R))
             .background(D.White),
     ) {
         OpenedFace(row, special)
-
         if (cover > 0f) {
-            Canvas(
-                Modifier.fillMaxSize()
-                    .graphicsLayer {
-                        alpha = cover
-                        compositingStrategy = CompositingStrategy.Offscreen
-                    }
-                    .pointerInput(row.id) {
-                        detectDragGestures(
-                            onDragStart = { at -> path.moveTo(at.x, at.y); strokes++ },
-                            onDragEnd = {
-                                if (!scratched && cells.size >= (GRID * GRID * SCRATCHED_ENOUGH)) {
-                                    scratched = true
-                                    onScratched()
-                                }
-                            },
-                        ) { change, _ ->
-                            path.lineTo(change.position.x, change.position.y)
-                            val col = (change.position.x / size.width * GRID).toInt().coerceIn(0, GRID - 1)
-                            val rowN = (change.position.y / size.height * GRID).toInt().coerceIn(0, GRID - 1)
-                            cells += rowN * GRID + col
-                            strokes++
-                        }
-                    },
-            ) {
-                strokes // read, so the canvas redraws as the path grows
-                val box = size
-                // 522 × 522 — the 174dp card at the Seeker's 3×, so nothing is scaled on screen.
-                with(coverArt) { draw(box) }
-                drawPath(
-                    path, Color.Transparent,
-                    style = Stroke(width = box.minDimension * .22f, cap = StrokeCap.Round,
-                        join = StrokeJoin.Round),
-                    blendMode = BlendMode.Clear,
-                )
-            }
+            androidx.compose.foundation.Image(
+                painterResource(if (special) R.drawable.special else R.drawable.simple),
+                contentDescription = null, contentScale = androidx.compose.ui.layout.ContentScale.FillBounds,
+                modifier = Modifier.fillMaxSize().graphicsLayer { alpha = cover },
+            )
         }
     }
 }
@@ -637,7 +601,7 @@ private fun ScratchCard(row: Rewards.Row, onScratched: () -> Unit) {
  * undesigned. The day the server sends one, the card appears with no further work.
  */
 @Composable
-private fun OpenedFace(row: Rewards.Row, special: Boolean) {
+internal fun OpenedFace(row: Rewards.Row, special: Boolean) {
     val gift = row.gift
     Column(Modifier.fillMaxSize()) {
         Box(Modifier.fillMaxWidth().weight(1f)) {
@@ -703,7 +667,7 @@ private val LOGO = 28.dp
  * `special` flag on its mock row; the server has no such field, so it is read off the `kind` it
  * does send.
  */
-private val Rewards.Row.isSpecial: Boolean
+internal val Rewards.Row.isSpecial: Boolean
     get() = kind == "first_payment" || kind == "referral"
 
 /**
@@ -894,7 +858,7 @@ private fun WeekCard(s: Rewards.Summary, onInfo: () -> Unit) {
             verticalArrangement = Arrangement.SpaceBetween,
         ) {
             Text(
-                if (done >= steps) "Streak complete — ${skr(s.streak)} SKR earned"
+                if (done >= steps) "Streak complete, ${skr(s.streak)} SKR earned"
                 else "${steps - done} more this week for the ${skr(s.streak)} SKR streak",
                 color = D.Black, style = Type.body,
             )
@@ -902,7 +866,7 @@ private fun WeekCard(s: Rewards.Summary, onInfo: () -> Unit) {
             // Plain ink words, not red: nothing was refused by the chain, there is simply
             // nothing left to pay out this week.
             if (s.poolLeft <= 0) {
-                Text("This week's pool is empty — nothing earns until it refills",
+                Text("This week's pool is empty, nothing earns until it refills",
                     color = D.Black, style = Type.caption)
             }
         }
@@ -1221,10 +1185,10 @@ private const val NOTE_FULL =
         "a wallet that is brand new, or you had already earned with that person this month. The " +
         "last two are there because the cheapest way to farm a reward is to pay a wallet you " +
         "just made yourself, over and over. Everything else earns, and the amount is decided " +
-        "the moment the payment settles — not when you open this screen.\n\n" +
+        "the moment the payment settles, not when you open this screen.\n\n" +
         "The weekly pool is the other limit. There is only so much SKR to give out each week " +
         "and everyone draws from the same pot, first come, first served. Once it is empty, " +
-        "payments still go through but earn nothing until the pool refills — and the card " +
+        "payments still go through but earn nothing until the pool refills, and the card " +
         "behind this sheet says so as soon as that happens."
 
 @Composable
@@ -1258,7 +1222,7 @@ private fun StreakSheet(onClose: () -> Unit) {
             Spacer(Modifier.height(24.dp))
             Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
                 InfoRow(
-                    title = "Tap to pay — that's a step",
+                    title = "Tap to pay, that's a step",
                     detail = "Any tap payment that earns a reward fills one.",
                 ) { StepDisc(DiscTone.Paid, 40.dp) }
                 InfoRow(
@@ -1274,7 +1238,11 @@ private fun StreakSheet(onClose: () -> Unit) {
                     // silhouette is not a circle for most of the turn — a round clip would shave
                     // the rim off exactly when the rim is the point. Its [COIN] is the 40 this
                     // row's lead box already is, so it needs no size here either.
-                    SkrCoin()
+                    // Now the token's own picture, not the drawn coin with an "S" typed on it.
+                    Image(
+                        painterResource(R.drawable.skr_token), contentDescription = "SKR",
+                        modifier = Modifier.size(40.dp).clip(CircleShape),
+                    )
                 }
             }
 
@@ -1428,10 +1396,10 @@ private fun MoreWayFace(card: MoreWay, modifier: Modifier, onOpen: () -> Unit) {
 private val TitleAmount = Type.title.figure()
 
 /** How much of the card must go before the rest wipes itself. */
-private const val SCRATCHED_ENOUGH = 0.40f
+internal const val SCRATCHED_ENOUGH = 0.40f
 
 /** The card is sampled this many cells on a side to measure coverage. */
-private const val GRID = 8
+internal const val GRID = 8
 
 /**
  * Every refusal the server can give, said plainly.
@@ -1459,7 +1427,24 @@ internal fun refusalText(why: String): String = when (why) {
     "monthly_cap" -> "This month's cap was reached"
     "campaign_cap" -> "The campaign cap was reached"
     "pool_empty" -> "The pool was empty"
-    "chain_unreachable" -> "Couldn't check the chain — will retry"
+    "chain_unreachable" -> "Couldn't check the chain, will retry"
     "no_payer" -> "We never learned who paid"
     else -> why.replace('_', ' ')
+}
+
+
+/**
+ * What has reached the wallet. There is nothing to press: a card is paid the moment it is
+ * scratched, so this only reports — SKR on its way, SKR already paid — and is absent until there
+ * is something to report.
+ */
+@Composable
+private fun ClaimRow(s: Rewards.Summary, @Suppress("UNUSED_PARAMETER") connected: String?, @Suppress("UNUSED_PARAMETER") onDone: () -> Unit) {
+    if (s.claimable <= 0 && s.claiming <= 0 && s.paid <= 0) return
+    Spacer(Modifier.height(Space.lead))
+    val parts = buildList {
+        if (s.claimable + s.claiming > 0) add("${skr(s.claimable + s.claiming)} SKR on its way to your wallet")
+        if (s.paid > 0) add("${skr(s.paid)} SKR sent to your wallet")
+    }
+    Text(parts.joinToString(" · "), color = D.Quiet, style = Type.caption)
 }

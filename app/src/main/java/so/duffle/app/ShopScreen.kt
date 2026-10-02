@@ -7,6 +7,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
@@ -354,7 +355,6 @@ internal fun ShopSection(
     Column(Modifier.fillMaxSize()) {
         // Pinned above the list, which scrolls under it, so it is reachable from any row.
         if (searchable) {
-            Spacer(Modifier.height(8.dp))
             SearchField(query.value) {
                 query.value = it
                 // A shorter list under an old scroll offset would open part-way down it.
@@ -370,11 +370,13 @@ internal fun ShopSection(
                     modifier = Modifier.fillMaxWidth().padding(vertical = 32.dp),
                 )
             }
-            shown.forEachIndexed { i, s ->
-                // A hairline BETWEEN rows, as `divide-y` draws it: none above the first, none
-                // below the last.
-                if (i > 0) RowLine()
-                ServiceRow(s) { onPick(s.lead) }
+            // Two cards to a row: the company is the thing being sold, so it gets a tile of its own
+            // rather than a line in a list.
+            shown.chunked(2).forEach { pair ->
+                Row(Modifier.fillMaxWidth().padding(bottom = 18.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                    pair.forEach { s -> ServiceCard(s, Modifier.weight(1f)) { onPick(s.lead) } }
+                    if (pair.size == 1) Spacer(Modifier.weight(1f))
+                }
             }
             Spacer(Modifier.height(32.dp))
         }
@@ -411,7 +413,7 @@ private object ShopQueryHold {
  * type, so the Search key on the keyboard only has to put the keyboard away.
  */
 @Composable
-private fun SearchField(value: String, onChange: (String) -> Unit) {
+internal fun SearchField(value: String, hint: String = "Search", onChange: (String) -> Unit) {
     val focus = LocalFocusManager.current
     val shape = RoundedCornerShape(16.dp)
     Row(
@@ -422,7 +424,7 @@ private fun SearchField(value: String, onChange: (String) -> Unit) {
         HiIcon(Hi.Search, D.Quiet, 20.dp)
         Spacer(Modifier.width(8.dp))
         Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
-            if (value.isEmpty()) Text("Search", color = D.Quiet, style = Type.body, maxLines = 1)
+            if (value.isEmpty()) Text(hint, color = D.Quiet, style = Type.body, maxLines = 1)
             BasicTextField(
                 value = value,
                 onValueChange = onChange,
@@ -444,38 +446,59 @@ private fun SearchField(value: String, onChange: (String) -> Unit) {
 }
 
 /**
- * §3.1's row: a 48 tile, the name, one line of what it is for. The whole row is the tap target.
- *
- * No chevron and no link icon (§3.1). The row's own press scale is the affordance; an arrow on
- * every one of sixty-odd rows was decoration that said nothing the tap did not already say.
+ * A company on the More page: its logo on the brand's ground, the name, one line of what it is
+ * for, and the range of amounts it sells. No rating — nothing here is reviewed.
  */
 @Composable
-private fun ServiceRow(service: Shop.Service, onOpen: () -> Unit) {
+private fun ServiceCard(service: Shop.Service, modifier: Modifier, onOpen: () -> Unit) {
     val press = remember { MutableInteractionSource() }
-    Row(
-        Modifier.then(PressScale(press)).fillMaxWidth().heightIn(min = 48.dp)
-            .clickable(press, indication = null, onClick = onOpen)
-            .padding(vertical = Space.row),
-        verticalAlignment = Alignment.CenterVertically,
+    val p = service.lead
+    val art = rememberLogoArt(p.artUrl)
+    val shape = RoundedCornerShape(18.dp)
+    Column(
+        modifier.then(PressScale(press)).clickable(press, indication = null, onClick = onOpen),
     ) {
-        BrandTile(service.lead, service.name)
-        Spacer(Modifier.width(Space.inline))
-        Column(Modifier.weight(1f)) {
-            Text(
-                service.name, color = D.Black, style = Type.body,
-                maxLines = 1, overflow = TextOverflow.Ellipsis,
-            )
-            // One line of what it is for — §3.4's curated words, so nothing until the server
-            // has them. The row is a logo and a name until then rather than a guess.
-            service.lead.guide.line?.let {
-                Spacer(Modifier.height(Space.tight))
-                Text(
-                    it, color = D.Quiet, style = Type.caption,
-                    maxLines = 1, overflow = TextOverflow.Ellipsis,
-                )
+        Box(
+            Modifier.fillMaxWidth().aspectRatio(1.25f).clip(shape)
+                .background(logoGround(art, brandColour(p.guide.brandHex)))
+                .border(1.5.dp, D.Line, shape).padding(22.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (art != null) {
+                Image(art.logo, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
+            } else {
+                Text(service.name.take(1).uppercase(), color = D.Black, style = Type.title)
             }
         }
+        Spacer(Modifier.height(10.dp))
+        Text(service.name, color = D.Black, style = Type.heading, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        serviceLine(service)?.let {
+            Spacer(Modifier.height(Space.tight))
+            Text(it, color = D.Quiet, style = Type.caption, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        }
+        amountRange(service)?.let {
+            Spacer(Modifier.height(Space.tight))
+            Text(it, color = D.Black, style = Type.caption, maxLines = 1)
+        }
     }
+}
+
+/** The curated line when the server has one, else the catalogue's own categories, plainly. */
+private fun serviceLine(s: Shop.Service): String? =
+    s.lead.guide.line ?: s.lead.categories.takeIf { it.isNotEmpty() }
+        ?.joinToString(" · ") { c -> c.replace('_', ' ').replaceFirstChar { it.uppercase() } }
+
+/** "₹100 – ₹10,000": the smallest and largest face value across the brand's cards, or null. */
+private fun amountRange(s: Shop.Service): String? {
+    val cur = s.lead.currency
+    val nums = s.cards.map { it.product }.filter { it.currency == cur }.flatMap { pr ->
+        pr.values.mapNotNull { it.toBigDecimalOrNull() }.ifEmpty { pr.packages.mapNotNull { it.amount.toBigDecimal() } }
+    }
+    if (nums.isEmpty()) return null
+    val lo = nums.min(); val hi = nums.max()
+    val a = faceValue(lo, cur) ?: return null
+    if (lo.compareTo(hi) == 0) return a
+    return "$a – ${faceValue(hi, cur) ?: return a}"
 }
 
 /** §3.1's logo: a 48 tile, corner 12, on the brand's ground, hairline outline, 4 of padding. */

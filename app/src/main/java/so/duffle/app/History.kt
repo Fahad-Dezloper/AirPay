@@ -19,7 +19,7 @@ import java.time.ZoneId
  */
 object History {
 
-    enum class Kind { SENT, RECEIVED, SHOP }
+    enum class Kind { SENT, RECEIVED, SHOP, REWARD }
 
     /** Who the other side is, which decides what the row's icon shows. */
     enum class Who { PERSON, SHOP, ADDRESS }
@@ -96,7 +96,7 @@ object History {
         /** What kind of expense. Null for a payment to an address nobody has filed yet. */
         val spend: Spend? = null,
     ) {
-        val incoming get() = kind == Kind.RECEIVED
+        val incoming get() = kind == Kind.RECEIVED || kind == Kind.REWARD
         val month: YearMonth get() = monthOf(at)
     }
 
@@ -112,6 +112,9 @@ object History {
         known: (String) -> Boolean = { false },
         /** The category the user filed this payment under, by signature. */
         filed: (String?) -> Spend? = { null },
+        /** The server's reward rows and payouts. Both live: a referral that pays shows here at once. */
+        rewards: List<Rewards.Row> = emptyList(),
+        payouts: List<Rewards.Payout> = emptyList(),
     ): List<Txn> {
         val out = mutableListOf<Txn>()
 
@@ -163,7 +166,7 @@ object History {
                     // Bitrefill returns no redemption_info for a phone product, correctly.
                     o.delivered && !o.recipient.isNullOrBlank() -> "Credited to ${o.recipient}"
                     o.delivered -> "Delivered"
-                    o.failed -> "Didn't go through — ${o.status}"
+                    o.failed -> "Didn't go through, ${o.status}"
                     else -> "On its way"
                 },
                 code = o.code,
@@ -182,7 +185,45 @@ object History {
             )
         }
 
+        // Rewards, once they have been SCRATCHED — that is when somebody has them, so an unopened
+        // card is not a transaction yet. A reversed one was taken back, and a paid one is shown by
+        // its payout below, not twice. Always SETTLED: a reward is not a purchase waiting on a
+        // code, so it never carries the in-progress clock or the "getting your code" line that
+        // belong to a shop order.
+        for (r in rewards.filter { it.revealed && it.state != "reversed" && it.state != "paid" }) {
+            out += Txn(
+                kind = Kind.REWARD,
+                title = rewardTitle(r.kind),
+                category = "Reward",
+                amount = "${r.skr} SKR",
+                at = r.at,
+                signature = null,
+                who = Who.SHOP,
+                state = State.SETTLED,
+            )
+        }
+        for (p in payouts.filter { it.state != "failed" }) {
+            out += Txn(
+                kind = Kind.REWARD,
+                title = "SKR sent to your wallet",
+                category = "Payout",
+                amount = "${p.skr} SKR",
+                at = p.at,
+                signature = p.signature,
+                who = Who.SHOP,
+                state = if (p.state == "paid" || p.state == "confirmed") State.SETTLED else State.CONFIRMING,
+            )
+        }
+
         return out.sortedByDescending { it.at }
+    }
+
+    internal fun rewardTitle(kind: String) = when (kind) {
+        "referral" -> "Referral reward"
+        "first_payment" -> "First payment reward"
+        "signup" -> "Welcome bonus"
+        "offer" -> "Offer reward"
+        else -> "Tap reward"
     }
 
     /**

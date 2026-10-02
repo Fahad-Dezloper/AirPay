@@ -99,22 +99,6 @@ object Alerts {
     }
 
     /**
-     * When an offer first turned up on this phone.
-     *
-     * An offer carries no date of its own — the server publishes it and it is simply there —
-     * so without this it would have to be stamped "now" on every build, sit permanently at the
-     * top and never stop counting as unread. Recorded once, the first time it is seen.
-     */
-    fun firstSeen(context: Context, id: String): Long {
-        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        val key = "offer_$id"
-        prefs.getLong(key, 0L).takeIf { it > 0 }?.let { return it }
-        val now = System.currentTimeMillis()
-        prefs.edit().putLong(key, now).apply()
-        return now
-    }
-
-    /**
      * Builds the list, newest first.
      *
      * `name` turns an address into whatever the rest of the app calls that person, so a line
@@ -128,7 +112,6 @@ object Alerts {
         orders: List<Orders.Order>,
         offers: List<Rewards.Offer>,
         name: (String) -> String,
-        offerAt: (String) -> Long,
     ): List<Alert> {
         val out = mutableListOf<Alert>()
 
@@ -142,7 +125,7 @@ object Alerts {
                     "Waiting for you", i.readAt, i.request.recipient,
                     who = who, seed = i.request.recipient)
                 i.withdrawn -> out += Alert(Kind.WITHDRAWN, "$who took back a request",
-                    "$money — nothing is owed", i.readAt, i.request.recipient,
+                    "$money, nothing is owed", i.readAt, i.request.recipient,
                     who = who, seed = i.request.recipient)
             }
         }
@@ -158,7 +141,7 @@ object Alerts {
                     "${e.rejectedBy} declined · nothing was paid", e.createdAt, e.peer,
                     who = who, seed = e.peer, amount = money)
                 e.pending -> out += Alert(Kind.LATER, "${e.deferredBy} will pay later",
-                    "$money — still watching for it", e.createdAt, e.peer,
+                    "$money, still watching for it", e.createdAt, e.peer,
                     who = who, seed = e.peer)
             }
         }
@@ -176,14 +159,17 @@ object Alerts {
                 o.delivered -> out += Alert(Kind.ORDER, "${o.name} delivered",
                     "${o.value} · paid ${o.paid}", o.at, category = o.category, done = true)
                 else -> out += Alert(Kind.ORDER, "${o.name} didn't go through",
-                    "Paid ${o.paid} — ${o.status}", o.at, category = o.category)
+                    "Paid ${o.paid}, ${o.status}", o.at, category = o.category)
             }
         }
 
-        // Only ones that can still be acted on. An offer already claimed, or spent, is history.
-        for (o in offers.filter { it.available }) {
+        // Only ones that can still be acted on — and only ones the person has been TOLD about. An
+        // offer that is live but has not been pushed yet stays off this page: they arrive one at a
+        // time, hours apart, not all at once the moment somebody signs up. Stamped with the time
+        // they were told, which is also what keeps them from counting as unread forever.
+        for (o in offers.filter { it.available && it.notifiedAt > 0 }) {
             val from = if (o.funder == "duffle") "from AirPay" else "from ${o.funder}"
-            out += Alert(Kind.OFFER, o.what, "${o.reward} SKR · $from", offerAt(o.id),
+            out += Alert(Kind.OFFER, o.what, "${o.reward} SKR · $from", o.notifiedAt,
                 who = o.app, seed = o.funder.ifBlank { o.app }.takeIf { it.isNotBlank() },
                 iconUrl = o.icon)
         }

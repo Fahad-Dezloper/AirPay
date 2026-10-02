@@ -67,8 +67,16 @@ object Push {
         }
     }
 
+    /**
+     * Whether a notification posted now would be shown.
+     *
+     * Asks the system rather than checking the POST_NOTIFICATIONS permission. That permission only
+     * exists from Android 13; on Android 12 and older the check answers "denied" for a permission
+     * the phone has never heard of, which silently suppressed every notification on those phones —
+     * the people most likely to be handed a friend's old handset to try the app on.
+     */
     fun canNotify(context: Context) =
-        context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+        androidx.core.app.NotificationManagerCompat.from(context).areNotificationsEnabled()
 
     fun showPaid(context: Context, amount: String, reference: String, symbol: String = "SOL") {
         notify(
@@ -76,6 +84,17 @@ object Push {
             title = if (amount.isNotBlank()) "Received $amount $symbol" else "Payment received",
             // Worded carefully: the app confirms on-chain when opened, not on the push's word.
             text = "Tap to confirm it on-chain.",
+            open = Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+        )
+    }
+
+    /** Money moved in one of our wallets, whoever moved it. */
+    fun showWallet(context: Context, direction: String, amount: String, symbol: String, signature: String) {
+        val incoming = direction == "in"
+        notify(
+            context, CHANNEL_PAID, "Payments", tapId("wallet$signature"),
+            title = if (incoming) "Received $amount $symbol" else "Sent $amount $symbol",
+            text = "Tap to see your balance.",
             open = Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
         )
     }
@@ -135,6 +154,16 @@ object Push {
             text = if (amount.isBlank()) "Still waiting for it." else "$amount $symbol · still waiting for it.",
             open = Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
             publicText = "A request is pending",
+        )
+    }
+
+    /** A reward-side notification. The amount is not on the lock screen, only that there is news. */
+    fun showProgress(context: Context, title: String, text: String, key: String) {
+        notify(
+            context, CHANNEL_PAID, "Payments", tapId("progress:$key"),
+            title = title, text = text,
+            open = Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            publicText = "News about your rewards",
         )
     }
 
@@ -198,6 +227,12 @@ class TapMessagingService : FirebaseMessagingService() {
                 val ref = d["reference"]?.takeIf { PayRequest.isBase58Address(it) } ?: return
                 Push.showPaid(this, d["amount"].orEmpty(), ref, d["symbol"]?.takeIf { it.isNotBlank() && it.length <= 12 } ?: "SOL")
             }
+            "wallet" -> {
+                val dir = d["direction"]?.takeIf { it == "in" || it == "out" } ?: return
+                val amount = d["amount"]?.takeIf { it.length in 1..24 } ?: return
+                val sym = d["symbol"]?.takeIf { it.isNotBlank() && it.length <= 12 } ?: "SOL"
+                Push.showWallet(this, dir, amount, sym, d["signature"].orEmpty())
+            }
             // A request made in someone's popup after the phones parted. Validated like
             // anything off the radio — a push is no more trustworthy than a tap.
             "request" -> {
@@ -245,6 +280,13 @@ class TapMessagingService : FirebaseMessagingService() {
                 val fresh = Messages(this).add(Messages.Note(from, body, at, mine = false,
                     id = d["id"]?.toLongOrNull() ?: 0L))
                 if (fresh) Push.showMessage(this, d["label"].orEmpty(), body)
+            }
+            // Rewards, offers, referrals and payouts. Same words as the live stream, so a person
+            // sees one story whether the app was open or not.
+            "reward", "offer", "referral", "payout" -> {
+                val p = Progress.from(d["type"].orEmpty()) { d[it] } ?: return
+                val (title, text) = p.words() ?: return
+                Push.showProgress(this, title, text, p.kind + p.state)
             }
             // An introduction relayed because the phones parted before HELLO could cross.
             "tap" -> {

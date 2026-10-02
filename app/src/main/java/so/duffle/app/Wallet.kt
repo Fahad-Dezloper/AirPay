@@ -179,13 +179,17 @@ class Wallet(private val activity: ComponentActivity) {
         // A wallet linked through the picker is reached by name, because an untargeted intent
         // would be routed to Seeker Wallet by the Seeker's own default — which would then be
         // handed a session token issued by a different app, and refuse it.
-        linked.selected()?.takeIf { it.pkg != null && it.token != null }?.let { w ->
-            return when (val r = WalletLink.sign(w.pkg!!, w.token!!, unsignedTx) { activity.startActivity(it) }) {
+        linked.selected()?.takeIf { it.token != null }?.let { w ->
+            val pkg = WalletLink.resolve(activity, w) ?: return@let
+            return when (val r = WalletLink.sign(
+                pkg, w.token!!, unsignedTx,
+                onToken = { t -> linked.add(w.address, t, w.name, w.uri, w.pkg) },
+            ) { activity.startActivity(it) }) {
                 is WalletLink.Signing.Signed -> SendOutcome.Signed(r.tx)
                 is WalletLink.Signing.Failed -> SendOutcome.Failed(r.why)
                 WalletLink.Signing.NeedsReconnect -> {
                     linked.clearToken(w.address)
-                    SendOutcome.Failed("${w.name} needs linking again — open Wallets and add it.")
+                    SendOutcome.Failed("${w.name} needs linking again. Open Wallets and add it.")
                 }
             }
         }
@@ -329,7 +333,16 @@ class Wallet(private val activity: ComponentActivity) {
      */
     suspend fun signMessage(address: String, message: ByteArray): ByteArray? = try {
         val addressBytes = Base58.decode(address)
-        when (val r = adapter.transact(sender) {
+        // A wallet linked through the picker is reached by name; an untargeted intent would be
+        // routed to Seeker Wallet by the Seeker's own default and refuse another wallet's account.
+        val picked = linked.selected()?.takeIf { it.address == address && it.token != null }
+        val pkg = picked?.let { WalletLink.resolve(activity, it) }
+        if (picked != null && pkg != null) {
+            WalletLink.signMessage(
+                pkg, picked.token!!, addressBytes, message,
+                onToken = { t -> linked.add(picked.address, t, picked.name, picked.uri, picked.pkg) },
+            ) { activity.startActivity(it) }
+        } else when (val r = adapter.transact(sender) {
             signMessagesDetached(arrayOf(message), arrayOf(addressBytes))
         }) {
             is TransactionResult.Success -> {

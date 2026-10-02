@@ -51,6 +51,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.res.painterResource
+import coil.compose.AsyncImage
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
@@ -137,7 +138,7 @@ internal fun OffersTab(
     var referral by remember { mutableStateOf<Referrals.Summary?>(null) }
     var loading by remember { mutableStateOf(true) }
 
-    LaunchedEffect(connected, reloadKey) {
+    LaunchedEffect(connected, reloadKey, Session.version, Live.tick) {
         loading = true
         val me = connected
         if (me == null) {
@@ -177,7 +178,7 @@ internal fun OffersTab(
         if (!isSeeker) {
             // Said once, at the top, rather than repeated as a refusal on every row.
             Spacer(Modifier.height(Space.tight))
-            Text("Offers are for Seeker owners — this wallet holds no Genesis Token.",
+            Text("Offers are for Seeker owners, this wallet holds no Genesis Token.",
                 color = D.Quiet, style = Type.caption)
         }
         Spacer(Modifier.height(Space.lead))
@@ -198,7 +199,8 @@ internal fun OffersTab(
                 modifier = Modifier.padding(top = Space.inline))
         }
         if (loading && offers.isEmpty()) {
-            Text("Checking…", color = D.Quiet, style = Type.caption)
+            Spacer(Modifier.height(Space.lead))
+            OffersSkeleton()
         }
 
         // Only when there is at least one (§1.3). Both endings live here: paid, and the window
@@ -542,28 +544,41 @@ private fun ReferralOfferRow(s: Referrals.Summary, first: Boolean, onOpen: () ->
 }
 
 /**
- * An offer's face: the app's icon, round and cropped to fill — except that **the server does not
- * send one**.
+ * An offer's face: the app's icon, round and cropped to fill.
  *
- * `Rewards.Offer` (Rewards.kt, `/v1/offers`) carries `app` and `funder` and no icon field, while
- * the sandbox's `Offer` type has an optional `icon`. §1.2 says the app must take icons from the
- * server, so this is a gap in the server and the model, not something to paper over with a
- * hard-coded name→asset map: a map would be right for the five sample apps and wrong for the
- * sixth, and it would read as working.
+ * The icon comes from the server (`icon` on `/v1/offers`, an https address stored with the offer),
+ * not from a name→asset map in the app: a map would be right for the apps it knew and wrong for
+ * the next one, while looking like it worked. It is drawn OVER the app's initial on its own
+ * colour, so the row is never blank — the initial shows while the picture loads and stays if it
+ * cannot (offline, a dead link, an offer with no icon yet).
  *
- * So every row takes §1.4's no-icon case: the app's initial on its `faceColour`, through
- * [FaceDisc]. Seeded on `funder` — the app's stable id — rather than on `app`, for the reason
- * `faceColour` is seeded on an address and never a name: a display name can change and the id
- * does not, so an app keeps its colour across a rename.
+ * AirPay's own offers (the app is AirPay) carry AirPay's own mark — the rings the referral row
+ * draws — because there is no outside logo to fetch for ourselves. NOT keyed on `funder`: that
+ * is who pays the reward, and AirPay pays for the Jupiter offer too.
  *
  * [OfferSheet] draws this too, at 48 (ui/PORT-2026-10-02.md §6.1). One function rather than two,
- * because the row and the sheet showing one app in two different colours would be a bug the
- * sandbox cannot catch — it has icons for all five of its sample apps.
+ * so the row and the sheet cannot show one app two ways.
  */
 @Composable
 private fun OfferFace(offer: Rewards.Offer, size: Dp = 40.dp) {
-    val seed = offer.funder.ifBlank { offer.app }.takeIf { it.isNotBlank() }
-    FaceDisc(offer.app, seed, size)
+    if (offer.app.equals("AirPay", ignoreCase = true)) {
+        Box(Modifier.size(size), contentAlignment = Alignment.Center) {
+            MarkCanvas(Mark.Rings, size * 0.8f, tint = D.Blue)
+        }
+        return
+    }
+    // Seeded on the app, not on `funder`: that is who PAYS the reward, which is AirPay for every
+    // launch offer, so seeding on it gave every app the same colour.
+    val seed = offer.app.takeIf { it.isNotBlank() }
+    Box(Modifier.size(size)) {
+        FaceDisc(offer.app, seed, size)
+        offer.icon?.takeIf { it.startsWith("https://") }?.let { url ->
+            AsyncImage(
+                model = url, contentDescription = null, contentScale = ContentScale.Crop,
+                modifier = Modifier.size(size).clip(CircleShape),
+            )
+        }
+    }
 }
 
 // ---------------------------------------------------------------------- §6 the offer sheet
@@ -789,7 +804,7 @@ internal fun OfferSheet(
             // switching mid-phrase reads as a rendering bug.
             OfferRule("Time limit", "${offer.windowHours} hours")
             OfferRuleLine()
-            OfferRule("Counts from", "when you claim — not before")
+            OfferRule("Counts from", "when you claim, not before")
         }
 
         // ---- 4. the button, which is also the state

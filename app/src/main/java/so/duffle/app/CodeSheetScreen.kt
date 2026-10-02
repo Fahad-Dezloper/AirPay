@@ -414,7 +414,7 @@ private fun viewOf(order: Orders.Order, r: Shop.Redemption?, charged: Boolean): 
     )
     else -> CodeView(
         CodeTone.Paid, "Delivered",
-        "This one returns no code — the value went straight to the recipient.",
+        "This one returns no code, the value went straight to the recipient.",
     )
 }
 

@@ -41,6 +41,20 @@ android {
         // which switches Pyth off and prices from Jupiter alone — see Pyth.configured.
         buildConfigField("String", "PYTH_API_KEY", local("pyth.apiKey"))
     }
+    signingConfigs {
+        // The key a build for friends is signed with: its own, generated once by share.sh into
+        // secrets/ (never committed) and described in local.properties. Not the debug key, which
+        // is the same on every machine and so proves nothing about who built an APK.
+        create("share") {
+            val f = localProps.getProperty("share.storeFile")
+            if (f != null && rootProject.file(f).exists()) {
+                storeFile = rootProject.file(f)
+                storePassword = localProps.getProperty("share.storePassword")
+                keyAlias = localProps.getProperty("share.keyAlias")
+                keyPassword = localProps.getProperty("share.keyPassword")
+            }
+        }
+    }
     buildTypes {
         getByName("debug") { buildConfigField("boolean", "PREVIEWS", "true") }
         getByName("release") { buildConfigField("boolean", "PREVIEWS", "false") }
@@ -48,6 +62,21 @@ android {
         // signed with the debug key so it installs over the debug build, and with the adb preview
         // shortcuts kept on. Debuggable builds run Compose several times slower; measuring
         // smoothness on one measures the debugger, not the app.
+        // The build that goes to other people: release in every way that matters — not debuggable,
+        // no adb preview shortcuts — signed with its own key. It talks to the PUBLIC server address
+        // handed in as -Pshare.server=…, so a friend's phone is not looking for this Mac's Wi-Fi
+        // address. The Pyth key is blanked: an APK can be unpacked by anyone who has it, and with
+        // no key the app prices from Jupiter alone (see Pyth.configured).
+        create("share") {
+            initWith(getByName("release"))
+            matchingFallbacks += listOf("release")
+            signingConfig = signingConfigs.getByName("share")
+            isDebuggable = false
+            buildConfigField("boolean", "PREVIEWS", "false")
+            val server = (project.findProperty("share.server") ?: "").toString().replace("\"", "")
+            buildConfigField("String", "TAP_SERVER_URL", "\"$server\"")
+            buildConfigField("String", "PYTH_API_KEY", "\"\"")
+        }
         create("benchmark") {
             initWith(getByName("release"))
             signingConfig = signingConfigs.getByName("debug")

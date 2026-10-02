@@ -24,10 +24,10 @@ data class Diagnostics(
     /** The single blocking problem, if there is one. */
     val blocker: String? get() = when {
         !nfcPresent -> "This phone has no NFC at all."
-        !nfcEnabled -> "NFC is switched off — turn it on in Settings."
+        !nfcEnabled -> "NFC is switched off. Turn it on in Settings."
         !hceFeature -> "This phone cannot emulate a card (no HCE). It can PAY, but cannot be paid."
         !serviceRegistered -> "Card service is not registered with Android."
-        !aidRegistered -> "Our AID is not registered — Android is not routing taps to us."
+        !aidRegistered -> "Our AID is not registered, Android is not routing taps to us."
         else -> null
     }
 

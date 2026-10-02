@@ -203,7 +203,7 @@ object Chain {
         blockhashOverride: String? = null,
         programOverride: String? = null,
         recipientAccountExists: Boolean? = null,
-        /** The shop pays in real USDC; everything else is devnet. See [post]. */
+        /** Mainnet throughout. See [post]. */
     ): Built {
         if (!PayRequest.isBase58Address(payer)) return Built.Bad("Your wallet address looks wrong.")
         if (!PayRequest.isBase58Address(recipient)) return Built.Bad("That destination address is not valid.")
@@ -638,8 +638,11 @@ object Chain {
             readTimeout = 10_000
             setRequestProperty("Content-Type", "application/json")
         }
+        // Our own RPC proxy needs the session; anyone else's endpoint must never see it.
+        if (ServerClient.enabled && url.startsWith(ServerClient.rpcUrl.substringBefore("/v1/rpc"))) Session.apply(c)
         c.outputStream.use { it.write(json.toByteArray()) }
         val code = c.responseCode
+        if (code == 401 && url.contains("/v1/rpc")) Session.stale()
         rateLimited = code == 429
         if (code == 429) android.util.Log.i("TapChain", "RPC rate limited (429)")
         if (code == 200) c.inputStream.bufferedReader().use { it.readText() } else null
@@ -648,7 +651,7 @@ object Chain {
         // it returned null, which every caller reads as "no answer from the node" — so a payment
         // that had already confirmed looked like one that would not confirm, for a whole minute.
         if (e is android.os.NetworkOnMainThreadException) {
-            android.util.Log.e("TapChain", "RPC attempted on the main thread — this is a bug", e)
+            android.util.Log.e("TapChain", "RPC attempted on the main thread, this is a bug", e)
         } else {
             android.util.Log.i("TapChain", "RPC to ${url.substringAfter("//").substringBefore("/")} failed: ${e.message}")
         }

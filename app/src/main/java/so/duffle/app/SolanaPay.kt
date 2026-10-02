@@ -57,7 +57,7 @@ object SolanaPay {
         val body = text.substring("solana:".length)
         val target = body.substringBefore('?')
         if (target.startsWith("http", ignoreCase = true)) {
-            return Scanned.Refused("That's a transaction request — a link that builds a payment on a server. AirPay only pays codes it can read itself.")
+            return Scanned.Refused("That's a transaction request, a link that builds a payment on a server. AirPay only pays codes it can read itself.")
         }
         if (!PayRequest.isBase58Address(target)) return Scanned.Unknown
 

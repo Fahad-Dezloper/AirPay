@@ -159,11 +159,18 @@ private val END_GAP = 8.dp
 @Composable
 internal fun AlertsTab(list: List<Alerts.Alert>, seenAt: Long, onOpen: (Alerts.Alert) -> Unit) {
     if (list.isEmpty()) {
-        Column(Modifier.fillMaxWidth().padding(top = Space.section)) {
-            Text("Nothing new", color = D.Black, style = Type.body)
+        // Nothing to list, so nothing to align a list to: the message sits in the middle of the
+        // screen. The bottom padding is the title row above it, so it is the SCREEN's middle and
+        // not the middle of what is left under the title.
+        Column(
+            Modifier.fillMaxSize().padding(horizontal = Space.section).padding(bottom = 96.dp),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text("Nothing new", color = D.Black, style = Type.body, textAlign = TextAlign.Center)
             Spacer(Modifier.height(Space.tight))
-            Text("Requests, replies, messages and anything you've bought show up here.",
-                color = D.Quiet, style = Type.caption)
+            Text("Requests, replies, messages, new offers and anything you've bought show up here.",
+                color = D.Quiet, style = Type.caption, textAlign = TextAlign.Center)
         }
         return
     }

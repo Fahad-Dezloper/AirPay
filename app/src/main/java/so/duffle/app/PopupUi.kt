@@ -1687,7 +1687,7 @@ private fun WaitingBody(label: String, amount: String, symbol: String, deferred:
         Spacer(Modifier.height(Space.tight))
         Text(
             if (deferred) "$they will pay later. You will be notified when they do."
-            else "From $them. We are watching for it — you can close this.",
+            else "From $them. We are watching for it, you can close this.",
             color = D.Quiet, style = Type.caption, textAlign = TextAlign.Center,
             // `mx-auto max-w-xs`, like every other centred state: the line wraps before it runs
             // the full width of the sheet, so a two-line note reads as one block.

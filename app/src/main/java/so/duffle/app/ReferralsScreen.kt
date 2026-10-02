@@ -180,7 +180,7 @@ internal fun ReferSheet(onClose: () -> Unit, myName: String? = null) {
 
     var summary by remember { mutableStateOf<Referrals.Summary?>(null) }
     var loading by remember { mutableStateOf(true) }
-    LaunchedEffect(address) {
+    LaunchedEffect(address, Session.version, Live.tick) {
         loading = true
         summary = address?.let { Referrals.summary(it) }
         loading = false
@@ -359,10 +359,12 @@ private fun ReferStack(
                         "Connect a wallet",
                         "Your code belongs to a wallet, so there is nothing to show until one is connected.",
                     )
+                    s == null && !loading && !Session.valid(connected) ->
+                        SignInNeeded("see your referral code")
+                    s == null && loading -> ReferralSkeleton()
                     s == null -> Blank(
-                        if (loading) "Checking…" else "Can't reach the server",
-                        if (loading) null
-                        else "Your code is made by the server, so this screen can't show one right now.",
+                        "Can't reach the server",
+                        "Your code is made by the server, so this screen can't show one right now.",
                     )
                     else -> ReferBody(
                         s = s,
@@ -857,7 +859,7 @@ private fun HowItWorksBody(theirReward: Int, reward: Int, onClose: () -> Unit) {
         },
         HowStep(
             D.Blue, "They enter it in AirPay",
-            "Before their first payment — a code is an invitation, not a receipt.",
+            "Before their first payment, a code is an invitation, not a receipt.",
         ) {
             // AirPay's own mark. §6: there is no logo symbol yet, so this is the wordmark's "A"
             // in the logo face — the same thing the sandbox shows, rather than a logo invented
@@ -1006,7 +1008,7 @@ internal fun ReferralsTab(
     var query by rememberSaveable { mutableStateOf("") }
     val clipboard = LocalClipboardManager.current
 
-    LaunchedEffect(connected, refresh) {
+    LaunchedEffect(connected, refresh, Session.version, Live.tick) {
         loading = true
         summary = connected?.let { Referrals.summary(it) }
         loading = false
@@ -1021,11 +1023,18 @@ internal fun ReferralsTab(
             return@Column
         }
         val s = summary
+        if (s == null && !loading && !Session.valid(connected)) {
+            SignInNeeded("see your referral code")
+            return@Column
+        }
+        if (s == null && loading) {
+            ReferralSkeleton()
+            return@Column
+        }
         if (s == null) {
             LegacyBlank(
-                if (loading) "Checking…" else "Can't reach the server",
-                if (loading) null
-                else "Your code is made by the server, so this screen can't show one right now.",
+                "Can't reach the server",
+                "Your code is made by the server, so this screen can't show one right now.",
             )
             return@Column
         }
@@ -1038,7 +1047,7 @@ internal fun ReferralsTab(
         // that can be farmed, and on the blue it could only ever have been the smallest line on
         // the screen — so it is the first thing under the card instead.
         Spacer(Modifier.height(Space.row))
-        Text("Paid when their first tap lands — not when they join.",
+        Text("Paid when their first tap lands, not when they join.",
             color = D.Black, style = Type.body)
         Spacer(Modifier.height(Space.tight))
         // An amount inside a sentence, so it stays in the sentence's face — only the figure
@@ -1290,7 +1299,7 @@ private fun InvitedRow(p: Referrals.Person, reward: Int, first: Boolean) {
             Text(skr(reward, sign = true), color = D.SuccessInk, style = FigureBody)
         } else {
             // An em dash reads as silence, so it says what it means out loud.
-            Text("—", color = D.Quiet, style = Type.body,
+            Text("-", color = D.Quiet, style = Type.body,
                 modifier = Modifier.semantics { contentDescription = "nothing yet" })
         }
     }
@@ -1364,7 +1373,7 @@ internal fun HowToReferSheet(s: Referrals.Summary, onShare: () -> Unit, onClose:
         Step(1, "Send them your code", "It is on the screen behind this, ready to share.",
              artOnLeft = false)
         Step(2, "They enter it in AirPay",
-             "Before their first payment — a code is an invitation, not a receipt.",
+             "Before their first payment, a code is an invitation, not a receipt.",
              artOnLeft = true)
         Step(3, "They pay someone by tapping",
              "They earn ${skr(s.theirReward)} SKR. You earn ${skr(s.reward)}.", artOnLeft = false)

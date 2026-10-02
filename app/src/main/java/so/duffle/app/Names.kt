@@ -1,6 +1,9 @@
 package so.duffle.app
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.math.BigInteger
@@ -121,6 +124,74 @@ object Names {
         // because only a cache miss reaches here.
         android.util.Log.i("Names", "${address.take(6)}… → $answer")
         return answer
+    }
+
+    /** What typing a name into "Pay anyone" came to. */
+    sealed interface Resolved {
+        data class Found(val address: String, val name: String) : Resolved
+        /** Asked, and nobody owns it (or it has expired). */
+        data object None : Resolved
+        data object Unreachable : Resolved
+        /** Resolved to something that is not an ordinary wallet, so money must not be sent to it. */
+        data object Unsafe : Resolved
+    }
+
+    /**
+     * The wallet that owns `name.skr` or `name.sol` — the other direction from [of].
+     *
+     * The name account is derived from the name alone, so nothing here trusts anyone's word for
+     * who owns what; the owner is read off the chain. The owner must also be an ordinary wallet:
+     * a **wrapped** domain is owned by a program's escrow, and sending money there would lose it,
+     * so it is refused rather than paid.
+     */
+    suspend fun addressOf(raw: String): Resolved = withContext(Dispatchers.IO) {
+        val text = raw.trim().lowercase()
+        val tld = Tld.entries.firstOrNull { text.endsWith(it.suffix) } ?: return@withContext Resolved.None
+        val label = text.removeSuffix(tld.suffix)
+        if (label.isEmpty() || label.length > 63 || !label.all { it.isLetterOrDigit() || it == '-' || it == '_' }) {
+            return@withContext Resolved.None
+        }
+        val parent = if (tld == Tld.SKR) SKR_TLD else SOL_TLD
+        val pda = Pda.find(listOf(hash(tld.prefix, label), ByteArray(32), Base58.decode(parent)), tld.program)
+        val data = accountData(pda) ?: return@withContext Resolved.Unreachable
+        if (data.size < tld.headerSize) return@withContext Resolved.None
+        if (tld == Tld.SKR && expired(data)) return@withContext Resolved.None
+        val owner = Base58.encode(data.copyOfRange(tld.ownerAt, tld.ownerAt + 32))
+        // An ordinary wallet is owned by the System Program or does not exist yet.
+        val info = post("""{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["$owner",{"encoding":"base64"}]}""")
+            ?: return@withContext Resolved.Unreachable
+        val value = try { JSONObject(info).getJSONObject("result").opt("value") } catch (e: Exception) { return@withContext Resolved.Unreachable }
+        if (value is JSONObject && value.optString("owner") != "11111111111111111111111111111111") return@withContext Resolved.Unsafe
+        Resolved.Found(owner, text)
+    }
+
+    /** A person a typed name could mean: the full name, the wallet behind it, and which registry said so. */
+    data class Candidate(val name: String, val address: String)
+
+    /**
+     * Everyone `text` could be, across `.skr`, `.sol` and `.air`, for the "Pay anyone" box.
+     *
+     * Typing `fahad` asks all three registries for `fahad`; typing `fahad.s` asks only the two that
+     * start with s; `fahad.skr` asks one. `.skr` and `.sol` are read off the chain by their exact
+     * name, so only a full name resolves. `.air` is AirPay's own directory and also answers a
+     * half-typed name. A pasted wallet address is its own single candidate.
+     */
+    suspend fun candidates(raw: String): List<Candidate> = coroutineScope {
+        val text = raw.trim().lowercase()
+        if (text.length < 2) return@coroutineScope emptyList()
+        if (PayRequest.isBase58Address(raw.trim())) return@coroutineScope listOf(Candidate(raw.trim(), raw.trim()))
+        val base = text.substringBefore('.')
+        val suffix = if ('.' in text) text.substringAfter('.') else ""
+        if (base.length < 2) return@coroutineScope emptyList()
+        val chain = listOf("skr", "sol").filter { it.startsWith(suffix) }.map { tld ->
+            async {
+                (addressOf("$base.$tld") as? Resolved.Found)?.let { Candidate(it.name, it.address) }
+            }
+        }
+        val air = if ("air".startsWith(suffix)) async {
+            ServerClient.airNames(base).map { Candidate(it.first, it.second) }
+        } else null
+        (chain.awaitAll().filterNotNull() + (air?.await() ?: emptyList())).distinctBy { it.name }
     }
 
     /** "dezloper.skr", or null when there is no name or no answer. For places that show one line. */

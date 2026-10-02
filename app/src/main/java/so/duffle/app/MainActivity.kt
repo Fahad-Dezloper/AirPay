@@ -21,6 +21,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.TileMode
+import androidx.compose.ui.graphics.BlurEffect
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.infiniteRepeatable
@@ -48,6 +50,7 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.style.BaselineShift
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.withStyle
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.core.view.WindowCompat
@@ -168,8 +171,18 @@ class MainActivity : ComponentActivity() {
     private var busy by mutableStateOf(false)
     /** The wallet cards are open, covering the tab. */
     private var cards by mutableStateOf(false)
+    private var payAnyone by mutableStateOf(false)
     /** The wallet whose details sheet is open, or null. */
     private var walletDetails by mutableStateOf<Linked?>(null)
+    /** The wallet whose receive QR is showing. */
+    private var receiving by mutableStateOf<Linked?>(null)
+    /** The wallet being given a name of the person's own. */
+    private var renamingWallet by mutableStateOf<Linked?>(null)
+    /** The wallet whose name-vouching sheet is open, and a counter that says a vouch just changed. */
+    private var vouchWallet by mutableStateOf<Linked?>(null)
+    private var vouchTick by mutableStateOf(0)
+    /** The reward card lifted to the middle of the screen to be scratched, if any. */
+    private var scratching by mutableStateOf<ScratchTarget?>(null)
     /** The referral explainer, held here so its scrim covers the screen rather than the
      *  padded column the tab is drawn inside. Carries the summary because the numbers in
      *  it are the server's, and this Activity does not read them. */
@@ -207,8 +220,12 @@ class MainActivity : ComponentActivity() {
     private var totalUsd by mutableStateOf<Double?>(null)
     /** What this wallet has earned, for the strip on the home page. */
     private var rewardSummary by mutableStateOf<Rewards.Summary?>(null)
+    private var rewardFor: String? = null
     /** The catalogue, once the server has been asked. Empty means nothing to show. */
     private var shopSections by mutableStateOf<List<Shop.Section>>(emptyList())
+    /** Whether the catalogue has been asked for yet, and whether the server answered. */
+    private enum class ShopLoad { LOADING, DONE, FAILED }
+    private var shopLoad by mutableStateOf(ShopLoad.LOADING)
     /** The section being browsed, and the product opened inside it. */
     private var shopSection by mutableStateOf<Shop.Section?>(null)
     private var shopProduct by mutableStateOf<Shop.Product?>(null)
@@ -292,8 +309,12 @@ class MainActivity : ComponentActivity() {
     private var offlineStreak = 0
 
     private val askNotify = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        push(if (granted) "✓ notifications on" else "— notifications declined")
+        push(if (granted) "✓ notifications on" else "- notifications declined")
+        notifOff = !Push.canNotify(this)
     }
+
+    /** True while the phone would swallow our notifications — the banner on Home reads it. */
+    private var notifOff by mutableStateOf(false)
 
     /**
      * Links a wallet, or resumes the one already selected.
@@ -305,6 +326,25 @@ class MainActivity : ComponentActivity() {
      * the person takes, and a disposed composition would cancel it between opening and
      * returning. `finally`, because cancellation skips the line after a suspend point.
      */
+    /**
+     * "Connect a wallet", decided by what is on this phone.
+     *
+     *  * **A Seeker**: Seeker Wallet is the system default for the connect route, so the plain
+     *    route lands on it.
+     *  * **Anything else**: there is no default, so the plain route would raise Android's "Open
+     *    with…" chooser — and forget which app was picked, which is what made every later signature
+     *    ask again and fail. So the wallet is chosen from our own list (or taken straight away when
+     *    it is the only one), and linked BY NAME, which records the app.
+     */
+    private fun startConnect() {
+        val apps = WalletLink.installed(this)
+        when {
+            apps.any { it.pkg == SEEKER_WALLET } -> connectWallet(fresh = false)
+            apps.size == 1 -> linkWallet(apps[0])
+            else -> picker = apps   // an empty list says "No wallet apps found on this phone."
+        }
+    }
+
     private fun connectWallet(fresh: Boolean) {
         lifecycleScope.launch {
             busy = true
@@ -318,7 +358,7 @@ class MainActivity : ComponentActivity() {
                         push("✓ wallet ${r.address.take(8)}…${r.address.takeLast(4)}")
                     }
                     is Wallet.Outcome.Failed -> push("✗ ${r.why}")
-                    Wallet.Outcome.Declined -> push("— wallet declined")
+                    Wallet.Outcome.Declined -> push("- wallet declined")
                 }
             } finally {
                 busy = false
@@ -343,7 +383,7 @@ class MainActivity : ComponentActivity() {
                         push("✓ ${app.label} ${r.address.take(6)}…${r.address.takeLast(4)}")
                     }
                     is Wallet.Outcome.Failed -> push("✗ ${r.why}")
-                    Wallet.Outcome.Declined -> push("— ${app.label} declined")
+                    Wallet.Outcome.Declined -> push("- ${app.label} declined")
                 }
             } finally {
                 busy = false
@@ -382,7 +422,7 @@ class MainActivity : ComponentActivity() {
                             ?: r.product
                         rechargeOperator = ours
                         val name = ours.name.removeSuffix(" India").removeSuffix(" Bundles")
-                        operatorNote = "$name — from the number itself, so porting is accounted for."
+                        operatorNote = "$name, from the number itself, so porting is accounted for."
                     }
                     Shop.Operator.Unknown -> operatorNote =
                         "Could not tell which network that is. Pick it below."
@@ -410,6 +450,12 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun buy(product: Shop.Product, value: String, category: String, phone: String? = null) {
+        // The server issues the invoice to the signed-in wallet, so this needs a session. Ask for it
+        // first, then carry on with the same purchase.
+        if (ServerClient.enabled && connected != null && !Session.valid(connected)) {
+            gated("complete this purchase") { buy(product, value, category, phone) }
+            return
+        }
         val payer = connected
         if (payer == null) {
             status = Status.Problem("Connect a wallet first", "The shop pays from your wallet.")
@@ -460,7 +506,7 @@ class MainActivity : ComponentActivity() {
                         // the wallet may have been open for a while.
                         if (inv.expired) {
                             status = Status.Problem("Price expired",
-                                "That quote is over two minutes old. Nothing was sent — try again.")
+                                "That quote is over two minutes old. Nothing was sent. Try again.")
                             return@launch
                         }
                         when (val signed = wallet.signOnly(built.tx)) {
@@ -472,7 +518,7 @@ class MainActivity : ComponentActivity() {
                                 }
                                 when (val sent = withContext(Dispatchers.IO) { Chain.submit(signed.tx) }) {
                                     is Chain.Submitted.Ok -> {
-                                        push("✓ shop: paid ${inv.shown} — ${sent.signature.take(12)}…")
+                                        push("✓ shop: paid ${inv.shown}, ${sent.signature.take(12)}…")
                                         status = Status.Sent(sent.signature)
                                         // Written down before it is watched. The watcher below
                                         // dies with the screen; this is what survives it, and
@@ -491,7 +537,7 @@ class MainActivity : ComponentActivity() {
                                     is Chain.Submitted.Rejected -> status = Status.Problem(
                                         "Payment refused",
                                         if (sent.why.contains("blockhash", true))
-                                            "It took too long and expired. Nothing was sent — try again."
+                                            "It took too long and expired. Nothing was sent. Try again."
                                         else sent.why)
                                     Chain.Submitted.Offline -> status = Status.Problem(
                                         "You're offline", "It was signed but never sent.")
@@ -576,12 +622,74 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * [owner] signs a statement naming [target], so [target] shows the owner's name.
+     * One approval in the owner's wallet; nothing is sent or spent.
+     */
+    private fun vouchFrom(owner: Linked, target: Linked, rearm: () -> Unit) {
+        lifecycleScope.launch {
+            linking = true
+            val link = try { wallet.link(owner, target.address) } finally { linking = false }
+            val named = owner.username ?: owner.name
+            if (link == null) {
+                Haptics.failure(this@MainActivity)
+                push("- $named did not sign; nothing changed")
+            } else {
+                Haptics.success(this@MainActivity)
+                val name = Identity.domain(this@MainActivity, owner.address) ?: named
+                push("+ ${target.short} now shows $name until ${link.expiresOn}")
+                afterVouchChange(target, rearm)
+            }
+        }
+    }
+
+    /** This phone stops presenting a borrowed name from [target]. */
+    private fun forgetVouch(target: Linked, rearm: () -> Unit) {
+        Vouch.forget(this, target.address)
+        push("- ${target.short} is just an address again")
+        afterVouchChange(target, rearm)
+    }
+
+    /** What changes when a link is made or dropped: the sheets, the name on Home, the armed request. */
+    private fun afterVouchChange(target: Linked, rearm: () -> Unit) {
+        vouchTick++
+        if (target.address == connected) {
+            val own = Identity.domain(this, target.address)
+            val lent = own ?: Vouch.of(this, target.address)?.let { Identity.domain(this, it.owner) }
+            myDomain = lent
+            myDomainBorrowed = own == null && lent != null
+        }
+        // The armed request still carries the old payload.
+        TapHostApduService.pending.value = null
+        rearm()
+    }
+
+    /**
+     * The details sheet on Home: lend a name from the first other wallet that owns one.
+     * The Wallets screen has its own sheet and picks the owner explicitly.
+     */
+    private fun vouchFor(w: Linked, rearm: () -> Unit) {
+        val owner = Identity.named(
+            this,
+            wallet.linked.all().map { it.address }.filter { it != w.address },
+        )?.first
+        if (owner == null) {
+            push("- no wallet here owns a name to lend")
+        } else {
+            vouchFrom(wallet.linked.all().first { it.address == owner }, w, rearm)
+        }
+    }
+
     /** Re-reads the linked wallets and the selected one's balance. */
-    private fun refreshWallets() {
+    private fun refreshWallets(quiet: Boolean = false) {
         walletList = wallet.linked.all()
-        balance = null
-        holdings = emptyList()
-        rewardSummary = null
+        // Quiet re-reads the balance in place. Blanking it first made every refresh flash dashes,
+        // which is the opposite of "instant".
+        if (!quiet) { balance = null; holdings = emptyList() }
+        // Cleared only when the wallet changed: a live event re-reads the same wallet, and
+        // blanking its rewards for the round trip made history rows blink out and back.
+        if (rewardFor != connected) rewardSummary = null
+        rewardFor = connected
         val addr = connected ?: run { myDomain = null; return }
 
         // Whose name this wallet carries, borrowing one if it has none of its own. Seeded from
@@ -714,7 +822,7 @@ class MainActivity : ComponentActivity() {
                 }
                 if (d.status != o.status) {
                     orders.setStatus(o.invoiceId, d.status)
-                    push("shop: ${o.name} — ${d.status}")
+                    push("shop: ${o.name}, ${d.status}")
                 }
             }
             refreshLists()
@@ -728,6 +836,8 @@ class MainActivity : ComponentActivity() {
         // and leaves the token row with no lines at all.
         MarketDay.attach(this)
         installCrashGuard()
+        // Before anything talks to the server: the saved session, if there is one.
+        Session.init(this)
         wallet = Wallet(this)
         connected = wallet.address   // a session persisted from last launch
         contacts = Contacts(this)
@@ -796,6 +906,20 @@ class MainActivity : ComponentActivity() {
 
                 LaunchedEffect(mode, amount, connected) { applyMode(amount) }
 
+                // No wallet linked (a fresh install, or cleared data): the landing page, and
+                // nothing else. Everything below assumes an address.
+                if (connected == null) {
+                    Landing(busy) { startConnect() }
+                    // The wallet list is a sheet over the landing page too.
+                    picker?.let { apps ->
+                        Tray(onClose = { picker = null }) {
+                            Spacer(Modifier.height(Space.lead))
+                            WalletPicker(apps, onPick = { app -> picker = null; linkWallet(app) })
+                        }
+                    }
+                    return@MaterialTheme
+                }
+
                 // Everything that depends on WHICH wallet is connected. Runs for a session
                 // restored at launch as well as a fresh connect — the Genesis lookup used to
                 // live only in the Connect button, so a relaunched app silently lost its
@@ -810,15 +934,24 @@ class MainActivity : ComponentActivity() {
                         // Cached for the HCE service, which answers taps with the app closed and
                         // has no time for a network call inside one.
                         Identity.rememberGenesis(this@MainActivity, addr, g)
-                        push(if (g != null) "✓ Verified Seeker — genesis ${g.take(8)}…"
+                        push(if (g != null) "✓ Verified Seeker, genesis ${g.take(8)}…"
                              else "   no Genesis Token on this wallet")
                     }
                     // Needed without a server too: a tap on a locked phone arrives as a notification.
-                    if (!Push.canNotify(this@MainActivity)) askNotify.launch(Manifest.permission.POST_NOTIFICATIONS)
-                    if (ServerClient.enabled && Push.configured) {
-                        Push.token(this@MainActivity)?.let { t ->
-                            push(if (ServerClient.registerDevice(addr, t)) "✓ push registered" else "✗ push registration failed")
-                        }
+                    if (!Push.canNotify(this@MainActivity) && android.os.Build.VERSION.SDK_INT >= 33) {
+                        askNotify.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    }
+                }
+
+                // Registered once the session is valid, and again whenever it changes or a wallet
+                // is added. It used to run once at launch, before sign-in had finished, fail with
+                // a 401 and never be retried — so a phone that signed in a moment later never
+                // received a single push.
+                LaunchedEffect(connected, Session.version, walletList.size) {
+                    val addr = connected ?: return@LaunchedEffect
+                    if (!ServerClient.enabled || !Push.configured || !Session.valid(addr)) return@LaunchedEffect
+                    Push.token(this@MainActivity)?.let { t ->
+                        push(if (ServerClient.registerDevice(addr, t)) "✓ push registered" else "✗ push registration failed")
                     }
                 }
 
@@ -881,18 +1014,30 @@ class MainActivity : ComponentActivity() {
                         withContext(Dispatchers.IO) { Shop.cached(this@MainActivity) }
                             ?.let { shopSections = it }
                     }
-                    Shop.sections(this@MainActivity)?.let { fresh ->
-                        // A null or empty answer never blanks what is already showing.
+                    val fresh = Shop.sections(this@MainActivity)
+                    if (fresh == null) {
+                        // The server did not answer. Only said on screen when there is nothing
+                        // cached to draw instead — an old catalogue beats an apology.
+                        if (shopSections.isEmpty()) shopLoad = ShopLoad.FAILED
+                    } else {
+                        // An empty answer never blanks what is already showing.
                         if (fresh.isNotEmpty()) shopSections = fresh
+                        shopLoad = ShopLoad.DONE
                     }
                 }
 
                 // Anything written to us while the app was closed. The live stream below only
                 // carries what arrives while it is connected, and a push only reaches a phone
                 // that has one — so the catch-up is the only thing that covers both.
+                // Signing in is never started from here. The wallet's sign sheet appears only after a
+                // button — the authorization sheet that Rewards, Referrals and a purchase open when
+                // nobody is signed in — so a prompt is always something the person just asked for.
+                // It used to run on launch and on every resume, which surprised people with a wallet
+                // sheet they could not account for, and failed quietly when they ignored it.
+
                 LaunchedEffect(connected, resumeTick) {
                     val addr = connected ?: return@LaunchedEffect
-                    if (!ServerClient.enabled) return@LaunchedEffect
+                    if (!ServerClient.enabled || !Session.valid(addr)) return@LaunchedEffect
                     var added = false
                     ServerClient.messages(addr, messages.since()).forEach {
                         if (messages.add(it)) added = true
@@ -900,16 +1045,43 @@ class MainActivity : ComponentActivity() {
                     if (added) refreshLists()
                 }
 
+                // A slow poll as well, for the times the stream is down or the push never came.
                 LaunchedEffect(connected) {
+                    if (connected == null) return@LaunchedEffect
+                    lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                        while (true) { delay(12_000); refreshWallets(quiet = true) }
+                    }
+                }
+
+                // Leaving the recharge screen forgets the number: coming back starts from the empty
+                // box, not from the last number and its plans.
+                LaunchedEffect(tab, shopSection) {
+                    if (!(tab == Tab.SHOP && shopSection?.isRechargeShelf() == true)) {
+                        rechargeNumber = ""; rechargeOperator = null; operatorNote = null
+                    }
+                }
+
+                // The session arriving is the moment every server-backed list can finally be read.
+                LaunchedEffect(Session.version) { if (Session.valid(connected)) refreshWallets() }
+
+                // Keyed on the session too: the stream is the session's, so it opens when sign-in
+                // succeeds and reopens when the token is replaced.
+                LaunchedEffect(connected, Session.version) {
                     val addr = connected ?: return@LaunchedEffect
-                    if (!ServerClient.enabled) return@LaunchedEffect
+                    if (!ServerClient.enabled || !Session.valid(addr)) return@LaunchedEffect
                     lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
                         ServerClient.events(addr).collect { ev ->
                             when (ev) {
+                                // Money moved in the wallet — read the balance again now rather
+                                // than at the next poll.
+                                is ServerClient.Activity -> {
+                                    refreshWallets(quiet = true)
+                                    push("wallet: ${ev.direction} ${ev.amount} ${ev.symbol}")
+                                }
                                 is ServerClient.Paid -> {
                                     val e = owed.firstOrNull { it.reference == ev.reference && it.live }
                                     if (e != null) {
-                                        push("server: ${ev.reference.take(8)}… paid — verifying")
+                                        push("server: ${ev.reference.take(8)}… paid, verifying")
                                         checkOwed(e)
                                     }
                                 }
@@ -922,15 +1094,15 @@ class MainActivity : ComponentActivity() {
                                 }
                                 is ServerClient.Withdrawn -> {
                                     inbox.markWithdrawn(ev.reference); refreshLists()
-                                    push("— ${ev.reference.take(8)}… was withdrawn by the requester")
+                                    push("- ${ev.reference.take(8)}… was withdrawn by the requester")
                                 }
                                 is ServerClient.Deferred -> {
                                     watch.markDeferred(ev.reference, ev.label); refreshLists()
-                                    push("— ${ev.label.ifBlank { "They" }} will pay ${ev.reference.take(8)}… later")
+                                    push("- ${ev.label.ifBlank { "They" }} will pay ${ev.reference.take(8)}… later")
                                 }
                                 is ServerClient.Rejected -> {
                                     watch.markRejected(ev.reference, ev.label); refreshLists()
-                                    push("— ${ev.label.ifBlank { "They" }} declined ${ev.reference.take(8)}…")
+                                    push("- ${ev.label.ifBlank { "They" }} declined ${ev.reference.take(8)}…")
                                     Haptics.failure(this@MainActivity)
                                 }
                                 is ServerClient.Shopped -> {
@@ -947,6 +1119,17 @@ class MainActivity : ComponentActivity() {
                                         Haptics.contact(this@MainActivity)
                                     }
                                 }
+                                is ServerClient.Moved -> {
+                                    // Say it, then re-read everything it could have changed: the
+                                    // balance, the offer list, the referral sheet, the history.
+                                    ev.progress.words()?.let { (title, text) -> push("$title, $text") }
+                                    when (ev.progress.state) {
+                                        "confirmed", "paid", "settled" -> Haptics.success(this@MainActivity)
+                                        "reversed" -> Haptics.failure(this@MainActivity)
+                                    }
+                                    Live.bump()
+                                    refreshWallets()
+                                }
                                 is ServerClient.Tapped -> {
                                     push("server: ${ev.card.label} tapped you")
                                     startActivity(TapPopupActivity.intent(this@MainActivity, TapPayload.Card(ev.card), cameFrom = "server"))
@@ -959,6 +1142,8 @@ class MainActivity : ComponentActivity() {
                 // How far an edge swipe has pulled the current screen away (0..1). Read inside a
                 // graphicsLayer so a drag redraws the layer and never recomposes the screen.
                 val backPull = remember { Animatable(0f) }
+                // How far the scratch stage is up (0..1): the page behind blurs by it, the stage dims by it.
+                val scratchT = remember { Animatable(0f) }
                 val rootView = LocalView.current
 
                 // One step back, in the order things were opened. Without this the system back
@@ -1018,7 +1203,12 @@ class MainActivity : ComponentActivity() {
                     // statusBarsPadding, not a guessed top margin: the pill sits at the very
                     // top of the app and was drawing straight through the clock and battery.
                     Column(
-                        Modifier.fillMaxSize().statusBarsPadding().graphicsLayer {
+                        // The page behind a lifted reward card. Read in the layer, so it follows the
+                        // card's progress frame by frame without recomposing anything.
+                        Modifier.fillMaxSize().graphicsLayer {
+                            val r = 14.dp.toPx() * scratchT.value
+                            renderEffect = if (r > 0.5f) BlurEffect(r, r, TileMode.Decal) else null
+                        }.statusBarsPadding().graphicsLayer {
                             // Entering: fade up from 10dp below. Leaving by swipe: shrink a little
                             // and slide toward the edge being dragged.
                             // Starts at 35%, never 0: from nothing, the frame between two screens
@@ -1042,20 +1232,21 @@ class MainActivity : ComponentActivity() {
                     val alerts = Alerts.build(
                         toPay = toPay, owed = owed, notes = notes, orders = bought,
                         offers = liveOffers,
-                        name = { addr -> known0.firstOrNull { it.address == addr }?.label ?: "Someone" },
-                        offerAt = { id -> Alerts.firstSeen(this@MainActivity, id) },
+                        name = { addr -> known0.firstOrNull { it.address == addr }?.let { displayName(it.label, addr) } ?: "Someone" },
                     )
                     val unread = Alerts.unread(alerts, alertsSeen)
                     // `spends` is read here, inside the composition that rebuilds the list, so
                     // a category picked a moment ago is on the next row without a restart.
                     val spends = remember { Spends(this@MainActivity) }
                     var filedAt by remember { mutableStateOf(0L) }
-                    val history = remember(toPay, owed, bought, known0, filedAt) {
+                    val history = remember(toPay, owed, bought, known0, filedAt, rewardSummary) {
                         History.build(
                             toPay = toPay, owed = owed, orders = bought,
-                            name = { addr -> known0.firstOrNull { it.address == addr }?.label ?: "Someone" },
+                            name = { addr -> known0.firstOrNull { it.address == addr }?.let { displayName(it.label, addr) } ?: "Someone" },
                             known = { addr -> known0.any { it.address == addr } },
                             filed = { sig -> spends.of(sig) },
+                            rewards = rewardSummary?.rows.orEmpty(),
+                            payouts = rewardSummary?.payouts.orEmpty(),
                         )
                     }
                     /** Files a category and nudges the list to rebuild with it. */
@@ -1101,7 +1292,7 @@ class MainActivity : ComponentActivity() {
                         // the AirPay bar above a screen that already said where it was. Same
                         // rule the shop's service page gets below: whoever draws a header owns
                         // the top of the screen.
-                        if (tab == Tab.TAP && thread == null) Header(
+                        if (tab == Tab.TAP && thread == null && !cards) Header(
                             checking = checking,
                             unread = unread,
                             // The on-chain name first: it is the one other people see, so it
@@ -1155,7 +1346,7 @@ class MainActivity : ComponentActivity() {
                                 list = walletList,
                                 selected = connected,
                                 busy = busy,
-                                onPick = { w ->
+                                onUse = { w ->
                                     wallet.use(w)
                                     connected = w.address
                                     myGenesis = null
@@ -1163,16 +1354,28 @@ class MainActivity : ComponentActivity() {
                                     TapHostApduService.pending.value = null
                                     refreshWallets()
                                     applyMode(amount)
-                                    push("— tapping with ${w.name} ${w.short}")
+                                    push("- tapping with ${w.name} ${w.short}")
                                 },
                                 onAdd = { picker = WalletLink.installed(this@MainActivity) },
                                 onClose = { cards = false },
-                                picker = picker,
-                                onPickApp = { app ->
-                                    picker = null
-                                    linkWallet(app)
+                                onReceive = { w -> receiving = w },
+                                onRename = { w -> renamingWallet = w },
+                                onReconnect = { w ->
+                                    // A fresh session with the wallet app itself, by explicit intent
+                                    // where the picker linked it; the original path otherwise.
+                                    val app = WalletLink.installed(this@MainActivity).firstOrNull { it.pkg == w.pkg }
+                                    if (app != null) linkWallet(app) else connectWallet(fresh = true)
                                 },
-                                onClosePicker = { picker = null },
+                                onVouch = { w -> vouchWallet = w },
+                                vouchTick = vouchTick,
+                                onRemove = { w ->
+                                    wallet.linked.remove(w.address)
+                                    connected = wallet.address
+                                    refreshWallets()
+                                    applyMode(amount)
+                                    push("- removed ${w.name} ${w.short}")
+                                },
+                                onNote = { push(it) },
                             )
                             return@Column
                         }
@@ -1200,7 +1403,7 @@ class MainActivity : ComponentActivity() {
                                     // so "they asked and I said no" is still answerable.
                                     val live = item.payable
                                     inbox.markDeclined(req.reference); refreshLists()
-                                    push("— declined ${req.amount} ${req.symbol} from ${req.label}")
+                                    push("- declined ${req.amount} ${req.symbol} from ${req.label}")
                                     if (live) {
                                         lifecycleScope.launch {
                                             ServerClient.reject(req.reference, Identity.label(this@MainActivity))
@@ -1209,7 +1412,7 @@ class MainActivity : ComponentActivity() {
                                 },
                                 onWithdraw = { e ->
                                     watch.markWithdrawn(e.reference); refreshLists()
-                                    push("— withdrew ${e.amount} ${e.symbol} request ${e.reference.take(8)}…")
+                                    push("- withdrew ${e.amount} ${e.symbol} request ${e.reference.take(8)}…")
                                     lifecycleScope.launch { ServerClient.withdraw(e.reference) }
                                 },
                                 onBack = { thread = null; threadItem = null },
@@ -1239,7 +1442,7 @@ class MainActivity : ComponentActivity() {
                                             Identity.label(this@MainActivity),
                                         )
                                     }
-                                    push("— told ${item.request.label} we'll pay later")
+                                    push("- told ${item.request.label} we'll pay later")
                                 },
                             )
                             return@Column
@@ -1266,10 +1469,12 @@ class MainActivity : ComponentActivity() {
                                 when (tab) {
                                     Tab.ALERTS -> "Notifications"
                                     Tab.HISTORY -> "Transactions"
-                                    else -> shopSection?.title ?: "Pay a bill"
+                                    else -> if (shopSection?.isRechargeShelf() == true)
+                                        (if (rechargeOperator != null && Sims.e164(rechargeNumber) != null) "Select a plan" else "Recharge or pay mobile bill")
+                                    else shopSection?.title ?: "Recharge and bills"
                                 },
                             ) { tab = Tab.TAP; shopSection = null; shopProduct = null }
-                            Spacer(Modifier.height(16.dp))
+                            Spacer(Modifier.height(if (tab == Tab.SHOP) 4.dp else 16.dp))
                         }
 
                         if (tab == Tab.SHOP) {
@@ -1339,7 +1544,7 @@ class MainActivity : ComponentActivity() {
                                         known0.firstOrNull { it.address == a.peer }?.let {
                                             thread = it; threadItem = null; tab = Tab.TAP
                                         }
-                                    a.kind == Alerts.Kind.OFFER -> tab = Tab.REWARDS
+                                    a.kind == Alerts.Kind.OFFER -> openRewards()
                                     else -> tab = Tab.TAP
                                 }
                             }
@@ -1351,7 +1556,7 @@ class MainActivity : ComponentActivity() {
                                 connected = connected,
                                 isSeeker = myGenesis != null,
                                 onOpenOffer = { offerDetail = it },
-                                onRefer = { refer = true },
+                                onRefer = { openRefer() },
                                 reloadKey = offersReload,
                                 onBack = { tab = Tab.TAP },
                             )
@@ -1361,6 +1566,8 @@ class MainActivity : ComponentActivity() {
                         if (tab == Tab.REWARDS) {
                             RewardsTab(
                                 connected, myGenesis != null,
+                                onOpenCard = { row, rect -> scratching = ScratchTarget(row, rect) },
+                                openId = scratching?.row?.id,
                                 onInvite = { refer = true },
                                 onOffers = { tab = Tab.OFFERS },
                                 onBack = { tab = Tab.TAP; shopSection = null; shopProduct = null },
@@ -1414,13 +1621,13 @@ class MainActivity : ComponentActivity() {
                                 TapHostApduService.pending.value = null
                                 refreshWallets()
                                 applyMode(amount)
-                                push("— tapping with ${w.name} ${w.short}")
+                                push("- tapping with ${w.name} ${w.short}")
                             },
                         )
                         if (connected == null) {
                             Spacer(Modifier.height(12.dp))
                             PrimaryButton(if (busy) "Opening your wallet…" else "Connect a wallet",
-                                onClick = { connectWallet(fresh = false) }, loading = busy)
+                                onClick = { startConnect() }, loading = busy)
                         }
 
                         // "They see you as <name>" lived here. It was a second door to the
@@ -1510,91 +1717,108 @@ class MainActivity : ComponentActivity() {
                                     TokenBadges(holdings, quotes) { mint ->
                                         clipboard.setText(AnnotatedString(mint))
                                         Haptics.tick(this@MainActivity)
-                                        push("— copied $mint")
+                                        push("- copied $mint")
                                     }
                                 }
                             }
                         }
 
-                        if (shopSections.isNotEmpty()) {
-                            Spacer(Modifier.height(HOME_GAP))
-                            Text("Pay a bill", color = D.Black, style = Type.heading)
+                        if (notifOff) {
                             Spacer(Modifier.height(Space.lead))
-                            ShopTiles(shopSections) { sec, product ->
-                                shopSection = sec
-                                shopProduct = product
-                                shopDirect = product != null
-                                tab = Tab.SHOP
+                            val bannerShape = RoundedCornerShape(16.dp)
+                            Row(
+                                Modifier.fillMaxWidth().clip(bannerShape).border(1.5.dp, D.Line, bannerShape)
+                                    .clickable {
+                                        runCatching {
+                                            startActivity(
+                                                Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                                                    .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, packageName),
+                                            )
+                                        }
+                                    }
+                                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                HiIcon(Hi.Bell, D.Black, 22.dp)
+                                Spacer(Modifier.width(12.dp))
+                                Column(Modifier.weight(1f)) {
+                                    Text("Notifications are off", color = D.Black, style = Type.body)
+                                    Text("You won't hear about payments or rewards.", color = D.Quiet, style = Type.caption)
+                                }
+                                Text("Turn on", color = D.BlueInk, style = Type.heading)
                             }
                         }
-                        // §3 is people you have actually PAID or BEEN PAID BY — not everyone
-                        // this phone has ever met.
-                        //
-                        // A contact is recorded on a tap, a scan, even a request that never got
-                        // answered, because the app needs their name the moment they appear.
-                        // That is right for the tap sheet and wrong for Home: scanning one QR
-                        // put a stranger permanently in the row (user call, 2026-10-01).
-                        //
-                        // History is the test, not `Contact.totalPaid`: that only counts money
-                        // this wallet SENT, so paying by it alone would drop everybody who has
-                        // paid you. A settled row in either direction is the honest version of
-                        // "we have done business".
-                        //
-                        // Ordered by how many of those there are, then by the most recent, so
-                        // the row is the people dealt with regularly rather than most recently
-                        // bumped into.
-                        val dealings = remember(history) {
-                            history.mapNotNull { it.peer }.groupingBy { it }.eachCount()
-                        }
-                        val people = remember(known0, dealings) {
-                            known0.filter { dealings.containsKey(it.address) }
-                                .sortedWith(
-                                    compareByDescending<Contact> { dealings[it.address] ?: 0 }
-                                        .thenByDescending { it.lastTapMillis },
-                                )
-                        }
-                        if (people.isNotEmpty()) {
-                            Spacer(Modifier.height(HOME_GAP))
-                            People(
-                                list = people,
-                                waiting = { addr ->
-                                    toPay.count { it.payable && it.request.recipient == addr } +
-                                        owed.count { it.live && !it.rejected && it.peer == addr }
-                                },
-                                onPick = { c -> thread = c; threadItem = null },
-                            )
-                        }
 
+                        // The four things done most, one tap each, under what you hold.
+                        Spacer(Modifier.height(Space.lead))
+                        HomeActions(
+                            isSeeker = myGenesis != null,
+                            onBuy = { url ->
+                                runCatching { startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url))) }
+                            },
+                            onScan = { startActivity(ScanActivity.intent(this@MainActivity)) },
+                            onPayAnyone = { payAnyone = true },
+                            onHistory = {
+                                histMonth = if (history.isEmpty()) History.monthOf(System.currentTimeMillis())
+                                else History.monthOf(history.first().at)
+                                tab = Tab.HISTORY
+                            },
+                        )
+
+                        // Always on Home. The tiles come from the server, so while they are on
+                        // their way — or the server is down — the section says so rather than
+                        // vanishing and leaving a page that looks like it never had one. An
+                        // answered-but-empty catalogue (shop switched off) still hides it.
+                        if (shopSections.isNotEmpty() || shopLoad != ShopLoad.DONE) {
+                            Spacer(Modifier.height(HOME_GAP))
+                            Text("Recharge and bills", color = D.Black, style = Type.heading)
+                            Spacer(Modifier.height(Space.lead))
+                            if (shopSections.isNotEmpty()) {
+                                ShopTiles(shopSections) { sec, product ->
+                                    shopSection = sec
+                                    shopProduct = product
+                                    shopDirect = product != null
+                                    tab = Tab.SHOP
+                                }
+                            } else {
+                                if (shopLoad == ShopLoad.LOADING) BillTilesSkeleton()
+                                else Text(
+                                    "Couldn't load bills right now. Check your connection, it tries again when you reopen the app.",
+                                    color = D.Quiet, style = Type.caption,
+                                    modifier = Modifier.padding(vertical = Space.row),
+                                )
+                            }
+                        }
                         if (Rewards.enabled) {
                             Spacer(Modifier.height(HOME_GAP))
-                            EarnStrip(rewardSummary) { tab = Tab.REWARDS }
+                            EarnStrip(rewardSummary) { openRewards() }
                             Spacer(Modifier.height(Space.lead))
                             EarnTiles(
-                                onRewards = { tab = Tab.REWARDS },
+                                onRewards = { openRewards() },
                                 onOffers = { tab = Tab.OFFERS },
                                 // Nothing on the server tracks a referral yet, so this shares an
                                 // invite and claims nothing else. A tile that promised a bonus
                                 // nobody is counting would be the one lie on this screen.
-                                onReferrals = { refer = true },
+                                onReferrals = { openRefer() },
                             )
                         }
 
-                        if (history.isNotEmpty()) {
-                            Spacer(Modifier.height(HOME_GAP))
-                            HistoryStrip(
-                                list = history,
-                                onViewAll = {
-                                    // Opened on the newest month that HAS something, not on
-                                    // today: landing on an empty January because nothing has
-                                    // happened yet this month shows an empty screen to
-                                    // somebody who just asked to see everything.
-                                    histMonth = History.monthOf(history.first().at)
-                                    tab = Tab.HISTORY
-                                },
-                                onFile = file,
-                                onOpen = { t -> openTxn(t, contacts.all()) },
-                            )
-                        }
+                        // Always on Home: with nothing yet it says so, centred, instead of the
+                        // section being missing.
+                        Spacer(Modifier.height(HOME_GAP))
+                        HistoryStrip(
+                            list = history,
+                            onViewAll = {
+                                // Opened on the newest month that HAS something, not on
+                                // today: landing on an empty January because nothing has
+                                // happened yet this month shows an empty screen to
+                                // somebody who just asked to see everything.
+                                histMonth = History.monthOf(history.first().at)
+                                tab = Tab.HISTORY
+                            },
+                            onFile = file,
+                            onOpen = { t -> openTxn(t, contacts.all()) },
+                        )
 
                         // The log is ours, not theirs: it only exists while "check" is open.
                         if (checking) {
@@ -1604,7 +1828,21 @@ class MainActivity : ComponentActivity() {
                         }
 
                         // Room for the pay bar, which floats over this page rather than in it.
-                        if (tab == Tab.TAP && thread == null && !cards) Spacer(Modifier.height(116.dp))
+                        if (tab == Tab.TAP && thread == null && !cards) Spacer(Modifier.height(92.dp))
+                    }
+
+                    if (payAnyone) {
+                        PayAnyoneSheet(
+                            onClose = { payAnyone = false },
+                            onFound = { address, label ->
+                                payAnyone = false
+                                startActivity(TapPopupActivity.intent(
+                                    this@MainActivity,
+                                    TapPayload.Card(TapCard(address, label, null, null)),
+                                    cameFrom = "name",
+                                ))
+                            },
+                        )
                     }
 
                     if (home) {
@@ -1646,8 +1884,8 @@ class MainActivity : ComponentActivity() {
                             cards = true
                         },
                         onShare = { drawerOpen = false; shareText(it) },
-                        onGo = { drawerOpen = false; tab = it },
-                        onRefer = { drawerOpen = false; refer = true },
+                        onGo = { drawerOpen = false; if (it == Tab.REWARDS) openRewards() else tab = it },
+                        onRefer = { drawerOpen = false; openRefer() },
                         onDiagnostics = { drawerOpen = false; checking = true },
                         onClose = { drawerOpen = false },
                     )
@@ -1678,6 +1916,37 @@ class MainActivity : ComponentActivity() {
                     )
                 }
 
+                // A reward card lifted out of the grid to be scratched, over a dimmed, blurred page.
+                scratching?.let { tgt ->
+                    ScratchStage(
+                        target = tgt, t = scratchT,
+                        onClose = { scratching = null },
+                        onRevealed = { row ->
+                            lifecycleScope.launch {
+                                connected?.let { Rewards.reveal(it, row.id) }
+                                Live.bump()
+                            }
+                        },
+                    )
+                }
+
+                // The authorization sheet, and what happens when it succeeds: the screen the person
+                // asked for opens. Keyed on the session so it fires the moment it arrives.
+                authGate?.let { gate ->
+                    AuthorizeSheet(
+                        what = gate.what,
+                        wallet = walletList.firstOrNull { it.address == connected },
+                        onClose = { authGate = null },
+                    )
+                }
+                LaunchedEffect(Session.version, authGate) {
+                    val gate = authGate
+                    if (gate != null && Session.valid(connected)) {
+                        authGate = null
+                        gate.then()
+                    }
+                }
+
                 // At the root, outside the page's gutter, like every other sheet here.
                 if (refer) {
                     ReferSheet(
@@ -1692,32 +1961,62 @@ class MainActivity : ComponentActivity() {
                 // opened it and §2.3 replaced it with a second sheet stacked inside `ReferSheet`,
                 // so nothing could set it any more — it went with the `Tab.REFERRALS` branch.
 
+                // Adding a wallet is a sheet over the Wallets screen, not a page that replaces it.
+                picker?.let { apps ->
+                    Tray(onClose = { picker = null }) {
+                        Spacer(Modifier.height(Space.lead))
+                        WalletPicker(apps, onPick = { app -> picker = null; linkWallet(app) })
+                    }
+                }
+
+                vouchWallet?.let { w0 ->
+                    // Read fresh from the list: a rename or a relink while the sheet is open.
+                    val w = walletList.firstOrNull { it.address == w0.address } ?: w0
+                    val standing = remember(w.address, vouchTick, walletList) {
+                        standingOf(this@MainActivity, w, walletList)
+                    }
+                    VouchSheet(
+                        w = w, standing = standing, linking = linking,
+                        onVouch = { owner, target -> vouchFrom(owner, target) { applyMode(amount) } },
+                        onForget = { target -> forgetVouch(target) { applyMode(amount) } },
+                        onClose = { vouchWallet = null },
+                    )
+                }
+
+                renamingWallet?.let { w ->
+                    WalletNameSheet(
+                        w, onClose = { renamingWallet = null },
+                        onSave = { name ->
+                            wallet.linked.setAlias(w.address, name)
+                            // The list only: refreshWallets() also blanks the balance and tokens,
+                            // which a rename has no reason to disturb.
+                            walletList = wallet.linked.all()
+                            renamingWallet = null
+                            push(if (name == null) "- ${w.short} is back to its own name" else "- renamed to $name")
+                        },
+                    )
+                }
+
+                receiving?.let { w ->
+                    Tray(onClose = { receiving = null }) {
+                        Spacer(Modifier.height(Space.lead))
+                        Text("Receive", color = D.Black, style = Type.title)
+                        Spacer(Modifier.height(Space.tight))
+                        Text("Anyone can scan this to pay ${w.username ?: w.name}.", color = D.Quiet, style = Type.caption)
+                        Spacer(Modifier.height(Space.lead))
+                        QrCode("solana:${w.address}", Modifier.size(240.dp).align(Alignment.CenterHorizontally))
+                        Spacer(Modifier.height(Space.lead))
+                        Text(w.address, color = D.Quiet, style = Type.mono, textAlign = TextAlign.Center,
+                            modifier = Modifier.fillMaxWidth())
+                        Spacer(Modifier.height(Space.lead))
+                    }
+                }
+
                 walletDetails?.let { w ->
-                    WalletSheet(
+                    WalletChecksSheet(
                         w = w,
                         linking = linking,
-                        onLink = {
-                            val owner = Identity.named(
-                                this@MainActivity,
-                                wallet.linked.all().map { it.address }.filter { it != w.address },
-                            )?.first
-                            if (owner == null) {
-                                push("— no wallet here owns a name to lend")
-                            } else lifecycleScope.launch {
-                                linking = true
-                                val named = wallet.linked.all().first { it.address == owner }
-                                val link = wallet.link(named, w.address)
-                                linking = false
-                                if (link == null) {
-                                    push("— ${named.name} did not sign; nothing changed")
-                                } else {
-                                    push("+ ${w.short} now shows ${Identity.domain(this@MainActivity, owner)}")
-                                    // The armed request still carries the old payload.
-                                    TapHostApduService.pending.value = null
-                                    applyMode(amount)
-                                }
-                            }
-                        },
+                        onLink = { vouchFor(w) { applyMode(amount) } },
                         onClose = { walletDetails = null },
                         onRemove = {
                             walletDetails = null
@@ -1727,7 +2026,7 @@ class MainActivity : ComponentActivity() {
                             connected = wallet.address
                             refreshWallets()
                             applyMode(amount)
-                            push("— removed ${w.name} ${w.short}")
+                            push("- removed ${w.name} ${w.short}")
                         },
                     )
                 }
@@ -1761,10 +2060,16 @@ class MainActivity : ComponentActivity() {
                             Identity.setLabel(this@MainActivity, name)
                             myName = Identity.label(this@MainActivity)
                             renaming = false
+                            // The name you appear as is also your .air name, so people can pay you by
+                            // typing it. Quietly: a name somebody else holds just stays a display name.
+                            lifecycleScope.launch {
+                                name.lowercase().filter { it.isLetterOrDigit() || it == '_' }.takeIf { it.length >= 3 }
+                                    ?.let { runCatching { ServerClient.claimAirName(it) } }
+                            }
                             // The armed request carries the old name until it is rebuilt.
                             TapHostApduService.pending.value = null
                             applyMode(amount)
-                            push("— you now appear as $myName")
+                            push("- you now appear as $myName")
                         },
                     )
                 }
@@ -1777,7 +2082,7 @@ class MainActivity : ComponentActivity() {
                             val payer = connected
                             incoming = null
                             if (payer == null) {
-                                status = Status.Problem("Connect a wallet first", "It's saved in Requests — pay it after connecting.")
+                                status = Status.Problem("Connect a wallet first", "It's saved in Requests. Pay it after connecting.")
                             } else {
                                 // lifecycleScope, not the composition's scope: paying suspends
                                 // inside the wallet for as long as the user takes, and a
@@ -1796,12 +2101,12 @@ class MainActivity : ComponentActivity() {
                         },
                         onLater = {
                             incoming = null
-                            push("— saved ${req.amount} ${req.symbol} for ${req.label} in Requests")
+                            push("- saved ${req.amount} ${req.symbol} for ${req.label} in Requests")
                         },
                         onDecline = {
                             incoming = null
                             inbox.remove(req.reference); refreshLists()
-                            push("— declined ${req.amount} ${req.symbol} from ${req.label}")
+                            push("- declined ${req.amount} ${req.symbol} from ${req.label}")
                             lifecycleScope.launch {
                                 ServerClient.reject(req.reference, Identity.label(this@MainActivity))
                             }
@@ -1838,7 +2143,7 @@ class MainActivity : ComponentActivity() {
             req.link()?.let { Vouch.remember(this, it.owner, it.wallet, it.expiresDay, it.signature) }
             val isNew = contacts.record(req.recipient, req.label, false, brand = req.brand)
             contactCount = contacts.count()
-            push(if (isNew) "+ new contact ${req.label}" else "— known contact ${req.label}")
+            push(if (isNew) "+ new contact ${req.label}" else "- known contact ${req.label}")
             // The payer registers too, so the server watches this request even if the payee's
             // phone happened to be offline when it served it.
             // With our own address as payer: a request received by tapping was registered by
@@ -1854,7 +2159,7 @@ class MainActivity : ComponentActivity() {
         // Never swap the request under a sheet someone is reading — they might approve a
         // different one than they read. The new one waits in Requests.
         if (incoming != null) {
-            push("— another request from ${req.label} saved in Requests")
+            push("- another request from ${req.label} saved in Requests")
             return
         }
         incoming = req
@@ -1878,7 +2183,7 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             val sent = ServerClient.sendMessage(from, to, body, Identity.label(this@MainActivity))
             if (!sent) {
-                push("✗ message not delivered — it stays here, send it again")
+                push("✗ message not delivered, it stays here, send it again")
                 status = Status.Problem("Message not delivered",
                     "It's still in the thread. Check your connection and send it again.")
             }
@@ -1925,14 +2230,14 @@ class MainActivity : ComponentActivity() {
                 val line = "✗ ${found.signature.take(8)}… used this request but ${found.why}"
                 if (log.lastOrNull() != line && line !in log) {
                     push(line)
-                    status = Status.Problem("Payment didn't cover the request", "Still waiting — ${found.why}.")
+                    status = Status.Problem("Payment didn't cover the request", "Still waiting, ${found.why}.")
                 }
             }
             is Chain.Found.Broken -> status = Status.Problem(
                 "Can't check for payment", "Solana rejected our query: ${found.why}",
             )
             Chain.Found.Offline -> if (++offlineStreak == 3) status = Status.Problem(
-                "Can't reach Solana", "Still waiting — we'll check again when you're back online.",
+                "Can't reach Solana", "Still waiting, we'll check again when you're back online.",
             )
             Chain.Found.NotYet -> offlineStreak = 0
         }
@@ -1960,7 +2265,7 @@ class MainActivity : ComponentActivity() {
         if (found !is Chain.Found.Yes) return
         inbox.markPaid(req.reference, found.signature)
         refreshLists()
-        push("✓ ${req.amount} ${req.symbol} to ${req.label} was already paid — ${found.signature.take(10)}…")
+        push("✓ ${req.amount} ${req.symbol} to ${req.label} was already paid, ${found.signature.take(10)}…")
     }
 
     /** One payment arrived, in full. */
@@ -1974,7 +2279,7 @@ class MainActivity : ComponentActivity() {
         refreshLists()
         paidSignature = signature
         if (status is Status.Problem) status = Status.Idle
-        push("✓ PAID ${e.amount} ${e.symbol} — $signature")
+        push("✓ PAID ${e.amount} ${e.symbol}, $signature")
         Haptics.success(this)
     }
 
@@ -1989,7 +2294,7 @@ class MainActivity : ComponentActivity() {
                 inbox.markPaid(req.reference, result.signature); refreshLists()
                 status = Status.Sent(result.signature)
                 Haptics.success(this)
-                push("✓ CONFIRMED — ${Chain.explorerUrl(result.signature)}")
+                push("✓ CONFIRMED, ${Chain.explorerUrl(result.signature)}")
                 contacts.record(req.recipient, req.label, false, paid = req.amount.toDoubleOrNull() ?: 0.0, brand = req.brand)
                 contactCount = contacts.count()
                 // Nudge the server to look now rather than on its next sweep.
@@ -2000,7 +2305,7 @@ class MainActivity : ComponentActivity() {
             }
             is PayResult.AlreadyPaid -> {
                 inbox.markPaid(req.reference, result.signature); refreshLists()
-                status = Status.Problem("Already paid", "This request was paid before — nothing new was sent.")
+                status = Status.Problem("Already paid", "This request was paid before, nothing new was sent.")
             }
             is PayResult.Error -> {
                 status = Status.Problem(result.title, "${result.detail} It's still in Requests.")
@@ -2059,12 +2364,93 @@ class MainActivity : ComponentActivity() {
     /** Bumped on resume so composables that cache device state can re-read it. */
     private var resumeTick by mutableIntStateOf(0)
 
+    /** A screen that needs a session, waiting for one: what it is for, and what to do once signed in. */
+    private class AuthGate(val what: String, val then: () -> Unit)
+    private var authGate by mutableStateOf<AuthGate?>(null)
+
+    /**
+     * Runs [go] now when signed in; otherwise opens the authorization sheet and runs it the moment
+     * the session arrives. Rewards and Referrals are reached through here, so nobody lands on a
+     * screen that can only tell them it cannot read anything.
+     */
+    private fun gated(what: String, go: () -> Unit) {
+        if (!ServerClient.enabled || connected == null || Session.valid(connected)) go()
+        else authGate = AuthGate(what, go)
+    }
+    private fun openRewards() = gated("see your rewards") { tab = Tab.REWARDS }
+    private fun openRefer() = gated("see your referral code") { refer = true }
+
+    private var signInRunning = false
+    init {
+        // A screen's Authorize button: ask now, without waiting out the pause after a failed try.
+        Session.authorize = { connected?.let { signInFailedAt = 0L; requestSignIn(it) } }
+        // Which wallet each request is about: whichever is active.
+        Session.acting = { connected }
+    }
+    private var signInFailedAt = 0L
+    private var signInFor: String? = null
+
+    /**
+     * Asks for a session if there is none: one attempt at a time, and not again for a while after
+     * one failed or was declined.
+     *
+     * Runs in [lifecycleScope], not in a Compose effect, so a recomposition or a resume cannot
+     * cancel it half way. Waits until the app is in front again (and a beat after) before opening
+     * the wallet: the wallet's connect sheet may still be closing, and a prompt launched into it
+     * is torn down at once. Never during a payment — the sign sheet would land on top of it.
+     */
+    private fun requestSignIn(addr: String) {
+        if (signInRunning || busy || !ServerClient.enabled || Session.valid(addr)) return
+        if (signInFor != addr) { signInFor = addr; signInFailedAt = 0L }
+        if (System.currentTimeMillis() - signInFailedAt < SIGN_IN_RETRY_MS) return
+        signInRunning = true
+        Session.signingIn = true
+        Session.failed = false
+        lifecycleScope.launch {
+            try {
+                while (!lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) delay(100)
+                delay(500)
+                if (connected != addr || Session.valid(addr)) return@launch
+                // Signed in for ANOTHER wallet of the same person: this one joins that account with
+                // one proof from itself, and from then on switching asks for nothing. Only with no
+                // session at all is it a plain sign-in.
+                val ok = if (Session.hasToken) {
+                    when (Session.link(this@MainActivity, wallet, addr)) {
+                        Session.Link.OK -> true
+                        // Already another account's (another phone, an earlier sign-up): it cannot be
+                        // taken over, so it signs in as itself.
+                        Session.Link.IN_USE -> Session.signIn(this@MainActivity, wallet, addr)
+                        Session.Link.FAILED -> false
+                    }
+                } else Session.signIn(this@MainActivity, wallet, addr)
+                if (ok) {
+                    signInFailedAt = 0L
+                    push("signed in as ${addr.take(6)}…")
+                } else {
+                    signInFailedAt = System.currentTimeMillis()
+                    Session.failed = true
+                    push("- sign-in did not complete; will try again shortly")
+                }
+            } catch (e: Exception) {
+                signInFailedAt = System.currentTimeMillis()
+                Session.failed = true
+            } finally {
+                signInRunning = false
+                Session.signingIn = false
+            }
+        }
+    }
+
+
     override fun onResume() {
         super.onResume()
         resumeTick++
         // Back from the wallet, or back after hours away: anything could have been paid.
         checkAllNow = true
         refreshLists()
+        notifOff = !Push.canNotify(this)
+        // The popup is another activity and records contacts there; Home reads the count here.
+        contactCount = contacts.count()
         // And anything bought could have been delivered while the app was gone.
         catchUpOrders()
         applyMode()
@@ -2115,6 +2501,10 @@ class MainActivity : ComponentActivity() {
          * second tap, short enough that the next person in line never notices it.
          */
         const val REARM_AFTER_PART_MS = 1_200L
+        /** After a sign-in that failed or was declined, how long before the app asks the wallet again by itself. */
+        const val SIGN_IN_RETRY_MS = 45_000L
+        /** Seeker Wallet's package: present only on a Seeker, where it is the system default wallet. */
+        const val SEEKER_WALLET = "com.solanamobile.wallet"
     }
 }
 
@@ -2308,7 +2698,51 @@ private fun BalanceCard(
             // The face is `Figure` (Geist), which is what `Type.display` is set in; the
             // currency symbol takes `CurrencyFace`, the Bricolage subset that answers for
             // `$ ₹ €`. Both were Bricolage-the-display-face, which is the wordmark's font.
-            Row(verticalAlignment = Alignment.Bottom) { // EXPERIMENT: alignByBaseline
+            // Still waiting for the first answer (no balance, no total, not a failure): the figure's
+            // own shape, not a dash. A failed lookup is `Offline`, not null, and keeps its "—".
+            var hidden by rememberSaveable { mutableStateOf(true) }
+            // The reveal animates only when it means something: the first time, and again after
+            // the person has been away long enough to have forgotten it. Flipping the eye over and
+            // over just changes the figure, so the motion keeps its value instead of becoming noise.
+            val animCtx = LocalContext.current
+            val reveal = remember { androidx.compose.animation.core.Animatable(1f) }
+            var firstRun by remember { mutableStateOf(true) }
+            LaunchedEffect(hidden) {
+                if (firstRun) { firstRun = false; return@LaunchedEffect }
+                val prefs = animCtx.getSharedPreferences("ui", Context.MODE_PRIVATE)
+                val now = System.currentTimeMillis()
+                if (now - prefs.getLong("balance_anim_at", 0L) >= BALANCE_ANIM_GAP_MS) {
+                    prefs.edit().putLong("balance_anim_at", now).apply()
+                    reveal.snapTo(0f)
+                    reveal.animateTo(1f, androidx.compose.animation.core.tween(520, easing = androidx.compose.animation.core.FastOutSlowInEasing))
+                }
+            }
+            val fx = Modifier.graphicsLayer {
+                val v = reveal.value
+                alpha = v
+                translationY = (1f - v) * 16.dp.toPx()
+                scaleX = 0.94f + 0.06f * v; scaleY = 0.94f + 0.06f * v
+            }
+            if (balance == null && totalUsd == null) BalanceSkeleton() else Row(verticalAlignment = Alignment.Bottom) { // EXPERIMENT: alignByBaseline
+                if (hidden) {
+                    // Hidden until asked: a balance on a screen anybody can glance at is the first
+                    // thing a stranger reads. The dots keep the figure's size so nothing jumps.
+                    // The currency sign stays: only the amount is private.
+                    if (parts != null && parts.symbolFirst) {
+                        Text(
+                            buildAnnotatedString {
+                                withStyle(SpanStyle(baselineShift = BaselineShift(SIGN_LIFT))) { append(parts.symbol) }
+                            },
+                            color = D.Quiet, fontSize = 30.sp,
+                            fontWeight = FontWeight.Bold, fontFamily = CurrencyFace, style = Figures,
+                            modifier = Modifier.alignByBaseline().then(fx).padding(end = 8.dp),
+                        )
+                    }
+                    Text(
+                        "••••••", color = D.Black, fontSize = 60.sp, fontWeight = FontWeight.ExtraBold,
+                        fontFamily = Figure, modifier = Modifier.alignByBaseline().then(fx),
+                    )
+                } else {
                 // The sign is CENTRED on the figures, not sat on their baseline. Measured
                 // from the fonts: the centre of a Geist 800 digit is 0.355em above the
                 // baseline, the centre of Bricolage's "$" is 0.329em of its own size, and the
@@ -2324,21 +2758,21 @@ private fun BalanceCard(
                         },
                         color = D.Quiet, fontSize = 30.sp,
                         fontWeight = FontWeight.Bold, fontFamily = CurrencyFace, style = Figures,
-                        modifier = Modifier.alignByBaseline().padding(end = 8.dp),
+                        modifier = Modifier.alignByBaseline().then(fx).padding(end = 8.dp),
                     )
                 }
                 FlowFigure(
-                    text = parts?.whole ?: bare ?: "—",
+                    text = parts?.whole ?: bare ?: "-",
                     fontSize = 60.sp, color = D.Black,
                     fontWeight = FontWeight.ExtraBold, fontFamily = Figure,
-                    modifier = Modifier.alignByBaseline(),
+                    modifier = Modifier.alignByBaseline().then(fx),
                 )
                 parts?.fraction?.takeIf { it.isNotEmpty() }?.let { frac ->
                     FlowFigure(
                         text = frac,
                         fontSize = 26.sp, color = D.Quiet,
                         fontWeight = FontWeight.Bold, fontFamily = Figure,
-                        modifier = Modifier.alignByBaseline(),
+                        modifier = Modifier.alignByBaseline().then(fx),
                     )
                 }
                 // "2,84 €" — the locale puts it after the figures, so the app does too.
@@ -2351,7 +2785,7 @@ private fun BalanceCard(
                         },
                         color = D.Quiet, fontSize = 30.sp,
                         fontWeight = FontWeight.Bold, fontFamily = CurrencyFace, style = Figures,
-                        modifier = Modifier.alignByBaseline().padding(start = 8.dp),
+                        modifier = Modifier.alignByBaseline().then(fx).padding(start = 8.dp),
                     )
                 }
                 if (parts == null && sol != null) {
@@ -2361,6 +2795,19 @@ private fun BalanceCard(
                         " SOL", color = D.Quiet, style = Type.body,
                         modifier = Modifier.padding(bottom = 8.dp),
                     )
+                }
+                }
+                Spacer(Modifier.width(6.dp))
+                // Centred on the figures' own middle, not the row's bottom: the digits sit above
+                // the baseline by 0.355em, so the box is lined up to that, not to the row.
+                val lift = with(LocalDensity.current) { (0.355f * 60.sp.toPx()) }
+                Box(
+                    Modifier.size(44.dp).clip(CircleShape).clickable { hidden = !hidden }
+                        .alignBy { it.measuredHeight / 2 + lift.toInt() },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    HiIcon(if (hidden) Hi.EyeOff else Hi.Eye, D.Quiet, 24.dp,
+                        contentDescription = if (hidden) "Show balance" else "Hide balance")
                 }
             }
 
@@ -2552,7 +2999,7 @@ private fun checksFor(context: Context, w: Linked): List<Check> {
  * rare, so it gets the entrance; everything on it is still interruptible.
  */
 @Composable
-private fun WalletSheet(
+private fun WalletChecksSheet(
     w: Linked,
     linking: Boolean,
     onLink: () -> Unit,
@@ -2680,131 +3127,6 @@ private fun whenLinked(at: Long): String {
         days == 1L -> "yesterday"
         days < 30L -> "$days days ago"
         else -> java.text.SimpleDateFormat("d MMM yyyy", java.util.Locale.getDefault()).format(java.util.Date(at))
-    }
-}
-
-@Composable
-private fun WalletPicker(apps: List<WalletLink.App>, onPick: (WalletLink.App) -> Unit, onClose: () -> Unit) {
-    Column(Modifier.fillMaxWidth()) {
-        Text("Add a wallet", color = D.Black, style = Type.title)
-        Spacer(Modifier.height(Space.tight))
-        Text("AirPay never sees your keys — the wallet signs.", color = D.Quiet, style = Type.caption)
-        Spacer(Modifier.height(Space.lead))
-        if (apps.isEmpty()) {
-            Text("No wallet apps found on this phone.", color = D.Quiet, style = Type.body)
-        }
-        // Rows now, not cards: space and a hairline instead of a grey body.
-        apps.forEachIndexed { i, app ->
-            Row(
-                Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable { onPick(app) }
-                    .padding(vertical = Space.row),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                val icon = remember(app.pkg) { app.icon?.let { runCatching { it.toBitmap().asImageBitmap() }.getOrNull() } }
-                if (icon != null) {
-                    Image(BitmapPainter(icon), contentDescription = null, modifier = Modifier.size(34.dp).clip(CircleShape))
-                } else {
-                    // A white disc with a hairline, not a pale blue one: the tints are gone.
-                    Box(
-                        Modifier.size(34.dp).clip(CircleShape).background(D.White)
-                            .border(1.5.dp, D.Line, CircleShape),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        HiIcon(Hi.Wallet, D.BlueInk, 17.dp)
-                    }
-                }
-                Spacer(Modifier.width(Space.inline))
-                Text(app.label, color = D.Black, style = Type.body, modifier = Modifier.weight(1f))
-                HiIcon(Hi.ArrowUpRight, D.Quiet, 20.dp)
-            }
-            if (i < apps.lastIndex) RowLine()
-        }
-        Spacer(Modifier.height(Space.lead))
-        SecondaryButton("Cancel", onClose, Modifier.fillMaxWidth())
-    }
-}
-
-@Composable
-private fun WalletsScreen(
-    list: List<Linked>,
-    selected: String?,
-    busy: Boolean,
-    onPick: (Linked) -> Unit,
-    onAdd: () -> Unit,
-    onClose: () -> Unit,
-    picker: List<WalletLink.App>? = null,
-    onPickApp: (WalletLink.App) -> Unit = {},
-    onClosePicker: () -> Unit = {},
-) {
-    if (picker != null) {
-        WalletPicker(picker, onPickApp, onClosePicker)
-        return
-    }
-    Column(Modifier.fillMaxSize().verticalScroll(rememberHeldScroll("wallets"))) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("Wallets", color = D.Black, style = Type.title)
-            Spacer(Modifier.weight(1f))
-            // A header action, not a button: blue ink in a 48dp hit area, no grey pill.
-            Box(
-                Modifier.clip(RoundedCornerShape(12.dp))
-                    .clickable(enabled = !busy, onClick = onAdd)
-                    .heightIn(min = 48.dp).padding(horizontal = 8.dp),
-                contentAlignment = Alignment.Center,
-            ) { Text(if (busy) "…" else "Add wallet", color = D.BlueInk, style = Type.body) }
-        }
-        Spacer(Modifier.height(Space.lead))
-        list.forEach { w ->
-            val on = w.address == selected
-            Column(
-                Modifier.fillMaxWidth().padding(bottom = Space.inline).heightIn(min = 150.dp)
-                    .clip(RoundedCornerShape(22.dp)).background(w.colour)
-                    .clickable { onPick(w) }
-                    .padding(20.dp),
-            ) {
-                // Black on a light card, white on a dark one. The same brightness test the
-                // wallet name uses, applied to the card it is written on.
-                val lum = 0.2126f * w.colour.red + 0.7152f * w.colour.green + 0.0722f * w.colour.blue
-                val ink = if (lum > 0.5f) D.Black else D.White
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    // Ink chosen against the card, not assumed. These used to be dark on the
-                    // understanding that every brand colour was light — true until Backpack
-                    // became #212122, at which point its name, its address and its button all
-                    // went invisible on their own card.
-                    // Full strength, not 80% and 60%: the alphas were quietly spending the
-                    // contrast the brightness test above had just won.
-                    Text(w.name, color = ink, style = Type.body)
-                    Spacer(Modifier.weight(1f))
-                    Text("•••• ${w.address.takeLast(4)}", color = ink, style = Type.body.figure())
-                }
-                Spacer(Modifier.weight(1f))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    // The mark on its own. The disc behind it was a tint of the card's ink.
-                    HiIcon(Hi.Wallet, ink, 24.dp)
-                    Spacer(Modifier.weight(1f))
-                    // What "selected" means, said rather than implied by a tick: this is the
-                    // wallet a tap pays from.
-                    if (on) {
-                        Row(
-                            Modifier.clip(RoundedCornerShape(999.dp)).background(D.White)
-                                .padding(horizontal = 12.dp, vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            HiIcon(Hi.Tick, D.Black, 16.dp)
-                            Spacer(Modifier.width(Space.tight))
-                            Text("Tapping with this", color = D.Black, style = Type.caption)
-                        }
-                    } else {
-                        Text("Use this one", color = ink, style = Type.caption)
-                    }
-                }
-            }
-        }
-        if (list.isEmpty()) {
-            Text("No wallets linked yet.", color = D.Quiet, style = Type.body)
-        }
-        Spacer(Modifier.height(Space.lead))
-        SecondaryButton("Done", onClose, Modifier.fillMaxWidth())
-        Spacer(Modifier.height(Space.gutter))
     }
 }
 
@@ -3002,7 +3324,7 @@ private fun ConfirmSheet(
                     Text("✓ Verified Seeker", color = D.BlueInk, style = Type.caption)
                 }
                 Spacer(Modifier.height(Space.inline))
-                Text("No rush — this stays in Requests until you pay it.",
+                Text("No rush, this stays in Requests until you pay it.",
                     color = D.Quiet, style = Type.caption)
             }
         },
@@ -3124,27 +3446,101 @@ private fun RechargeSection(
     val e164 = Sims.e164(number)
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberHeldScroll("recharge"))) {
-        MainnetNote()
-
-        Text("MOBILE NUMBER", color = D.Quiet, style = Type.micro)
-        Spacer(Modifier.height(Space.lead))
-        OutlinedTextField(
-            value = number,
-            onValueChange = { v -> onNumber(v.filter { it.isDigit() }.take(12)) },
-            singleLine = true,
-            placeholder = { Text("10 digits", color = D.Quiet) },
-            prefix = { Text("+91 ", color = D.Quiet) },
-            isError = number.isNotBlank() && e164 == null,
-            supportingText = {
-                Text(
-                    if (number.isNotBlank() && e164 == null) "That is not a 10-digit number."
-                    else "The recharge is credited to this number.",
-                    color = if (number.isNotBlank() && e164 == null) D.DangerInk else D.Quiet,
-                )
-            },
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
-            modifier = Modifier.fillMaxWidth(),
-        )
+        var picking by rememberSaveable { mutableStateOf(false) }
+        // Two states, as the reference apps have them: a bare number box until a network is
+        // known, then the box steps aside for a header that says who is being recharged. It
+        // comes back only when somebody taps Change, because the number is as correctable as
+        // the network.
+        if (operator == null || picking) {
+            val bad = number.isNotBlank() && e164 == null
+            val pill = RoundedCornerShape(999.dp)
+            Row(
+                Modifier.fillMaxWidth().height(56.dp).clip(pill)
+                    .border(1.5.dp, if (bad) D.DangerInk else D.Line, pill),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Spacer(Modifier.width(18.dp))
+                HiIcon(Hi.Search, D.Quiet, 20.dp)
+                Spacer(Modifier.width(10.dp))
+                Text("+91", color = D.Quiet, style = Type.body)
+                Spacer(Modifier.width(8.dp))
+                Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
+                    if (number.isEmpty()) Text("Enter mobile number", color = D.Quiet, style = Type.body, maxLines = 1)
+                    BasicTextField(
+                        value = number,
+                        onValueChange = { v -> onNumber(v.filter { it.isDigit() }.take(12)) },
+                        singleLine = true,
+                        textStyle = Type.body.copy(color = D.Black),
+                        cursorBrush = SolidColor(D.Blue),
+                        // The plain number pad: digits and nothing else. `Phone` is the dialler
+                        // layout, with * # + and pause keys that have no place in a recharge.
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+                Spacer(Modifier.width(16.dp))
+            }
+            Spacer(Modifier.height(8.dp))
+            Text(
+                if (bad) "That is not a 10-digit number." else "The recharge is credited to this number.",
+                color = if (bad) D.DangerInk else D.Quiet, style = Type.caption,
+                modifier = Modifier.padding(horizontal = 6.dp),
+            )
+            // Numbers this phone has recharged before, newest first, one row per number — with the
+            // network each is on and what was bought last, read from this phone's own purchases.
+            val recents = remember(past) {
+                past.filter { o -> o.recipient?.removePrefix("+91")?.length == 10 }
+                    .distinctBy { it.recipient?.removePrefix("+91") }.take(4)
+            }
+            if (recents.isNotEmpty() && number.isEmpty()) {
+                Spacer(Modifier.height(Space.section))
+                Text("Recent recharges", color = D.Black, style = Type.heading)
+                Spacer(Modifier.height(Space.lead))
+                val cardShape = RoundedCornerShape(22.dp)
+                Column(Modifier.fillMaxWidth().clip(cardShape).border(1.5.dp, D.Line, cardShape)) {
+                    recents.forEachIndexed { i, o ->
+                        val n = o.recipient!!.removePrefix("+91")
+                        val mark = operatorMark(o.name)
+                        // The network's own logo filling the whole circle. Until a network is one of the
+                        // four we carry, the drawn mark stands in and the name is written beside the number.
+                        val logo = operatorLogoRes(o.name)
+                        if (i > 0) RowLine()
+                        Row(
+                            Modifier.fillMaxWidth().clickable { onNumber(n) }.padding(horizontal = 16.dp, vertical = 14.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            if (logo != null) {
+                                androidx.compose.foundation.Image(
+                                    androidx.compose.ui.res.painterResource(logo), contentDescription = mark.name,
+                                    modifier = Modifier.size(48.dp).clip(CircleShape),
+                                    contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                                )
+                            } else {
+                                Box(Modifier.size(48.dp).clip(CircleShape).background(mark.color), contentAlignment = Alignment.Center) {
+                                    Text(mark.letters, color = D.White, style = Type.heading, maxLines = 1)
+                                }
+                            }
+                            Spacer(Modifier.width(14.dp))
+                            Column(Modifier.weight(1f)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(n, color = D.Black, style = Type.mono)
+                                    if (logo == null) {
+                                        Spacer(Modifier.width(10.dp))
+                                        PlanPill(mark.name, outlined = true)
+                                    }
+                                }
+                                Spacer(Modifier.height(Space.tight))
+                                Row {
+                                    Text("Last recharged ", color = D.Quiet, style = Type.caption)
+                                    Text(ago(o.at), color = D.Black, style = Type.caption.copy(fontWeight = FontWeight.Bold))
+                                }
+                            }
+                            HiIcon(Hi.ArrowRight, D.Quiet, 20.dp)
+                        }
+                    }
+                }
+            }
+        }
 
         // The lookup runs itself, the moment the number is complete. It used to be a button,
         // which asked somebody to tell the app to do the one thing it was always going to do.
@@ -3170,47 +3566,103 @@ private fun RechargeSection(
         // The list only comes back when it has to: when the lookup could not tell, or when
         // somebody taps the answer to disagree with it. That path stays, because this decides
         // where real money goes and an app that cannot be corrected is worse than a wrong one.
-        var picking by rememberSaveable { mutableStateOf(false) }
         var query by rememberSaveable(operator?.id) { mutableStateOf("") }
         val chosen = operator
 
         if (chosen != null && !picking) {
-            // The header of the reference screen: who is being recharged, on which network,
-            // with the one way to disagree. It carries the number as well as the network —
-            // this is the last thing between a tap and real money leaving, and the number is
-            // the half that cannot be checked afterwards.
+            // One card for the whole question "who, on what, and what next": the number and its
+            // network with the one way to disagree, what this number bought last time, and the
+            // small data top-ups that people reach for when they have run out mid-day.
             Spacer(Modifier.height(Space.section))
-            // A row with a hairline under it, not a grey card. The disc stays: it is a drawn
-            // mark carrying a white letter at 19sp bold, which is the smallest size white on
-            // D.Blue passes at.
-            Row(
-                Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(bottom = Space.row),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                val mark = chosen.name.removeSuffix(" India").removeSuffix(" Bundles")
-                Box(
-                    Modifier.size(42.dp).clip(CircleShape).background(D.Blue),
+            val symbol = symbolFor(chosen.currency)
+            val headPlans = remember(chosen.id) {
+                chosen.packages.ifEmpty { chosen.values.map { Shop.Package(it, it.toIntOrNull() ?: 0) } }
+                    .sortedBy { it.amount }
+            }
+            val last = remember(e164, past) {
+                past.firstOrNull { it.recipient != null && it.recipient == e164 }
+            }
+            val again = last?.let { l -> headPlans.firstOrNull { it.value == l.value } }
+            val quick = remember(headPlans) {
+                if (!chosen.sellsPlans) emptyList() else headPlans.filter {
+                    val sh = Plans.shelves(it.value)
+                    Plans.Shelf.Short in sh && Plans.Shelf.Data in sh && Plans.of(it.value).days != null
+                }.take(8)
+            }
+            val mark = chosen.name.removeSuffix(" India").removeSuffix(" Bundles")
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                val netLogo = operatorLogoRes(chosen.name)
+                if (netLogo != null) {
+                    androidx.compose.foundation.Image(
+                        androidx.compose.ui.res.painterResource(netLogo), contentDescription = mark,
+                        modifier = Modifier.size(56.dp).clip(CircleShape),
+                        contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                    )
+                } else Box(
+                    Modifier.size(56.dp).clip(CircleShape).background(D.Blue),
                     contentAlignment = Alignment.Center,
-                ) {
-                    Text(mark.take(1).uppercase(), color = D.White, style = Type.heading)
-                }
+                ) { Text(mark.take(1).uppercase(), color = D.White, style = Type.title) }
                 Spacer(Modifier.width(Space.inline))
                 Column(Modifier.weight(1f)) {
-                    Text(mark.uppercase(), color = D.Black, style = Type.body)
+                    // The number is the half that cannot be checked afterwards, so it is set to
+                    // be read character by character.
+                    Text("+91 $number", color = D.Black, style = Type.mono)
                     Spacer(Modifier.height(Space.tight))
-                    // The number is the half that cannot be checked afterwards, so it is set
-                    // to be read character by character.
-                    Text("+91 $number", color = D.Quiet, style = Type.mono)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("$mark Prepaid", color = D.Quiet, style = Type.caption)
+                        Spacer(Modifier.width(10.dp))
+                        Text(
+                            "Change", color = D.BlueInk, style = Type.caption,
+                            textDecoration = androidx.compose.ui.text.style.TextDecoration.Underline,
+                            modifier = Modifier.clickable { picking = true }.padding(vertical = 8.dp),
+                        )
+                    }
                 }
-                Spacer(Modifier.width(Space.tight))
-                Box(
-                    Modifier.clip(RoundedCornerShape(10.dp))
-                        .clickable { picking = true }
-                        .heightIn(min = 48.dp).padding(horizontal = 8.dp),
-                    contentAlignment = Alignment.Center,
-                ) { Text("Change", color = D.BlueInk, style = Type.body) }
             }
-            RowLine()
+            // Where to start. Picked by rule from this operator's own list, never by what is
+            // popular: what this number bought before, the smallest data pack, and the cheapest
+            // 5G plan that lasts about a month.
+            val picks = remember(headPlans, again) {
+                val bundles = headPlans.filter { chosen.sellsPlans }
+                val data = bundles.firstOrNull { Plans.Shelf.Short in Plans.shelves(it.value) && Plans.Shelf.Data in Plans.shelves(it.value) }
+                val fiveG = bundles.firstOrNull {
+                    val sh = Plans.shelves(it.value); Plans.Shelf.Fast in sh && Plans.Shelf.Month in sh && Plans.Shelf.Daily in sh
+                }
+                listOfNotNull(again, data, fiveG).distinctBy { it.value }.take(2)
+            }
+            if (picks.isNotEmpty() && e164 != null) {
+                Spacer(Modifier.height(Space.section))
+                Text("Suggested plans", color = D.Black, style = Type.heading)
+                Spacer(Modifier.height(Space.lead))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    picks.forEach { pack ->
+                        val d = Plans.of(pack.value)
+                        val shape = RoundedCornerShape(18.dp)
+                        Column(
+                            Modifier.weight(1f).clip(shape).border(1.5.dp, D.Line, shape)
+                                .clickable { onBuy(chosen, pack.value, e164) }.padding(14.dp),
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(currencyStyled("$symbol${pack.price}"), color = D.Black, style = Type.title.figure(), modifier = Modifier.weight(1f))
+                                Box(Modifier.size(28.dp).clip(CircleShape).background(D.Blue), contentAlignment = Alignment.Center) {
+                                    HiIcon(Hi.ArrowUpRight, D.White, 16.dp)
+                                }
+                            }
+                            Spacer(Modifier.height(Space.tight))
+                            Text(
+                                if (pack === again) "You bought this before" else if (d.data != null && d.days != null && d.days < 28) "Data pack" else Plans.benefits(pack.value).firstOrNull() ?: "Plan",
+                                color = D.Quiet, style = Type.caption, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                            )
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                listOfNotNull(d.data, d.validity?.replaceFirstChar { it.uppercase() }).joinToString(" • ").ifEmpty { pack.value },
+                                color = D.Black, style = Type.body, maxLines = 3,
+                            )
+                        }
+                    }
+                    if (picks.size == 1) Spacer(Modifier.weight(1f))
+                }
+            }
         } else if (picking || (found != null && !finding && chosen == null)) {
             // Either the lookup could not tell, or somebody disagreed with it.
             Spacer(Modifier.height(Space.section))
@@ -3278,7 +3730,7 @@ private fun RechargeSection(
                 // nothing at all, so the size cannot be shown without inventing it. What can
                 // be said is that it exists, which beats a screen implying it does not.
                 Text(
-                    "${chosen.name.removeSuffix(" India")} sells credit here, not plans — it " +
+                    "${chosen.name.removeSuffix(" India")} sells credit here, not plans, it " +
                         "goes to the number's main balance.",
                     color = D.Quiet, style = Type.caption,
                 )
@@ -3286,173 +3738,121 @@ private fun RechargeSection(
                 Text(
                     "What lands as talktime is less than what you pay: tax and the operator's " +
                         "fee come off first, and neither is published here. Credit on its own " +
-                        "does not add validity — a plan does that.",
+                        "does not add validity, a plan does that.",
                     color = D.Quiet, style = Type.caption,
                 )
             }
             Spacer(Modifier.height(Space.lead))
 
-            // What you chose for THIS number last time.
-            //
-            // Every recharge app shows a "recommended plan" here. They get it from a plan API
-            // that ships the category with the data, or from their own record of what you have
-            // bought — nobody can be told what plan a number is currently on, because no third
-            // party is given that (see the note on the operator lookup). So this is the honest
-            // version of the same idea: not a recommendation, a memory.
-            val last = remember(e164, past) {
-                past.firstOrNull { it.recipient != null && it.recipient == e164 }
-            }
-            if (last != null) {
-                val again = plans.firstOrNull { it.value == last.value }
-                // A row with a hairline under it, not a pale blue card: the tints are gone,
-                // and the label is what marks it.
-                Row(
-                    Modifier.fillMaxWidth().heightIn(min = 48.dp)
-                        .clickable(enabled = again != null && e164 != null) {
-                            again?.let { onBuy(chosen, it.value, e164!!) }
-                        }
-                        .padding(vertical = Space.row),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(Modifier.weight(1f)) {
-                        Text("LAST TIME", color = D.Quiet, style = Type.micro)
-                        Spacer(Modifier.height(Space.tight))
-                        Text(
-                            if (again != null && again.amount > 0)
-                                "${symbolFor(chosen.currency)}${again.amount} · ${last.value}"
-                            else last.value,
-                            color = D.Black, style = Type.body,
-                        )
-                        Spacer(Modifier.height(Space.tight))
-                        Text(
-                            if (again == null) "No longer sold — pick another below."
-                            else "You recharged this number ${ago(last.at)}.",
-                            color = D.Quiet, style = Type.caption,
-                        )
-                    }
-                    if (again != null) {
-                        Spacer(Modifier.width(Space.tight))
-                        Box(
-                            Modifier.clip(RoundedCornerShape(999.dp)).background(D.Blue)
-                                .heightIn(min = 48.dp).padding(horizontal = 16.dp),
-                            contentAlignment = Alignment.Center,
-                        ) { Text("Again", color = D.White, style = Type.heading) }
-                    }
-                }
-                RowLine()
-            }
-
-            // Searching a list of fifty is not a nicety. It is also matched against the price,
-            // because the search anybody actually runs is the number they already know.
+            // The list. Search first, then what narrows it, then the shelves, as the reference
+            // apps order them; each only when there is something for it to act on.
             if (chosen.sellsPlans && plans.size > 8) {
-                OutlinedTextField(
-                    value = query,
-                    onValueChange = { query = it },
-                    singleLine = true,
-                    placeholder = { Text("Search — 349, or 28 days", color = D.Quiet) },
-                    leadingIcon = { HiIcon(Hi.Search, D.Quiet, 17.dp) },
-                    modifier = Modifier.fillMaxWidth(),
-                )
+                SearchField(query, "Search e.g. 349 or 28 days") { query = it }
                 Spacer(Modifier.height(12.dp))
             }
-
-            // The shelves, and only the ones with something on them. A tab that opens onto an
-            // empty list is a promise the catalogue did not keep.
             val shelved = remember(chosen.id) { plans.associateWith { Plans.shelves(it.value) } }
-            val tabs = remember(shelved) {
+            val validityShelves = setOf(Plans.Shelf.Short, Plans.Shelf.Month, Plans.Shelf.Quarter, Plans.Shelf.Yearly)
+            val present = remember(shelved) {
                 Plans.Shelf.entries.filter { sh -> shelved.values.any { sh in it } }
                     .filter { it != Plans.Shelf.All || shelved.size > 4 }
             }
+            val tabs = present.filter { it !in validityShelves }
+            val lengths = present.filter { it in validityShelves }
             var shelf by rememberSaveable(chosen.id) { mutableStateOf(Plans.Shelf.All) }
-            if (tabs.size > 1) {
+            var length by rememberSaveable(chosen.id) { mutableStateOf<Plans.Shelf?>(null) }
+            if (lengths.size > 1) {
                 Row(
-                    Modifier.horizontalScroll(rememberScrollState()).padding(bottom = 12.dp),
+                    Modifier.horizontalScroll(rememberScrollState()).padding(bottom = 14.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    tabs.forEach { t ->
-                        val on = shelf == t
+                    lengths.forEach { t ->
+                        val sel = length == t
                         Box(
                             Modifier.clip(RoundedCornerShape(999.dp))
-                                .background(if (on) D.Black else Color.Transparent)
-                                .border(1.5.dp, if (on) D.Black else D.Line, RoundedCornerShape(999.dp))
-                                .clickable { shelf = t }
-                                .heightIn(min = 48.dp).padding(horizontal = 16.dp),
+                                .background(if (sel) D.Black else D.White)
+                                .border(1.5.dp, if (sel) D.Black else D.Line, RoundedCornerShape(999.dp))
+                                .clickable { length = if (sel) null else t }
+                                .heightIn(min = 44.dp).padding(horizontal = 16.dp),
                             contentAlignment = Alignment.Center,
-                        ) {
-                            Text(t.label, color = if (on) D.White else D.Black, style = Type.body)
+                        ) { Text(t.label, color = if (sel) D.White else D.Black, style = Type.body) }
+                    }
+                }
+            }
+            if (tabs.size > 1) {
+                // Underlined tabs, not pills: this row switches the LIST, where the chips above
+                // only narrow it.
+                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(22.dp)) {
+                    tabs.forEach { t ->
+                        val sel = shelf == t
+                        Column(Modifier.clickable { shelf = t }.heightIn(min = 44.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                            Spacer(Modifier.height(10.dp))
+                            Text(t.label, color = if (sel) D.Black else D.Quiet, style = if (sel) Type.heading else Type.body)
+                            Spacer(Modifier.height(8.dp))
+                            Box(Modifier.height(3.dp).width(if (sel) 28.dp else 0.dp).background(D.Blue, RoundedCornerShape(2.dp)))
                         }
                     }
                 }
+                Spacer(Modifier.height(10.dp))
             }
 
             val ready = e164 != null
             val shown = plans.filter {
-                Plans.matches(query, it.value, it.amount) && shelf in (shelved[it] ?: emptySet())
+                Plans.matches(query, it.value, it.amount) && shelf in (shelved[it] ?: emptySet()) &&
+                    (length == null || length in (shelved[it] ?: emptySet()))
             }
             if (shown.isEmpty()) {
                 Text(
-                    if (query.isBlank()) "Nothing on this shelf."
-                    else "Nothing matches “$query”.",
+                    if (query.isBlank()) "Nothing here." else "Nothing matches “$query”.",
                     color = D.Black, style = Type.body,
                 )
             }
             val symbol = symbolFor(chosen.currency)
-            // Rows split by a hairline, not grey cards; the whole row is still the target.
-            shown.forEachIndexed { i, pack ->
+            val planShape = RoundedCornerShape(20.dp)
+            shown.forEach { pack ->
                 val detail = remember(pack.value) { Plans.of(pack.value) }
+                val perks = remember(pack.value) { Plans.benefits(pack.value) }
                 Column(
-                    Modifier.fillMaxWidth().heightIn(min = 48.dp)
+                    Modifier.fillMaxWidth().padding(bottom = 12.dp).clip(planShape)
+                        .border(1.5.dp, D.Line, planShape)
                         .clickable(enabled = ready) { onBuy(chosen, pack.value, e164!!) }
-                        .padding(vertical = Space.row),
+                        .padding(16.dp),
                 ) {
-                    // 5G is the one badge worth carrying: it is stated in the line rather than
-                    // inferred, and it is what people filter on.
-                    if (detail.fast) {
-                        // The highlight marker, which is what replaced the tints: lime behind
-                        // ink text at 10.83:1. Green was saying "this succeeded", and 5G is
-                        // not a success — it is a fact about the plan.
-                        Text(
-                            "5G", color = D.Black, style = Type.micro,
-                            modifier = Modifier.clip(RoundedCornerShape(5.dp))
-                                .background(D.Highlight)
-                                .padding(horizontal = 8.dp, vertical = 2.dp),
-                        )
-                        Spacer(Modifier.height(Space.tight))
+                    if (detail.fast || "unlimited" in pack.value.lowercase()) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            if (detail.fast) PlanPill("5G")
+                            if ("unlimited" in pack.value.lowercase()) PlanPill("Unlimited")
+                        }
+                        Spacer(Modifier.height(10.dp))
                     }
                     Row(verticalAlignment = Alignment.Top) {
                         Column(Modifier.width(96.dp)) {
                             Text(
                                 currencyStyled("$symbol${pack.price}"),
-                                color = if (ready) D.Black else D.Quiet,
-                                style = Type.heading.figure(),
+                                color = if (ready) D.Black else D.Quiet, style = Type.title.figure(),
                             )
-                            // What it works out to per day, which is the only way a 28-day plan
-                            // and an 84-day one can be compared at a glance.
                             Plans.perDay(pack.amount, detail.days, symbol)?.let {
                                 Text(currencyStyled(it), color = D.Quiet, style = Type.caption.figure())
                             }
                         }
-                        // Validity and data as their own columns. Three numbers side by side are
-                        // read in a glance where the same three inside a sentence are not.
                         if (detail.validity != null || detail.data != null) {
-                            detail.validity?.let { Labelled("Validity", it, Modifier.width(82.dp)) }
+                            detail.validity?.let { Labelled("Validity", it.replaceFirstChar { c -> c.uppercase() }, Modifier.width(88.dp)) }
                             detail.data?.let { Labelled("Data", it, Modifier.weight(1f)) }
-                        } else if (chosen.sellsPlans) {
-                            Text(pack.value, color = D.Quiet, style = Type.caption,
-                                modifier = Modifier.weight(1f))
                         } else {
-                            Spacer(Modifier.weight(1f))
+                            Text(pack.value, color = D.Quiet, style = Type.caption, modifier = Modifier.weight(1f))
                         }
                         HiIcon(Hi.ArrowUpRight, if (ready) D.BlueInk else D.Quiet, 20.dp)
                     }
-                    // The full line underneath, when the columns did not carry all of it —
-                    // "+ JioHotstar" and "+ Netflix Basic" are half the reason to pick a plan.
-                    if (chosen.sellsPlans && (detail.validity != null || detail.data != null)) {
+                    if (perks.isNotEmpty()) {
+                        Spacer(Modifier.height(12.dp))
+                        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            perks.forEach { PlanPill(it, outlined = true) }
+                        }
+                    }
+                    if (detail.validity != null || detail.data != null) {
                         Spacer(Modifier.height(Space.tight))
                         Text(pack.value, color = D.Quiet, style = Type.caption)
                     }
                 }
-                if (i < shown.lastIndex) RowLine()
             }
             if (!ready) {
                 Text("Enter a number to recharge.", color = D.Quiet, style = Type.caption)
@@ -3460,6 +3860,18 @@ private fun RechargeSection(
         }
         Spacer(Modifier.height(Space.section))
     }
+}
+
+/** A small label on a plan: filled for a fact about the network, outlined for a perk. */
+@Composable
+private fun PlanPill(text: String, outlined: Boolean = false) {
+    val shape = RoundedCornerShape(999.dp)
+    Text(
+        text, color = D.Black, style = Type.micro,
+        modifier = Modifier.clip(shape)
+            .then(if (outlined) Modifier.border(1.5.dp, D.Line, shape) else Modifier.background(D.Highlight))
+            .padding(horizontal = 10.dp, vertical = 4.dp),
+    )
 }
 
 /** A caption over a value — the shape that lets validity and data be compared down a column. */
@@ -3800,7 +4212,7 @@ private fun PayBar(modifier: Modifier, onTap: () -> Unit, onScan: () -> Unit) {
         val measurer = rememberTextMeasurer()
         BoxWithConstraints(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
             val widest: Int = remember(measurer, maxWidth) {
-                listOf("via Tap", "any QR").maxOf { label ->
+                listOf("and pay", "any QR").maxOf { label ->
                     val laid = measurer.measure(label, PayBarLabel)
                     laid.size.width
                 }
@@ -3824,7 +4236,7 @@ private fun PayBar(modifier: Modifier, onTap: () -> Unit, onScan: () -> Unit) {
             horizontalArrangement = Arrangement.spacedBy(PayBarGap),
         ) {
             PayChoice(
-                first = "Pay", second = if (twoLine) "via Tap" else null,
+                first = "Tap", second = if (twoLine) "and pay" else null,
                 icon = R.drawable.hi_nfc, iconFirst = true,
                 fill = D.Black, shape = PayBarLeft, onClick = onTap,
             )
@@ -3835,13 +4247,12 @@ private fun PayBar(modifier: Modifier, onTap: () -> Unit, onScan: () -> Unit) {
             )
         }
         }
-        // 16, on the scale — it was 14.
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(6.dp))
     }
 }
 
 /** Concentric, the way every other tray and card in the app is: outer = inner + the ring. */
-private val PayBarHeight = 72.dp
+private val PayBarHeight = 60.dp
 private val PayBarRing = 5.dp
 /** The seam, narrower than the ring so the two halves sit closer without touching. */
 private val PayBarGap = 3.dp
@@ -3870,6 +4281,9 @@ private val PayBarLabel = Type.heading
  * control with two ways in, not two buttons that happen to touch.
  */
 private val PayBarInner = 10.dp
+
+/** How long the balance's reveal animation stays quiet after it has played. */
+private const val BALANCE_ANIM_GAP_MS = 60 * 60 * 1000L
 private val PayBarEnd = PayBarHeight / 2
 private val PayBarLeft = RoundedCornerShape(
     topStart = PayBarEnd, bottomStart = PayBarEnd, topEnd = PayBarInner, bottomEnd = PayBarInner,
@@ -3983,6 +4397,10 @@ private fun TxnRow(t: History.Txn, onFile: (History.Spend) -> Unit = {}, onOpen:
                 // one colour everywhere.
                 t.who == History.Who.PERSON || (t.who == History.Who.ADDRESS && t.incoming) ->
                     FaceDisc(t.title, t.address, ICON_BOX)
+                t.kind == History.Kind.REWARD -> Box(
+                    Modifier.size(36.dp).clip(CircleShape).background(D.Blue),
+                    contentAlignment = Alignment.Center,
+                ) { HiIcon(Hi.Gift, D.White, 20.dp) }
                 t.brand != null -> Image(
                     painterResource(t.brand), contentDescription = null,
                     modifier = Modifier.size(36.dp).clip(RoundedCornerShape(9.dp)),
@@ -4037,6 +4455,13 @@ private fun TxnRow(t: History.Txn, onFile: (History.Spend) -> Unit = {}, onOpen:
 private fun StateLine(t: History.Txn, fileable: Boolean, onFile: () -> Unit) {
     val quiet = Type.caption
     when {
+        // Rewards first: they are not shop orders, and the lines below ("Confirming on Solana",
+        // "Paid · getting your code") are about shop orders. A reward row was reading the second
+        // one because its state matched before it was ever asked what it was.
+        t.kind == History.Kind.REWARD && t.category == "Payout" ->
+            Text(if (t.state == History.State.CONFIRMING) "Sending" else "Sent", color = D.Quiet, style = quiet, maxLines = 1)
+        t.kind == History.Kind.REWARD ->
+            Text("Earned", color = D.Quiet, style = quiet, maxLines = 1)
         t.state == History.State.CONFIRMING ->
             Text("Confirming on Solana", color = D.BlueInk, style = quiet, maxLines = 1)
         t.state == History.State.PREPARING ->
@@ -4181,13 +4606,20 @@ private fun HistoryStrip(
         ) {
             Text("Transaction history", color = D.Black, style = Type.heading)
             Spacer(Modifier.weight(1f))
-            Box(
+            // Nothing to view yet, so no link to it.
+            if (list.isNotEmpty()) Box(
                 Modifier.clip(RoundedCornerShape(8.dp)).clickable(onClick = onViewAll)
                     .heightIn(min = 48.dp).padding(horizontal = 8.dp),
                 contentAlignment = Alignment.Center,
             ) { Text("View all", color = D.BlueInk, style = Type.body) }
         }
         Spacer(Modifier.height(Space.lead))
+        if (list.isEmpty()) {
+            Box(Modifier.fillMaxWidth().padding(vertical = Space.section), contentAlignment = Alignment.Center) {
+                Text("No transactions yet", color = D.Quiet, style = Type.body, textAlign = TextAlign.Center)
+            }
+            return@Column
+        }
         // Split by a hairline rather than boxed, and no trailing line under the last row.
         val rows = list.take(3)
         rows.forEachIndexed { i, t ->
@@ -4432,7 +4864,7 @@ private fun WalletIdentity(w: Linked, linking: Boolean, onLink: () -> Unit) {
                 Spacer(Modifier.height(Space.tight))
                 Text(
                     "Lent to this wallet by ${link.owner.take(4)}…${link.owner.takeLast(4)}, " +
-                        "and signed — the other phone checks it rather than taking our word. " +
+                        "and signed, the other phone checks it rather than taking our word. " +
                         "Good until ${link.expiresOn}.",
                     color = D.Quiet, style = Type.caption,
                 )
@@ -4460,7 +4892,7 @@ private fun WalletIdentity(w: Linked, linking: Boolean, onLink: () -> Unit) {
                 Text(w.short, color = D.Quiet, style = MonoBody)
                 Spacer(Modifier.height(Space.tight))
                 Text(
-                    "Just an address. None of your wallets owns a .skr or .sol yet — every " +
+                    "Just an address. None of your wallets owns a .skr or .sol yet, every " +
                         "Seeker comes with a .skr, and any wallet that has one can lend it to " +
                         "the rest.",
                     color = D.Quiet, style = Type.caption,
@@ -4512,8 +4944,8 @@ private fun HowYouLook(domain: String?, borrowed: Boolean, username: String, onE
                 when {
                     // A borrowed name is just as checkable and is not the same claim, so it
                     // says where it came from instead of implying this wallet owns it.
-                    verified && borrowed -> "Lent by your other wallet, and signed — their phone checks it."
-                    verified -> "Yours on chain — their phone checks it, you can't be copied."
+                    verified && borrowed -> "Lent by your other wallet, and signed, their phone checks it."
+                    verified -> "Yours on chain, their phone checks it, you can't be copied."
                     username.isNotBlank() -> "No tick: they only have your word for this name."
                     else -> "Nobody will know who asked. Tap to pick a name."
                 },
@@ -4562,7 +4994,7 @@ internal fun ContactNameDialog(
                     }
                     Spacer(Modifier.height(Space.tight))
                     Text(
-                        "Their name on chain. Yours is just for you — this one still shows " +
+                        "Their name on chain. Yours is just for you, this one still shows " +
                             "underneath.",
                         color = D.Quiet, style = Type.caption,
                     )
@@ -4668,7 +5100,7 @@ private fun NameDialog(
                     // The nudge, stated as what it actually buys rather than as "security":
                     // a username only exists inside this app, and a domain does not.
                     Text(
-                        "A name you type arrives without a tick — they only have your word " +
+                        "A name you type arrives without a tick, they only have your word " +
                             "for it. A .skr or .sol is yours on chain: it can't be copied, it " +
                             "works in every Solana app, and people can pay you by name from " +
                             "anywhere. Every Seeker comes with a .skr.",
@@ -4695,4 +5127,74 @@ private fun NameDialog(
             }
         },
     )
+}
+
+
+/**
+ * Scan, pay by name, history, and a fourth that depends on the phone: a Seeker owner can buy
+ * SKR, anybody else is shown the Seeker. Round buttons with a label under each — blue with a
+ * white icon for the first three, the pay bar's black for the last.
+ */
+@Composable
+private fun HomeActions(
+    isSeeker: Boolean,
+    onBuy: (String) -> Unit,
+    onScan: () -> Unit,
+    onPayAnyone: () -> Unit,
+    onHistory: () -> Unit,
+) {
+    class Action(val icon: Int, val label: String, val fill: Color, val white: Boolean, val size: Int, val click: () -> Unit)
+    val actions = listOf(
+        Action(R.drawable.ic_action_scan, "Scan", D.Blue, true, 30, onScan),
+        Action(R.drawable.ic_action_pay, "Pay anyone", D.Blue, true, 34, onPayAnyone),
+        Action(R.drawable.ic_action_history, "History", D.Blue, true, 30, onHistory),
+        if (isSeeker) Action(R.drawable.skr_token, "Buy SKR", D.Black, false, 40) {
+            onBuy("https://jup.ag/swap/SOL-SKRbvo6Gf7GondiT3BbTfuRDPqLWei4j2Qy2NPGZhW3")
+        } else Action(R.drawable.ic_action_seeker, "Buy Seeker", D.Black, true, 30) { onBuy("https://solanamobile.com/seeker") },
+    )
+    Row(Modifier.fillMaxWidth()) {
+        actions.forEach { a ->
+            val press = remember { MutableInteractionSource() }
+            Column(
+                Modifier.weight(1f).then(PressScale(press)).clickable(press, indication = null, onClick = a.click),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Box(Modifier.size(62.dp).clip(CircleShape).background(a.fill), contentAlignment = Alignment.Center) {
+                    androidx.compose.foundation.Image(
+                        androidx.compose.ui.res.painterResource(a.icon), null, Modifier.size(a.size.dp),
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+                Text(a.label, color = D.Black, style = Type.caption, maxLines = 1, textAlign = TextAlign.Center)
+            }
+        }
+    }
+}
+
+
+/** How a network looks in a list: a short mark on its colour. Drawn, so it needs no network. */
+private class OperatorMark(val name: String, val letters: String, val color: Color)
+
+private fun operatorMark(product: String): OperatorMark {
+    val p = product.lowercase()
+    return when {
+        "jio" in p -> OperatorMark("Jio", "Jio", Color(0xFF0A4DA2))
+        "airtel" in p -> OperatorMark("Airtel", "a", Color(0xFFE40000))
+        "vodafone" in p || p.startsWith("vi ") || p == "vi" || "idea" in p -> OperatorMark("Vi", "Vi", Color(0xFFEE3023))
+        "bsnl" in p -> OperatorMark("BSNL", "B", Color(0xFF1B7F3A))
+        else -> OperatorMark(product.removeSuffix(" India").removeSuffix(" Bundles"), product.take(1).uppercase(), D.Blue)
+    }
+}
+
+
+/** The four networks' real logos, prepared to fill a circle edge to edge. Null for any other. */
+private fun operatorLogoRes(product: String): Int? {
+    val p = product.lowercase()
+    return when {
+        "jio" in p -> R.drawable.net_jio
+        "airtel" in p -> R.drawable.net_airtel
+        "vodafone" in p || p.startsWith("vi ") || p == "vi" || "idea" in p -> R.drawable.net_vi
+        "bsnl" in p -> R.drawable.net_bsnl
+        else -> null
+    }
 }

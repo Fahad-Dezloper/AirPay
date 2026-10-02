@@ -94,6 +94,16 @@ object Plans {
         Ott("With OTT"),
         Talktime("Talktime"),
         Fast("5G"),
+        /** A daily allowance ("1.5GB/day") rather than one pot of data. */
+        Daily("Data per day"),
+        /** Up to a week. */
+        Short("Under 28 days"),
+        /** 28 to 31 days: the plan most people mean by "monthly". */
+        Month("28–30 days"),
+        /** Two to three months. */
+        Quarter("56–90 days"),
+        /** A year or close to it. */
+        Yearly("Yearly"),
     }
 
     /** Streaming and music thrown in with a plan — the half of a bundle people choose on. */
@@ -110,6 +120,17 @@ object Plans {
         if (OTT.any { it in l }) out += Shelf.Ott
         if ("unlimited" in l) out += Shelf.Unlimited
         if (detail.data != null && detail.data != "Unlimited") out += Shelf.Data
+        if (detail.data?.endsWith("/day") == true) out += Shelf.Daily
+        // Validity from the days the line states. A month written as "1 Month" has no number
+        // of days to read, so it is placed by the word rather than guessed.
+        val d = detail.days ?: if ("month" in l) 30 else null
+        when {
+            d == null -> {}
+            d < 28 -> out += Shelf.Short
+            d <= 31 -> out += Shelf.Month
+            d in 56..90 -> out += Shelf.Quarter
+            d >= 330 -> out += Shelf.Yearly
+        }
         // Money onto the phone rather than an allowance: no data and no unlimited anything.
         if (detail.data == null && ("talktime" in l || "top-up" in l || line.toIntOrNull() != null)) {
             out += Shelf.Talktime
@@ -146,5 +167,18 @@ object Plans {
         if (q.isEmpty()) return true
         if (amount > 0 && amount.toString().contains(q)) return true
         return q.split(' ').filter { it.isNotBlank() }.all { value.lowercase().contains(it) }
+    }
+
+    /** Streaming and app perks named in a plan's line, as short labels. Only what the line says. */
+    fun benefits(line: String): List<String> {
+        val l = line.lowercase()
+        val names = listOf(
+            "hotstar" to "JioHotstar", "netflix" to "Netflix", "prime" to "Prime", "sony" to "SonyLIV",
+            "zee" to "ZEE5", "jiosaavn" to "JioSaavn", "saavn" to "JioSaavn", "swiggy" to "Swiggy One",
+            "fancode" to "FanCode", "jiocinema" to "JioCinema", "jiotv" to "JioTV",
+        )
+        val out = names.filter { it.first in l }.map { it.second }.distinct().toMutableList()
+        Regex("""(\d+)\s*ott apps""").find(l)?.let { out += "${it.groupValues[1]} OTT apps" }
+        return out
     }
 }

@@ -163,8 +163,8 @@ object Username {
         val name = raw.trim()
         return when {
             name.isEmpty() -> null                       // not an error, just unfinished
-            looksLikeDomain(name) -> "No dots — those are for .skr and .sol names."
-            name.length > MAX -> "A bit long — $MAX characters at most."
+            looksLikeDomain(name) -> "No dots, those are for .skr and .sol names."
+            name.length > MAX -> "A bit long, $MAX characters at most."
             name.any { it.code < 0x20 } -> "That has characters that won't show."
             else -> null
         }

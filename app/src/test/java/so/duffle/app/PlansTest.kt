@@ -173,4 +173,13 @@ class ShelvesTest {
         listOf("500", "Unlimited, 7 Days", "2GB/Day 5G Plan – 84 Days", "₹39.37 Talktime Top-Up")
             .forEach { assertTrue(it, Plans.Shelf.All in shelves(it)) }
     }
+
+    @Test fun `validity and daily data land on their shelves`() {
+        val a = shelves("1.5GB/Day – 1 Month")
+        assertTrue(Plans.Shelf.Daily in a); assertTrue(Plans.Shelf.Month in a)
+        assertTrue(Plans.Shelf.Quarter in shelves("2GB/Day 5G Plan – 84 Days"))
+        assertTrue(Plans.Shelf.Yearly in shelves("2.5GB/Day – 365 Days"))
+        assertTrue(Plans.Shelf.Short in shelves("6GB – 7 Day Data Pack"))
+        assertFalse("a pot of data is not daily", Plans.Shelf.Daily in shelves("30GB – 30 Day Data Pack"))
+    }
 }
