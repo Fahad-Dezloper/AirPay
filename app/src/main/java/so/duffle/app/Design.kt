@@ -74,10 +74,29 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.AlignmentLine
+import androidx.compose.ui.layout.LastBaseline
+import androidx.compose.ui.layout.FirstBaseline
+import androidx.compose.ui.layout.Layout
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.wrapContentWidth
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.CoroutineScope
+import androidx.compose.ui.unit.Velocity
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.ui.text.drawText
+import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.layout.layout
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.key
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.ExperimentalTextApi
@@ -394,6 +413,126 @@ internal fun Modifier.cardShadow(radius: Dp) = drawBehind {
 /** `settle` from DUFFLE_DESIGN.md §3 — tray height and content swaps. */
 internal val Settle = spring<Float>(dampingRatio = 0.9f, stiffness = 247f)
 
+
+// ---------------------------------------------------------------------- the back arrow
+
+/** How far the arrow glyph's ink starts inside its own 24 box: the path begins at x = 9 of 24. */
+private val BACK_INK_INSET = 9.dp
+
+/**
+ * What the arrow takes in a row: its ink (6) and the gap to what follows (12). The *touch target*
+ * is still 48 — it overhangs this slot to the right, under whatever comes next.
+ */
+private val BACK_SLOT = 18.dp
+
+/**
+ * The back arrow of every screen's title row, with its tip on the page's start edge.
+ *
+ * It used to be a 48 circle with the 24 glyph centred in it. The glyph's ink is only 6 wide and
+ * starts 9 into its own box, and the box is centred in a 48 target — so the arrow's tip sat 21dp
+ * in from the edge, 9dp to the right of the content under it, and the rows that tried to fix it
+ * with a negative offset (`-12`) only got two-thirds of the way. Here the glyph is slid left by
+ * its own margin and the 48 target starts exactly on the edge, so **the tip aligns with the
+ * content** and the target is still a full 48.
+ *
+ * It occupies [BACK_SLOT] in the row (ink plus a 12 gap) rather than the 48, so a title follows it
+ * at a sensible distance; the target overhangs that slot to the right and is hit-tested through
+ * the row. [onBack] null draws the arrow without a click, for a screen reached with no back.
+ */
+@Composable
+internal fun BackArrow(onBack: (() -> Unit)?, modifier: Modifier = Modifier) {
+    val press = remember { MutableInteractionSource() }
+    val tap = onBack?.let { hapticBack(it) }
+    val rtl = LocalLayoutDirection.current == LayoutDirection.Rtl
+    Box(modifier.width(BACK_SLOT).wrapContentWidth(Alignment.Start, unbounded = true)) {
+        Box(
+            Modifier.then(PressScale(press)).size(48.dp)
+                .then(
+                    if (tap == null) Modifier
+                    else Modifier
+                        .clickable(press, indication = null, onClick = tap)
+                        .semantics { contentDescription = "Back" },
+                ),
+            contentAlignment = Alignment.CenterStart,
+        ) {
+            HiIcon(
+                Hi.ArrowLeft, D.Black, 24.dp,
+                modifier = Modifier.offset(x = if (rtl) BACK_INK_INSET else -BACK_INK_INSET),
+            )
+        }
+    }
+}
+
+// ---------------------------------------------------------------------- sheet motion
+
+/**
+ * How a sheet rises: a plain ease, and **no overshoot**.
+ *
+ * Sheets used to rise on `Arrive`, a spring with damping 0.75, which passes its resting position
+ * and comes back. For a panel that sits against the bottom edge that is not a flourish, it is a
+ * fault: the overshoot lifts the panel *above* where it belongs, opening a strip at the bottom of
+ * the screen where the page behind shows through, and the whole sheet visibly rides up and drops
+ * back. A panel that arrives from an edge stops at the edge.
+ */
+internal val SheetRise = tween<Float>(320, easing = FastOutSlowInEasing)
+
+/** Letting go of a drag that did not dismiss: back to rest, critically damped so it cannot pass it. */
+internal val SheetSettle = spring<Float>(dampingRatio = 1f, stiffness = 300f)
+
+/**
+ * Lets a sheet be pulled down by dragging its *content*, the way Google Pay's and Photos' sheets
+ * are — not only by their handle.
+ *
+ * A sheet whose body scrolls swallows every drag in the body: the scroll takes it, and the sheet's
+ * own `draggable` never hears about it, so the sheet only moved if you happened to grab the few
+ * pixels of handle. This connection sits between them. A downward drag the content cannot use any
+ * more (it is already at the top) moves the sheet; an upward drag while the sheet is displaced
+ * moves the sheet back first; and letting go hands the velocity to [onRelease], which decides
+ * between dismissing and settling, exactly as the handle does.
+ *
+ * [offset] is the sheet's own displacement (positive is down); it is never driven below zero, so
+ * the sheet cannot be pulled up past its resting edge.
+ */
+internal fun sheetNestedScroll(
+    offset: Animatable<Float, *>,
+    scope: CoroutineScope,
+    enabled: () -> Boolean,
+    onRelease: (velocity: Float) -> Unit,
+): NestedScrollConnection = object : NestedScrollConnection {
+    private fun move(to: Float) {
+        // Undispatched, so the sheet follows the finger in the same frame rather than one later.
+        scope.launch(start = CoroutineStart.UNDISPATCHED) { offset.snapTo(to) }
+    }
+
+    override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+        if (!enabled() || source != NestedScrollSource.UserInput) return Offset.Zero
+        // Content dragged up while the sheet is down: bring the sheet back before scrolling it.
+        if (available.y < 0f && offset.value > 0f) {
+            val next = (offset.value + available.y).coerceAtLeast(0f)
+            val used = next - offset.value
+            move(next)
+            return Offset(0f, used)
+        }
+        return Offset.Zero
+    }
+
+    override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset {
+        if (!enabled() || source != NestedScrollSource.UserInput) return Offset.Zero
+        // What the content could not use. Downward, that is the sheet's to take.
+        if (available.y > 0f) {
+            move(offset.value + available.y)
+            return Offset(0f, available.y)
+        }
+        return Offset.Zero
+    }
+
+    override suspend fun onPreFling(available: Velocity): Velocity {
+        if (!enabled() || offset.value <= 0f) return Velocity.Zero
+        onRelease(available.y)
+        return available
+    }
+}
+
 /**
  * The app's tray, extracted so there is one of them.
  *
@@ -435,7 +574,7 @@ internal fun Tray(
         offset.snapTo(h)
         shown = true
         launch { scrim.animateTo(1f, tween(220)) }
-        offset.animateTo(0f, Arrive)
+        offset.animateTo(0f, SheetRise)
     }
 
     fun leave() {
@@ -453,9 +592,15 @@ internal fun Tray(
 
     val drag = rememberDraggableState { delta ->
         scope.launch {
-            val next = offset.value + delta
-            // Upward drag is resisted rather than refused, so the tray feels attached.
-            offset.snapTo(if (next < 0f) (offset.value + delta * .25f).coerceAtLeast(-40f) else next)
+            // Never above its resting edge: pulled up, it simply stays put.
+            offset.snapTo((offset.value + delta).coerceAtLeast(0f))
+        }
+    }
+    // Dragging the content pulls the tray too, not only the handle — see [sheetNestedScroll].
+    val nested = remember {
+        sheetNestedScroll(offset, scope, enabled = { dismissible && !leaving }) { v ->
+            if (offset.value > height * .25f || v > 1_200f) leave()
+            else scope.launch { offset.animateTo(0f, SheetSettle, initialVelocity = v) }
         }
     }
 
@@ -471,13 +616,14 @@ internal fun Tray(
         Column(
             Modifier.fillMaxWidth()
                 .onSizeChanged { height = it.height.toFloat() }
-                .graphicsLayer { translationY = if (shown) offset.value else size.height }
+                .graphicsLayer { translationY = if (shown) offset.value.coerceAtLeast(0f) else size.height }
+                .nestedScroll(nested)
                 .draggable(
                     drag, Orientation.Vertical, enabled = shown && !leaving && dismissible,
                     onDragStopped = { velocity ->
                         // Far enough, or flicked: go. Otherwise settle back.
                         if (offset.value > height * .25f || velocity > 1_200f) leave()
-                        else scope.launch { offset.animateTo(0f, Settle, initialVelocity = velocity) }
+                        else scope.launch { offset.animateTo(0f, SheetSettle, initialVelocity = velocity) }
                     },
                 )
                 .background(D.White, RoundedCornerShape(topStart = Tray.OUTER, topEnd = Tray.OUTER))
@@ -501,7 +647,15 @@ internal fun Tray(
  *
  * Each character is its own slot, so only the digits that actually changed move; the rest hold
  * still. Direction carries meaning: a digit going up rolls up, one going down rolls down.
- * Slots are staggered left to right, because a number is read that way.
+ * Slots are staggered left to right, because a number is read that way. Slots are keyed from the
+ * RIGHT, so the units digit is the units digit whether the number has two digits or three.
+ *
+ * **The roll is drawn, never laid out.** It used to be `AnimatedContent` with slide transitions,
+ * which move a digit with a layout offset — and a layout offset moves the digit's *baseline* too.
+ * The Row is baseline-aligned, so while a digit slid the whole figure grew taller by the distance
+ * it travelled, and everything under the balance was pushed down until the roll finished. Here the
+ * digit that stays in layout is the *new* one, at rest, so size and baseline never change; the
+ * old digit is a zero-size ghost and both are moved with `graphicsLayer`, which is draw-only.
  *
  * Tabular figures do the real work — without them every roll would also resize the slot and the
  * whole figure would jitter sideways as it settled.
@@ -515,38 +669,128 @@ internal fun FlowFigure(
     modifier: Modifier = Modifier,
     fontFamily: FontFamily? = null,
 ) {
-    Row(modifier, verticalAlignment = Alignment.Bottom) {
-        text.forEachIndexed { i, ch ->
-            AnimatedContent(
-                // Each digit is aligned by ITS baseline, which is also what gives this Row a
-                // baseline to report upward. Without it `FlowFigure` has none, and a caller
-                // asking for `alignByBaseline()` gets silent nonsense — the balance's whole
-                // part dropped a line below its own cents.
-                modifier = Modifier.alignByBaseline(),
-                targetState = ch,
-                transitionSpec = {
-                    val up = targetState > initialState
-                    val delay = i * 35
-                    val enter = slideInVertically(Settle.toInt(delay)) { h -> if (up) h else -h } +
-                        fadeIn(tween(160, delayMillis = delay))
-                    val exit = slideOutVertically(Settle.toInt(delay)) { h -> if (up) -h else h } +
-                        fadeOut(tween(120, delayMillis = delay))
-                    (enter togetherWith exit).using(SizeTransform(clip = false))
-                },
-                label = "digit",
-            ) { c ->
-                Text(
-                    c.toString(), color = color, fontSize = fontSize, fontWeight = fontWeight,
-                    fontFamily = fontFamily, style = Figures, maxLines = 1,
-                )
+    // False through the first composition, true after: a digit that appears LATER (the number
+    // gained a place) rolls in, while the figure's first draw does not animate at all.
+    var settled by remember { mutableStateOf(false) }
+    SideEffect { settled = true }
+    // Clipped to the figure's own box, so a digit rolling in from below or out above is cut at the
+    // edge of the number the way an odometer's window cuts it, instead of drawing over whatever
+    // sits next to it. Draw-only, like the roll itself: it changes no size and no baseline.
+    //
+    // A custom layout and not a `Row`, because this figure has to REPORT A BASELINE and a `Row` of
+    // `alignByBaseline` children does not reliably pass one up: with some values the whole part
+    // had none, the balance row then aligned it by its bottom, and the whole digit sat a line
+    // below its own `$` and cents. Here the digits are lined up on their shared baseline and that
+    // baseline is handed to the parent explicitly, whatever the value.
+    Layout(
+        content = {
+            text.forEachIndexed { i, ch ->
+                key(text.length - 1 - i) {
+                    RollingDigit(
+                        ch, index = i, rollIn = settled,
+                        fontSize = fontSize, color = color, fontWeight = fontWeight,
+                        fontFamily = fontFamily,
+                        modifier = Modifier,
+                    )
+                }
+            }
+        },
+        modifier = modifier.clipToBounds(),
+    ) { measurables, constraints ->
+        val loose = constraints.copy(minWidth = 0, minHeight = 0)
+        val placeables = measurables.map { it.measure(loose) }
+        // Each digit's own baseline; a Text always has one, but fall back to its height so a
+        // surprise can never produce a negative size.
+        val baselines = placeables.map { p ->
+            p[FirstBaseline].let { if (it == AlignmentLine.Unspecified) p.height else it }
+        }
+        val above = baselines.maxOrNull() ?: 0
+        val below = placeables.indices.maxOfOrNull { placeables[it].height - baselines[it] } ?: 0
+        val width = placeables.sumOf { it.width }
+        layout(
+            width.coerceIn(constraints.minWidth, constraints.maxWidth.coerceAtLeast(constraints.minWidth)),
+            above + below,
+            mapOf(FirstBaseline to above, LastBaseline to above),
+        ) {
+            var x = 0
+            placeables.forEachIndexed { i, p ->
+                p.placeRelative(x, above - baselines[i])
+                x += p.width
             }
         }
     }
 }
 
-/** The `settle` spring as an Int animation, for the slide offsets. */
-private fun FiniteAnimationSpec<Float>.toInt(delay: Int): FiniteAnimationSpec<IntOffset> =
-    spring(dampingRatio = 0.9f, stiffness = 247f, visibilityThreshold = IntOffset.VisibilityThreshold)
+/**
+ * One slot of [FlowFigure]. See there for why the movement is draw-only.
+ *
+ * The digit is a bare `Text` straight in the row — no wrapper — because it is the `Text` that
+ * carries the baseline `alignByBaseline()` reads; a `Box` around it did not pass the baseline up,
+ * and the digits then sat on different lines. The OLD digit is not a second child at all: it is
+ * painted by `drawBehind` with a `TextMeasurer`, outside the `graphicsLayer` that moves the new
+ * one, so it cannot take space or move a baseline however it is animated.
+ */
+@Composable
+private fun RollingDigit(
+    ch: Char,
+    index: Int,
+    rollIn: Boolean,
+    fontSize: TextUnit,
+    color: Color,
+    fontWeight: FontWeight,
+    fontFamily: FontFamily?,
+    modifier: Modifier,
+) {
+    var shown by remember { mutableStateOf(ch) }
+    var ghost by remember { mutableStateOf<Char?>(null) }
+    var up by remember { mutableStateOf(true) }
+    // 0 → 1 over one roll. Starts finished so a first draw is still, and so is a digit that
+    // never changes.
+    val roll = remember { Animatable(if (rollIn) 0f else 1f) }
+
+    LaunchedEffect(ch) {
+        if (ch == shown && roll.value == 1f) return@LaunchedEffect
+        if (ch != shown) {
+            ghost = shown
+            up = ch > shown
+            shown = ch
+            roll.snapTo(0f)
+        }
+        // Left to right: a number is read that way.
+        delay(index * 35L)
+        roll.animateTo(1f, Settle)
+        ghost = null
+    }
+
+    val measurer = rememberTextMeasurer()
+    val face = Figures.copy(
+        fontSize = fontSize, fontWeight = fontWeight,
+        fontFamily = fontFamily ?: Figures.fontFamily,
+    )
+    val t = roll.value
+    Text(
+        shown.toString(), color = color, fontSize = fontSize, fontWeight = fontWeight,
+        fontFamily = fontFamily, style = Figures, maxLines = 1,
+        modifier = modifier
+            // Outside the layer below, so it is not moved by it: the digit that was here, sliding
+            // out the way the new one slides in, fading as it goes.
+            .drawBehind {
+                val old = ghost ?: return@drawBehind
+                val travel = size.height
+                drawText(
+                    measurer, old.toString(),
+                    topLeft = Offset(0f, t * (if (up) -travel else travel)),
+                    style = face.copy(color = color.copy(alpha = (1f - t / .4f).coerceIn(0f, 1f))),
+                    maxLines = 1,
+                )
+            }
+            .graphicsLayer {
+                val travel = size.height
+                translationY = (1f - t) * (if (up) travel else -travel)
+                alpha = (t / .6f).coerceIn(0f, 1f)
+            },
+    )
+}
 
 // ------------------------------------------------------------------- shared primitives
 //
