@@ -22,6 +22,7 @@ from __future__ import annotations
 import html
 import json
 import logging
+import os
 import re
 import threading
 import time
@@ -67,6 +68,36 @@ CATALOG_TTL = 3600.0
 #: lookup rate-limits long before the catalogue does.
 OPERATOR_TTL = 600.0
 
+def _load_guides() -> dict:
+    """Hand-written content per product id, from `shop_guides.json`.
+
+    Bitrefill's own descriptions and terms are long and uneven, so these are the facts cut down
+    to what a buyer needs (ui/shop-guides.json, written 2026-10-02 from Bitrefill's text as it
+    stood on 2026-10-01). **A missing key means the catalogue does not say** — nothing here is
+    filled in to look complete — and a product with no entry is sent exactly as before.
+
+    A file that is missing or unreadable is an empty dict, never an exception: content is
+    decoration on top of a shop that works without it.
+    """
+    path = os.path.join(os.path.dirname(__file__), "shop_guides.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            guides = (json.load(f) or {}).get("guides") or {}
+    except (OSError, ValueError) as e:
+        log.info("shop guides unavailable: %s", e)
+        return {}
+    return {k: v for k, v in guides.items() if isinstance(v, dict)}
+
+
+GUIDES = _load_guides()
+
+#: Bitrefill's package `price` is an internal unit, not money. Two real purchases agree on how it
+#: converts: ₹50 Subway, price 629, was charged 0.54 USDC; ₹100 PhonePe, price 1294, was charged
+#: 1.11 — 1165 and 1166 units to the USDC. It moves with the exchange rate, so this is only a
+#: starting point: every real invoice re-measures it (see [Shop.invoice]), and `SHOP_PRICE_UNITS`
+#: overrides it. Whatever it says, the figure it produces is sent as an ESTIMATE.
+PRICE_UNITS_PER_USDC = float(os.environ.get("SHOP_PRICE_UNITS", "1165"))
+
 #: What a person is actually trying to do, in the order they would look for it. Bitrefill's own
 #: categories are shop-shaped ("apparel", "game-stores"); these are bill-shaped.
 SECTIONS = (
@@ -98,6 +129,10 @@ class Shop:
 
     #: number -> (asked_at, answer). See OPERATOR_TTL.
     _operators: dict
+
+    #: Units of Bitrefill's `price` per USDC. Class-level because [_trim] is static and the rate is
+    #: a fact about Bitrefill, not about one shop object. Re-learned from every real invoice.
+    price_units = PRICE_UNITS_PER_USDC
 
     def __init__(self, api_key: str | None, country: str = "IN"):
         self.api_key = api_key
@@ -153,7 +188,7 @@ class Shop:
     @staticmethod
     def _trim(p: dict) -> dict:
         """Only what a phone needs to draw a row and ask for a price."""
-        return {
+        out = {
             "id": p.get("id"),
             "name": p.get("name"),
             "currency": p.get("currency"),
@@ -181,10 +216,38 @@ class Shop:
                 # `id` because the docs make package_id and value mutually exclusive and the id
                 # is the unambiguous one: a bundle's value is a sentence ("2GB/Day 5G Plan - 84
                 # Days") and two packages can share a price.
-                {"id": pk.get("id"), "value": pk.get("value"), "amount": pk.get("amount")}
+                {"id": pk.get("id"), "value": pk.get("value"), "amount": pk.get("amount"),
+                 **Shop._usd(pk.get("price"))}
                 for pk in (p.get("packages") or []) if pk.get("value")
             ],
         }
+        # Content, where somebody wrote some. Merged under its own keys, so a product with no
+        # entry is exactly what it was.
+        out.update(GUIDES.get(p.get("id")) or {})
+        # The brand's own colour, which Bitrefill sends as `logo_background` on 55 of 150
+        # products. A hand-written `brand_colour` wins; this fills the gap so the app does not
+        # have to guess a ground from the logo's pixels where the catalogue already knows it.
+        if not out.get("brand_colour") and p.get("logo_background"):
+            out["brand_colour"] = p["logo_background"]
+        return out
+
+    @staticmethod
+    def _usd(price) -> dict:
+        """What a package costs in USDC, **as an estimate**, or nothing.
+
+        Bitrefill's v2 API has no USD field on a package, and `price` is an internal unit. So
+        this divides by the rate measured from real invoices — which gets within a cent or two of
+        what is charged, not to the cent. It is therefore never sent as exact: `usd_price_estimate`
+        is always true, the app writes "about", and only the invoice's own figure is ever called
+        the price. Nothing is sent for a package with no `price`, rather than a zero.
+        """
+        try:
+            units = float(price)
+        except (TypeError, ValueError):
+            return {}
+        if units <= 0 or Shop.price_units <= 0:
+            return {}
+        return {"usd_price": f"{units / Shop.price_units:.2f}", "usd_price_estimate": True}
 
     #: The Cinema shelf, by id. See the SECTIONS note.
     CINEMA = ("pvr-cinemas-india", "bookmyshow-voucher-india")
@@ -290,6 +353,8 @@ class Shop:
         pay = data.get("payment") or {}
         if not pay.get("address") or pay.get("price") is None:
             raise RuntimeError("that invoice came back without somewhere to pay it")
+        if payment_method == "usdc_solana":
+            self._learn_rate(product_id, package_id, value, int(pay["price"]))
         return {
             "invoice_id": data.get("id"),
             "address": pay["address"],
@@ -301,6 +366,31 @@ class Shop:
             "product_id": product_id,
             "value": value,
         }
+
+    def _learn_rate(self, product_id: str, package_id: str | None, value, base_units: int) -> None:
+        """Re-measure Bitrefill's unit against what an invoice actually asked for.
+
+        `base_units` is USDC at 6 decimals, which is only true of a USDC invoice — any other
+        payment method would measure a different currency and poison the estimate, so it is
+        skipped rather than guessed at. A reading that moves the rate by more than a third is
+        discarded: that is a bad invoice, not a market.
+        """
+        try:
+            for p in self.products():
+                if p.get("id") != product_id:
+                    continue
+                for pk in p.get("packages") or []:
+                    if (package_id and pk.get("id") == package_id) or \
+                            (not package_id and str(pk.get("value")) == str(value)):
+                        units, usdc = float(pk.get("price") or 0), base_units / 1_000_000
+                        if units > 0 and usdc > 0:
+                            rate = units / usdc
+                            if abs(rate - Shop.price_units) / Shop.price_units < 0.34:
+                                Shop.price_units = rate
+                                log.info("shop price unit: %.1f per USDC", rate)
+                        return
+        except (TypeError, ValueError):
+            return
 
     def operator(self, phone_number: str) -> dict:
         """Which network a number is on, according to Bitrefill.

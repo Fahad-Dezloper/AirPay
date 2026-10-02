@@ -1,0 +1,376 @@
+{
+  "_about": "Hand-written shop content for AirPay, keyed by Bitrefill product id. Merge each entry into that product's JSON in duffleserver/shop.py -> _trim. Key names are the ones Shop.kt -> guide() already reads; tab_label and tab_line are new. Written 2026-10-02 from Bitrefill's descriptions, instructions and terms as they stood on 2026-10-01. Not legal text. A missing key means the catalogue does not say.",
+  "lead_order": [
+    "hotstar-india",
+    "phonepe-india",
+    "makemytrip",
+    "google-play-india",
+    "the-man-company-india",
+    "first-cry-egift-voucher-india",
+    "himalaya-india",
+    "wakefit-india",
+    "wildcraft-india",
+    "ikea-india",
+    "nykaa-men-india",
+    "tinder-plus-and-gold-india",
+    "airlinegift-india"
+  ],
+  "guides": {
+    "hotstar-india": {
+      "kind": "Subscription code",
+      "line": "Stream cricket, movies and shows.",
+      "where_it_works": "Online, at hotstar.com/redeem",
+      "valid_for": "Has an expiry date, shown with the code",
+      "how_used": "One use. Unused value is lost",
+      "know": [
+        "Works in India only.",
+        "Not refunded once the code is delivered."
+      ],
+      "steps": [
+        "Go to hotstar.com/redeem.",
+        "Log in with your phone number.",
+        "Enter the code and press Apply.",
+        "Open the Hotstar app with the same number."
+      ],
+      "amounts": "Each amount is the price of a Hotstar plan. The catalogue does not say which plan each one is, so check hotstar.com first."
+    },
+    "phonepe-india": {
+      "kind": "Gift card",
+      "line": "Pay bills, recharge phones, order food and more.",
+      "where_it_works": "In the PhonePe app",
+      "valid_for": "Has a validity period, shown with the code",
+      "how_used": "Use it more than once, until the balance runs out",
+      "know": [
+        "Cannot be cancelled or refunded once bought.",
+        "If the PIN has 5 digits, add a 0 in front of it."
+      ],
+      "steps": [
+        "Open PhonePe's gift card page.",
+        "Enter the code you were sent.",
+        "Pick what to spend it on.",
+        "Finish the payment."
+      ],
+      "amounts": "The amount is the balance on the card, in rupees.",
+      "brand_colour": "#FFFFFF"
+    },
+    "makemytrip-voucher-india": {
+      "kind": "Gift card",
+      "line": "Flights, hotels, holidays, trains and buses.",
+      "where_it_works": "makemytrip.com and the MakeMyTrip app",
+      "valid_for": "12 months from the day you buy it",
+      "how_used": "Use it more than once, until the balance runs out",
+      "know": [
+        "Usable only 24 hours after it is delivered.",
+        "Not valid on bus, rail or car bookings.",
+        "Cannot be combined with other offers."
+      ],
+      "steps": [
+        "Book on makemytrip.com or in the MakeMyTrip app, up to the payment page.",
+        "Choose Gift Card as the way to pay.",
+        "Enter the 16-digit card number and the 6-digit PIN.",
+        "Pay anything left over another way."
+      ],
+      "amounts": "The amount is the balance on the card, in rupees.",
+      "brand_colour": "#27447C",
+      "tab_label": "Flights & hotels",
+      "tab_line": "Flights, hotels and holidays"
+    },
+    "makemytrip-holiday-india": {
+      "kind": "Gift card",
+      "line": "Flights, hotels, holidays, trains and buses.",
+      "where_it_works": "makemytrip.com and the MakeMyTrip app",
+      "valid_for": "12 months from activation",
+      "how_used": "Use it more than once, until the balance runs out",
+      "know": [
+        "Valid on holiday packages only."
+      ],
+      "steps": [
+        "Book on makemytrip.com or in the MakeMyTrip app, up to the payment page.",
+        "Choose Gift Card as the way to pay.",
+        "Enter the 16-digit card number and the 6-digit PIN.",
+        "Pay anything left over another way."
+      ],
+      "amounts": "The amount is the balance on the card, in rupees.",
+      "brand_colour": "#27447C",
+      "tab_label": "Holidays",
+      "tab_line": "Holiday packages"
+    },
+    "makemytrip-rail-india": {
+      "kind": "Gift card",
+      "line": "Flights, hotels, holidays, trains and buses.",
+      "where_it_works": "makemytrip.com and the MakeMyTrip app",
+      "valid_for": "12 months from the day you buy it",
+      "how_used": "Use it more than once, until the balance runs out",
+      "know": [
+        "Not valid on myBiz bookings.",
+        "If a booking fails, the amount returns to the card within 48 hours."
+      ],
+      "steps": [
+        "Book on makemytrip.com or in the MakeMyTrip app, up to the payment page.",
+        "Choose Gift Card as the way to pay.",
+        "Enter the 16-digit card number and the 6-digit PIN.",
+        "Pay anything left over another way."
+      ],
+      "amounts": "The amount is the balance on the card, in rupees.",
+      "brand_colour": "#27447C",
+      "tab_label": "Rail",
+      "tab_line": "Train tickets"
+    },
+    "makemytrip-bus-india": {
+      "kind": "Gift card",
+      "line": "Flights, hotels, holidays, trains and buses.",
+      "where_it_works": "makemytrip.com and the MakeMyTrip app",
+      "valid_for": "12 months from the day you buy it",
+      "how_used": "Use it more than once, until the balance runs out",
+      "know": [
+        "Not valid on myBiz bookings.",
+        "If a booking fails, the amount returns to the card within 48 hours."
+      ],
+      "steps": [
+        "Book on makemytrip.com or in the MakeMyTrip app, up to the payment page.",
+        "Choose Gift Card as the way to pay.",
+        "Enter the 16-digit card number and the 6-digit PIN.",
+        "Pay anything left over another way."
+      ],
+      "amounts": "The amount is the balance on the card, in rupees.",
+      "brand_colour": "#27447C",
+      "tab_label": "Bus",
+      "tab_line": "Bus tickets"
+    },
+    "makemytrip-hotel-card-india": {
+      "kind": "Gift card",
+      "line": "Flights, hotels, holidays, trains and buses.",
+      "where_it_works": "makemytrip.com and the MakeMyTrip app",
+      "valid_for": "Has an expiry date, shown with the code",
+      "how_used": "Use it more than once, until the balance runs out",
+      "know": [
+        "Valid only on hotels MakeMyTrip lists as 5-star."
+      ],
+      "steps": [
+        "Book on makemytrip.com or in the MakeMyTrip app, up to the payment page.",
+        "Choose Gift Card as the way to pay.",
+        "Enter the 16-digit card number and the 6-digit PIN.",
+        "Pay anything left over another way."
+      ],
+      "amounts": "The amount is the balance on the card, in rupees.",
+      "brand_colour": "#27447C",
+      "tab_label": "Hotel card",
+      "tab_line": "5-star hotel stays, in India and abroad"
+    },
+    "google-play-india": {
+      "kind": "Gift card",
+      "line": "Apps, games, subscriptions and YouTube Premium.",
+      "where_it_works": "Google Play, on Android and on the web",
+      "how_used": "Redeemed once. The whole amount goes to your Google balance",
+      "know": [
+        "Your Google account and location must be set to India.",
+        "Google may ask for extra details the first time you redeem."
+      ],
+      "steps": [
+        "Open the Google Play app.",
+        "Tap your profile picture.",
+        "Tap Payments & subscriptions, then Redeem code.",
+        "Enter the code."
+      ],
+      "amounts": "The amount is added to your Google Play balance. Spend it on apps, games, subscriptions or YouTube Premium.",
+      "brand_colour": "#FFFFFF"
+    },
+    "the-man-company-india": {
+      "kind": "Gift card",
+      "line": "Beard oils, perfumes and skincare.",
+      "where_it_works": "Online, at themancompany.com",
+      "valid_for": "1 year from the day it is issued",
+      "how_used": "Use it more than once, until the balance runs out",
+      "know": [
+        "At checkout, choose Qwikcilver as the way to pay.",
+        "Balance left at expiry is not refunded."
+      ],
+      "steps": [
+        "Shop at themancompany.com.",
+        "At checkout, choose Qwikcilver.",
+        "Enter the card number and PIN."
+      ],
+      "amounts": "The amount is the balance on the card, in rupees.",
+      "brand_colour": "#000000"
+    },
+    "first-cry-egift-voucher-india": {
+      "kind": "Gift card",
+      "line": "Baby essentials, toys and kids' clothing.",
+      "where_it_works": "Online, at firstcry.com",
+      "valid_for": "Has an expiry date that cannot be extended",
+      "how_used": "Spend it across several orders. One voucher per order",
+      "know": [
+        "For orders delivered in India only.",
+        "Unused value cannot be turned into cash."
+      ],
+      "steps": [
+        "Add items at firstcry.com.",
+        "On the payment page, choose e-Gift Card.",
+        "Enter the 16-digit card number and PIN.",
+        "Pay anything left over another way."
+      ],
+      "amounts": "The amount is the balance on the voucher, in rupees."
+    },
+    "himalaya-india": {
+      "kind": "Gift card",
+      "line": "Natural skincare and herbal supplements.",
+      "where_it_works": "Himalaya outlets, and himalayawellness.in",
+      "how_used": "One or more vouchers can be used on one order",
+      "know": [
+        "No returns or refunds.",
+        "The code can take up to 24 hours to arrive."
+      ],
+      "steps": [
+        "Shop at himalayawellness.in or a Himalaya outlet.",
+        "Enter or show the voucher code when you pay.",
+        "Pay anything left over another way."
+      ],
+      "amounts": "The amount is the value of the voucher, in rupees."
+    },
+    "wakefit-india": {
+      "kind": "Gift card",
+      "line": "Mattresses, furniture and bedding.",
+      "where_it_works": "Online only, at wakefit.co",
+      "know": [
+        "Not accepted in shops, or on Amazon, Flipkart and other marketplaces.",
+        "No returns or refunds.",
+        "The code can take up to 24 hours to arrive."
+      ],
+      "steps": [
+        "Shop at wakefit.co.",
+        "Go to checkout.",
+        "Enter the gift card code when you pay."
+      ],
+      "amounts": "The amount is the value of the card, in rupees."
+    },
+    "wildcraft-india": {
+      "kind": "Gift card",
+      "line": "Backpacks, hiking shoes and outdoor gear.",
+      "where_it_works": "In Wildcraft's own stores only",
+      "valid_for": "Cannot be renewed once expired",
+      "how_used": "Can be part-used. Nothing is refunded for what is left",
+      "know": [
+        "The balance is tied to your mobile number and cannot be moved.",
+        "The store may ask for government ID."
+      ],
+      "steps": [
+        "Go to a Wildcraft store.",
+        "Tell the cashier you are paying with a gift voucher before you buy.",
+        "Show the voucher code."
+      ],
+      "amounts": "The amount is the value of the voucher, in rupees."
+    },
+    "ikea-india": {
+      "kind": "Gift card",
+      "line": "Furniture, home decor and storage.",
+      "where_it_works": "In IKEA stores in India only",
+      "valid_for": "1 year from the day you buy it",
+      "how_used": "Use it more than once, until the balance runs out",
+      "know": [
+        "Balance left after one year is lost.",
+        "The balance cannot be moved to another card."
+      ],
+      "steps": [
+        "Go to an IKEA store.",
+        "At the billing counter, say you are paying with a gift card.",
+        "Show the card details.",
+        "Pay anything left over by cash or card."
+      ],
+      "amounts": "The amount is the balance on the card, in rupees.",
+      "brand_colour": "#FFDB00"
+    },
+    "nykaa-men-india": {
+      "kind": "Gift card",
+      "line": "Grooming, skincare and fashion.",
+      "where_it_works": "nykaa.com, nykaaman.com, nykaafashion.com and Nykaa stores",
+      "valid_for": "365 days from the day it is issued",
+      "how_used": "Use it more than once, until the balance runs out",
+      "know": [
+        "Cannot be cancelled, refunded or returned.",
+        "Cannot buy gold or silver coins, bars or jewellery."
+      ],
+      "steps": [
+        "Add items and go to checkout.",
+        "Choose Gift Card as the way to pay.",
+        "Enter the card number and PIN.",
+        "Pay anything left over another way."
+      ],
+      "amounts": "The amount is the balance on the card, in rupees."
+    },
+    "tinder-plus-and-gold-india": {
+      "kind": "Subscription code",
+      "line": "Unlimited likes, rewinds and more.",
+      "where_it_works": "Online, at tinder.com",
+      "valid_for": "The code expires 5 years after you buy it",
+      "how_used": "One use, on one account",
+      "know": [
+        "You must be 18 or older.",
+        "It does not replace a subscription that is already running. Turn off auto-renewal first.",
+        "Priced in US dollars."
+      ],
+      "steps": [
+        "Go to tinder.com and sign in.",
+        "Tap your profile, then Promo Code.",
+        "Enter the code and press Submit."
+      ],
+      "amounts": "Each price is one subscription code. The catalogue does not say which plan each price unlocks.",
+      "brand_colour": "#FC3A64"
+    },
+    "airlinegift-india": {
+      "kind": "Gift card",
+      "line": "Flights on 450+ airlines, through AirlineGift.",
+      "where_it_works": "Online, at airlinegift.com",
+      "valid_for": "12 months from the day it is issued",
+      "know": [
+        "At most 2 gift codes per booking.",
+        "Cannot be exchanged or refunded."
+      ],
+      "steps": [
+        "Make an account at airlinegift.com.",
+        "Choose Book Trip, then search and pick a flight.",
+        "Enter the travellers' details.",
+        "At checkout, paste the code under Redeem e-Gift Card Code."
+      ],
+      "amounts": "The amount is the value of the gift card, in rupees."
+    },
+    "amazon-shopping-vouchers-india": {
+      "kind": "Gift card",
+      "line": "Shopping on Amazon India.",
+      "where_it_works": "Online",
+      "amounts": "The amount is the value of the card."
+    },
+    "flipkart-india": {
+      "kind": "Gift card",
+      "line": "Shopping on Flipkart.",
+      "where_it_works": "Online · In the app",
+      "amounts": "The amount is the value of the card."
+    },
+    "swiggy-money-india": {
+      "kind": "Gift card",
+      "line": "Food delivery and groceries.",
+      "where_it_works": "In the app",
+      "amounts": "The amount is the value of the card.",
+      "brand_colour": "#FE5005"
+    },
+    "zomato-india": {
+      "kind": "Gift card",
+      "line": "Food delivery and dining.",
+      "where_it_works": "Online · In the app · In store",
+      "amounts": "The amount is the value of the card.",
+      "brand_colour": "#E3263F"
+    },
+    "uber-india": {
+      "kind": "Gift card",
+      "line": "Rides.",
+      "where_it_works": "In the app",
+      "amounts": "The amount is the value of the card.",
+      "brand_colour": "#000000"
+    },
+    "cleartrip-voucher-india": {
+      "kind": "Gift card",
+      "line": "Flights and hotels.",
+      "where_it_works": "Online · In the app",
+      "amounts": "The amount is the value of the card."
+    }
+  }
+}
