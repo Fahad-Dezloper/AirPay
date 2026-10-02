@@ -28,6 +28,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.toPixelMap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.layout
@@ -170,6 +171,14 @@ private fun contrast(a: Float, b: Float): Float =
 /** The grounds' own luminance, so the choice below is derived from the palette, not guessed. */
 private val DARK_L = luminanceOf(GroundDark)
 private val LIGHT_L = luminanceOf(GroundLight)
+
+/**
+ * Whether a logo of mean luminance [logo] can be read on [ground]: WCAG's 3:1, the bar for large
+ * graphics. Used to decide whether a brand colour the server names is a usable ground for that
+ * brand's own logo — Tinder's white wordmark on its pink is 3.6:1 and reads; the same wordmark on
+ * a pale brand colour would not, and then the measured palette ground wins.
+ */
+internal fun readableOn(logo: Float, ground: Color): Boolean = contrast(logo, luminanceOf(ground)) >= 3f
 
 /**
  * Every Nth pixel is plenty for an average, and 7 shares no factor with any plausible row
@@ -350,53 +359,117 @@ internal fun Recommended(
 }
 
 /**
- * A logo and the ground measured from it. One value, so the card can never draw one without the
- * other — a logo on the wrong ground for even a frame is the bug, briefly.
+ * A logo, the ground measured from it, and how light it is. One value, so a card can never draw a
+ * logo without the ground chosen for it — a logo on the wrong ground for even a frame is the bug,
+ * briefly. [luminance] rides along because a brand colour the server names is only a usable
+ * ground if the logo can be read on it (see `PageLogo` in ShopScreen.kt), and that needs the
+ * logo's own lightness, not just which of the two palette grounds it prefers.
  */
-private class HeaderArt(val logo: ImageBitmap, val ground: Ground)
+internal class LogoArt(
+    val logo: ImageBitmap,
+    val ground: Ground,
+    val luminance: Float?,
+    /** No transparent pixel at all: the logo brings its own plate, which no ground should frame. */
+    val plated: Boolean,
+)
 
 /**
- * Grounds already measured, by URL. The measurement is cheap but not free, and [LogoCache] can
- * hand the same bitmap straight back when a card scrolls into view again — in which case the
- * card should draw finished rather than measure its way there.
+ * The mean WCAG luminance of the logo's painted pixels, alpha-weighted, or null when nothing is
+ * painted. The same walk as [groundFor] — transparent pixels are padding, not evidence — kept
+ * separate so [groundFor]'s contract (and its tests) stays exactly what it was.
  */
-private object Grounds {
-    private val byUrl = java.util.Collections.synchronizedMap(mutableMapOf<String, Ground>())
-
-    fun cached(url: String): Ground? = byUrl[url]
-
-    /** Off the main thread only: [toPixelMap] copies the bitmap before [groundFor] walks it. */
-    fun of(url: String, logo: ImageBitmap): Ground =
-        byUrl[url] ?: groundFor(logo.toPixelMap().buffer).also { byUrl[url] = it }
+internal fun logoLuminance(pixels: IntArray, step: Int = GROUND_STEP): Float? {
+    var sum = 0.0
+    var weight = 0L
+    val every = step.coerceAtLeast(1)
+    var i = 0
+    while (i < pixels.size) {
+        val a = (pixels[i] ushr 24) and 0xFF
+        if (a != 0) {
+            sum += a * luminanceOf(pixels[i])
+            weight += a
+        }
+        i += every
+    }
+    return if (weight == 0L) null else (sum / weight).toFloat()
 }
 
 /**
- * The logo, fetched and decoded off the main thread, with its ground measured in the same breath.
+ * Every logo this screen has decoded **and measured**, held in memory by URL and bounded by
+ * BYTES, not by count.
  *
- * Coil draws this URL elsewhere in the app and cannot do this job: from API 31 it decodes to
- * `HARDWARE` bitmaps, whose pixels cannot be read at all — `getPixels` throws on one. [LogoCache]
- * is already the app's `BitmapFactory` path for this exact CDN form (see `PopupUi`), which works
- * because the URL ends `.png` and the CDN converts on the way out; it caches; and it gives us the
- * one bitmap that is both measured and drawn, so the ground can never describe a different image
- * from the one on screen. No SVG decoder is needed here for the same reason.
+ * **Why it exists.** [LogoCache] holds 48 bitmaps by count, and the "More" list draws a hundred
+ * and more rows at once — so by the time the last row was decoded the first had been evicted,
+ * and going back from a service page to the list showed a letter on every row until each logo
+ * was fetched again. This cache is sized for the whole list (a decoded logo is ~50 KB, so the
+ * budget holds several hundred) and holds the measured ground alongside the bitmap, so a logo
+ * seen once is complete — bitmap and ground — on the very first frame of every later
+ * composition. [LogoCache] is still what fetches and decodes; this is what remembers.
+ */
+internal object ArtCache {
+    private const val BUDGET = 24 * 1024 * 1024
+    private val cache = object : android.util.LruCache<String, LogoArt>(BUDGET) {
+        override fun sizeOf(key: String, value: LogoArt): Int =
+            (value.logo.width * value.logo.height * 4).coerceAtLeast(1)
+    }
+
+    /** A full-resolution decode is a different bitmap of the same URL, so it is its own entry. */
+    private fun keyOf(url: String, full: Boolean) = if (full) "$url#full" else url
+
+    fun get(url: String, full: Boolean = false): LogoArt? = cache.get(keyOf(url, full))
+
+    /**
+     * Off the main thread only: it fetches, and [toPixelMap] copies the bitmap to measure it.
+     *
+     * [full] decodes at the source's own size. [LogoCache] halves the image until it is about
+     * 128 px wide — right for a 48dp tile, but a service page draws the logo ~64dp tall across
+     * the screen's width, where that decode is upscaled several times over and looks soft. Falls
+     * back to [LogoCache]'s decode if the full one fails.
+     */
+    fun load(url: String, full: Boolean = false): LogoArt? {
+        val key = keyOf(url, full)
+        cache.get(key)?.let { return it }
+        val bmp = (if (full) fetchFull(url) else null) ?: LogoCache.load(url) ?: return null
+        val px = bmp.toPixelMap().buffer
+        return LogoArt(bmp, groundFor(px), logoLuminance(px), px.none { (it ushr 24) != 0xFF })
+            .also { cache.put(key, it) }
+    }
+
+    private fun fetchFull(url: String): ImageBitmap? = try {
+        val c = (java.net.URL(url).openConnection() as java.net.HttpURLConnection).apply {
+            connectTimeout = 6_000; readTimeout = 6_000
+        }
+        val bytes = c.inputStream.use { it.readNBytes(2_000_000) }
+        android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
+    } catch (e: Exception) {
+        null
+    }
+}
+
+/**
+ * The logo for [url], fetched and decoded off the main thread, its ground measured in the same
+ * breath — and **already there on the first frame when it has been seen before**.
+ *
+ * The first frame is the point. The earlier version seeded `produceState` from the cache but
+ * only when both halves were cached in two separate, differently-sized stores, and a
+ * count-bounded one evicted first; a recomposition then started from null and drew the letter
+ * placeholder until the producer got through IO. Here the cache is read synchronously on every
+ * composition and wins over the async result, so a hit never passes through the null state.
+ *
+ * [LogoCache] rather than Coil, for the reason it documents: from API 31 Coil decodes to
+ * `HARDWARE` bitmaps, whose pixels cannot be read, and the ground has to be measured from the
+ * very bitmap that is drawn.
  */
 @Composable
-private fun headerLogo(url: String?): HeaderArt? {
-    val art by produceState<HeaderArt?>(
-        // Both halves already in memory means the card draws finished on the first frame, with
-        // no idle panel flashing past on the way.
-        initialValue = url?.let { u ->
-            LogoCache.get(u)?.let { b -> Grounds.cached(u)?.let { HeaderArt(b, it) } }
-        },
-        url,
-    ) {
-        if (value == null && url != null) {
-            value = withContext(Dispatchers.IO) {
-                LogoCache.load(url)?.let { HeaderArt(it, Grounds.of(url, it)) }
-            }
+internal fun rememberLogoArt(url: String?, full: Boolean = false): LogoArt? {
+    val loaded by produceState<LogoArt?>(null, url, full) {
+        // A new url must not keep showing the previous one's logo while it loads.
+        value = null
+        if (url != null && ArtCache.get(url, full) == null) {
+            value = withContext(Dispatchers.IO) { ArtCache.load(url, full) }
         }
     }
-    return art
+    return url?.let { ArtCache.get(it, full) } ?: loaded
 }
 
 @Composable
@@ -423,7 +496,7 @@ private fun VoucherCard(p: Shop.Product, onOpen: (Shop.Product) -> Unit) {
         // And because the logo and its ground arrive together, the swap happens in a single
         // frame: the panel fills and the mark appears at once, which reads as the card loading
         // rather than as a flash.
-        val art = headerLogo(headerArt(p))
+        val art = rememberLogoArt(headerArt(p))
         Box(
             Modifier.fillMaxWidth().height(HEADER_H)
                 .background(

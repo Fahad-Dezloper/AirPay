@@ -1,5 +1,7 @@
 package so.duffle.app
 
+import android.content.Context
+import java.io.File
 import java.math.BigDecimal
 import org.json.JSONObject
 
@@ -133,6 +135,11 @@ object Shop {
      * @param amounts one sentence saying what a price point means. §3.3 puts it over Pay.
      * @param brandHex the brand's own colour as `#RRGGBB`, for §3.1's tile and §3.2's logo box.
      *   Absent, the ground is measured from the logo's own pixels instead (`groundFor`).
+     * @param tabLabel the words on §3.2's tab — "Flights & hotels", "Rail". Hand-written and sent
+     *   only for a brand sold as several products (MakeMyTrip); trimming the product's name
+     *   gives "Voucher" for the first of them, which is why it is not derived when this exists.
+     * @param tabLine what the tab covers, as a noun phrase: "Train tickets". §3.2's caption under
+     *   the tabs reads it as "For train tickets."
      */
     data class Guide(
         val kind: String? = null,
@@ -144,6 +151,8 @@ object Shop {
         val steps: List<String> = emptyList(),
         val amounts: String? = null,
         val brandHex: String? = null,
+        val tabLabel: String? = null,
+        val tabLine: String? = null,
     )
 
     /**
@@ -154,19 +163,25 @@ object Shop {
      * USDC, and is the only number this app treats as authoritative.
      *
      * @param usdPrice what this package costs in USDC, as a decimal string — §3.3's second line
-     *   inside a price box, and the figure on its `Pay 5.49 USDC` button. **Null today.**
-     *   `shop.py` deliberately withholds Bitrefill's own price field ("`price` is Bitrefill's
-     *   internal unit and is NOT money anybody recognises… deliberately not sent to the app"),
-     *   so there is no USDC figure on the wire for a denomination that has not been invoiced
-     *   yet. Null makes §3.3's cost line render nothing and its button read a bare `Pay`; the
-     *   real price still arrives on the invoice, which is the only number this app has ever
-     *   treated as authoritative. See [Invoice].
+     *   inside a price box. Bitrefill's own `price` is an internal unit and not money anybody
+     *   recognises, so the server sends this as an **estimate** (see [usdEstimate]) converted at
+     *   a rate it re-measures from real invoices. Null when the server has none, which makes the
+     *   cost line render nothing and the button read a bare `Pay`. The real price still arrives
+     *   on the invoice, the only number this app treats as authoritative. See [Invoice].
      */
     data class Package(
         val value: String,
         val amount: Int,
         val id: String? = null,
         val usdPrice: String? = null,
+        /**
+         * True when [usdPrice] is an estimate, which the server says on every figure it sends.
+         * Bitrefill's API gives no USD price for a package, so the server converts its internal
+         * unit at a rate it measures from real invoices — close, not exact. An estimate is
+         * written "about 5.49 USDC", never "5.49 USDC", and never goes on the Pay button: only
+         * the invoice's own figure is the price.
+         */
+        val usdEstimate: Boolean = false,
     ) {
         /**
          * What to print as the price.
@@ -287,8 +302,9 @@ object Shop {
                 // The brand off the front, the country off the back: "MakeMyTrip Rail India"
                 // → "Rail". Whatever is left when that trim empties the name is the product's
                 // own name, which is still better than a blank pill.
-                val label = trimCountry(p.name).removePrefix(name).trim()
-                    .ifBlank { trimCountry(p.name) }
+                val label = p.guide.tabLabel
+                    ?: trimCountry(p.name).removePrefix(name).trim()
+                        .ifBlank { trimCountry(p.name) }
                 Card(p, label)
             }
             if (cards.isEmpty()) continue
@@ -350,10 +366,46 @@ object Shop {
      */
     const val QUOTE_LIFE_MS = 120_000L
 
-    suspend fun sections(): List<Section>? {
+    /**
+     * The catalogue, fresh from the server. Null when it cannot be reached.
+     *
+     * [context] is where the last good answer is written (see [cached]). It is optional so a
+     * caller that only wants to look — a test, a preview — does not leave a file behind.
+     */
+    suspend fun sections(context: Context? = null): List<Section>? {
         if (!enabled) return null
         val o = ServerClient.read("/v1/shop") ?: return null
-        if (!o.optBoolean("enabled", false)) return emptyList()
+        val parsed = parse(o) ?: return emptyList()
+        // Only a real catalogue is kept. An empty answer (the shop switched off, or a cold server
+        // that had nothing yet) must never overwrite a good copy: the whole point of the copy is
+        // that Home still has something to show when the server does not.
+        if (context != null && parsed.isNotEmpty()) {
+            runCatching { cacheFile(context).writeText(o.toString()) }
+        }
+        return parsed
+    }
+
+    /**
+     * The last catalogue the server gave us, read from disk — synchronously fast, and available
+     * before any network call can answer.
+     *
+     * "Pay a bill" used to appear a beat after everything else, or not until the server warmed up
+     * (its first call after a restart pages through Bitrefill). A shop that is the same one you
+     * saw yesterday is the right thing to show *while* asking whether anything changed, so Home
+     * draws from this at once and [sections] replaces it when the answer arrives.
+     *
+     * Null when there is no copy yet (first run) or it cannot be read; a corrupt file is the same
+     * as no file, never an exception on the way to drawing Home.
+     */
+    fun cached(context: Context): List<Section>? = runCatching {
+        parse(JSONObject(cacheFile(context).readText()))?.takeIf { it.isNotEmpty() }
+    }.getOrNull()
+
+    private fun cacheFile(context: Context) = File(context.filesDir, "shop_catalog.json")
+
+    /** The server's `/v1/shop` body as sections; null when it says the shop is off. */
+    private fun parse(o: JSONObject): List<Section>? {
+        if (!o.optBoolean("enabled", false)) return null
         val arr = o.optJSONArray("sections") ?: return emptyList()
         return (0 until arr.length()).mapNotNull { i ->
             arr.optJSONObject(i)?.let { s ->
@@ -386,7 +438,10 @@ object Shop {
                 a!!.optJSONObject(i)?.let { o ->
                     o.optString("value").takeIf { it.isNotBlank() }
                         ?.let { v ->
-                            Package(v, o.optInt("amount", 0), o.text("id"), o.text("usd_price"))
+                            Package(
+                                v, o.optInt("amount", 0), o.text("id"), o.text("usd_price"),
+                                usdEstimate = o.optBoolean("usd_price_estimate", false),
+                            )
                         }
                 }
             }
@@ -405,6 +460,8 @@ object Shop {
         steps = j.strings("steps"),
         amounts = j.text("amounts"),
         brandHex = j.text("brand_colour"),
+        tabLabel = j.text("tab_label"),
+        tabLine = j.text("tab_line"),
     )
 
     /** An array of non-blank strings, or nothing. `null` entries are dropped, not stringified. */

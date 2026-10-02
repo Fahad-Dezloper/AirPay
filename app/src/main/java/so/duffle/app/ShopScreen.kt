@@ -9,6 +9,7 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -20,7 +21,11 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -29,13 +34,17 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.produceState
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.toPixelMap
 import androidx.compose.ui.layout.ContentScale
@@ -48,8 +57,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.window.DialogWindowProvider
 import java.math.BigDecimal
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.launch
 
 /**
  * §3 of ui/PORT-2026-10-02.md — the shop, in three levels, each doing one job.
@@ -135,40 +143,31 @@ private val GroundDark = D.Night
 /** The quiet panel a tile shows before its logo and ground have arrived, or if they never do. */
 private val GroundIdle = D.Fill
 
-/** A logo and the ground measured from it — one value, so neither can be drawn without the other. */
-private class BrandArt(val logo: ImageBitmap, val ground: Ground)
-
-/** Grounds already measured, by URL, so a row scrolled back into view draws finished. */
-private object ShopGrounds {
-    private val byUrl = java.util.Collections.synchronizedMap(mutableMapOf<String, Ground>())
-    fun cached(url: String) = byUrl[url]
-    /** Off the main thread only: [toPixelMap] copies the bitmap before `groundFor` walks it. */
-    fun of(url: String, logo: ImageBitmap): Ground =
-        byUrl[url] ?: groundFor(logo.toPixelMap().buffer).also { byUrl[url] = it }
-}
-
 /**
- * The brand's logo, decoded off the main thread, with its ground measured in the same breath.
+ * The ground a logo is drawn on — **one rule for every logo**: square, wide wordmark, dark, white
+ * or transparent.
  *
- * [LogoCache] rather than Coil, for the reason `Vouchers.headerLogo` documents: from API 31
- * Coil decodes to HARDWARE bitmaps whose pixels cannot be read, and the ground has to be
- * measured from the very bitmap that gets drawn or it can end up describing a different image.
+ *  1. The brand's own colour, if the server named one **and the logo can be read on it** (3:1,
+ *     [readableOn]). The colour is the brand's, so it is the first choice.
+ *  2. Otherwise the palette ground the logo's own pixels contrast best with ([LogoArt.ground]):
+ *     dark under a light logo, light under a dark one.
+ *
+ * The readability test is the bug this replaced. The page used to ask only whether the brand
+ * colour was DARK, and a mid-tone brand colour is neither: Tinder's pink `#fc3a64` is lighter than
+ * the cut-off, so the page decided no box was needed and drew Tinder's all-white wordmark bare on
+ * the page's white — invisible. A logo that brings its own opaque plate ([LogoArt.plated]) skips
+ * the brand colour altogether, or the plate would show as a rectangle inside it.
+ *
+ * Before the logo has arrived there is nothing to judge, so the brand colour (if any) or the idle
+ * panel stands in.
  */
-@Composable
-private fun rememberBrandArt(url: String?): BrandArt? {
-    val art by produceState<BrandArt?>(
-        initialValue = url?.let { u ->
-            LogoCache.get(u)?.let { b -> ShopGrounds.cached(u)?.let { BrandArt(b, it) } }
-        },
-        url,
-    ) {
-        if (value == null && url != null) {
-            value = withContext(Dispatchers.IO) {
-                LogoCache.load(url)?.let { BrandArt(it, ShopGrounds.of(url, it)) }
-            }
-        }
+private fun logoGround(art: LogoArt?, brand: Color?): Color = when {
+    art == null -> brand ?: GroundIdle
+    brand != null && !art.plated && art.luminance?.let { readableOn(it, brand) } == true -> brand
+    else -> when (art.ground) {
+        Ground.Dark -> GroundDark
+        Ground.Light -> GroundLight
     }
-    return art
 }
 
 /** A brand colour the server named, if it ever does. Anything unparseable is simply absent. */
@@ -260,6 +259,28 @@ private fun faceValue(value: BigDecimal, currency: String): String? = runCatchin
 private fun usdcLabel(value: BigDecimal): String? =
     runCatching { Money.token(value, "USDC") }.getOrNull()
 
+/**
+ * Whether to say "Not enough USDC" — only when it is certain.
+ *
+ * An exact price is compared as it is. An ESTIMATE has to clear the balance by 3% first, because
+ * the two real purchases it was measured on sat about a cent high, and refusing somebody who can
+ * in fact afford a card is the worse mistake: `buy()` checks the invoice's real price against the
+ * balance anyway, and refuses there with the true figure. Unknown cost or unknown balance is never
+ * "not enough".
+ */
+internal fun notEnough(cost: BigDecimal?, balance: BigDecimal?, estimate: Boolean): Boolean {
+    if (cost == null || balance == null) return false
+    return cost > if (estimate) balance.multiply(BigDecimal("1.03")) else balance
+}
+
+/**
+ * A package's cost as the price box writes it: "5.49 USDC", or "about 5.49 USDC" when the server
+ * says the figure is an estimate. Only the invoice's own number is ever called the price.
+ */
+private fun costLabel(pack: Shop.Package): String? =
+    pack.usdPrice?.toBigDecimalOrNull()?.let(::usdcLabel)
+        ?.let { if (pack.usdEstimate) "about $it" else it }
+
 // -- §3.1 the list -----------------------------------------------------------------------------
 
 /**
@@ -315,15 +336,110 @@ internal fun ShopSection(
         return
     }
 
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-        Spacer(Modifier.height(8.dp))
-        services.forEachIndexed { i, s ->
-            // A hairline BETWEEN rows, as `divide-y` draws it: none above the first, none
-            // below the last.
-            if (i > 0) RowLine()
-            ServiceRow(s) { onPick(s.lead) }
+    // Held above the screen: opening a service and coming back must land on the row that was
+    // tapped, not the top of the list.
+    val scroll = rememberHeldScroll("shop:${section.title}")
+    val searchable = section.title == MORE_TITLE
+    val query = ShopQueryHold.query("shop:${section.title}", scroll)
+    val scope = rememberCoroutineScope()
+    val needle = if (searchable) query.value.trim() else ""
+    val shown = remember(services, needle) {
+        if (needle.isEmpty()) services
+        else services.filter { s ->
+            s.name.contains(needle, ignoreCase = true) ||
+                s.lead.guide.line?.contains(needle, ignoreCase = true) == true
         }
-        Spacer(Modifier.height(32.dp))
+    }
+
+    Column(Modifier.fillMaxSize()) {
+        // Pinned above the list, which scrolls under it, so it is reachable from any row.
+        if (searchable) {
+            Spacer(Modifier.height(8.dp))
+            SearchField(query.value) {
+                query.value = it
+                // A shorter list under an old scroll offset would open part-way down it.
+                scope.launch { scroll.scrollTo(0) }
+            }
+        }
+        Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(scroll)) {
+            Spacer(Modifier.height(8.dp))
+            if (shown.isEmpty()) {
+                Text(
+                    "Nothing matches \"$needle\"", color = D.Quiet, style = Type.body,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 32.dp),
+                )
+            }
+            shown.forEachIndexed { i, s ->
+                // A hairline BETWEEN rows, as `divide-y` draws it: none above the first, none
+                // below the last.
+                if (i > 0) RowLine()
+                ServiceRow(s) { onPick(s.lead) }
+            }
+            Spacer(Modifier.height(32.dp))
+        }
+    }
+}
+
+/**
+ * What was typed into each list's search field, held above the screen with the scroll position.
+ *
+ * **Why it exists.** Opening a service removes the list from composition, and a `remember`ed
+ * query would go with it: the person searched "hot", opened Hotstar, pressed back, and got the
+ * whole list at the top again. It is keyed like [ScrollHold] and tied to the very [ScrollState]
+ * it was made beside — when `ScrollHold.keepOnly` drops the screen's scroll (Home is back in
+ * front) the state object changes and the query starts empty, so a list is never opened at the
+ * top with last visit's filter still applied.
+ */
+private object ShopQueryHold {
+    private class Held(val scroll: ScrollState, val query: androidx.compose.runtime.MutableState<String>)
+
+    private val held = mutableMapOf<String, Held>()
+
+    fun query(key: String, scroll: ScrollState): androidx.compose.runtime.MutableState<String> {
+        held[key]?.takeIf { it.scroll === scroll }?.let { return it.query }
+        return mutableStateOf("").also { held[key] = Held(scroll, it) }
+    }
+}
+
+/**
+ * The "More" list's search field: 48 tall, outlined, a search icon at the start, a clear button
+ * at the end once there is something to clear.
+ *
+ * Plain outlined field, no tints, no fill — the same hairline every other control here uses. The
+ * clear target is the full 48 even though its glyph is 20, and the field filters live as you
+ * type, so the Search key on the keyboard only has to put the keyboard away.
+ */
+@Composable
+private fun SearchField(value: String, onChange: (String) -> Unit) {
+    val focus = LocalFocusManager.current
+    val shape = RoundedCornerShape(16.dp)
+    Row(
+        Modifier.fillMaxWidth().height(48.dp).clip(shape).border(1.5.dp, D.Line, shape),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Spacer(Modifier.width(Space.inline))
+        HiIcon(Hi.Search, D.Quiet, 20.dp)
+        Spacer(Modifier.width(8.dp))
+        Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
+            if (value.isEmpty()) Text("Search", color = D.Quiet, style = Type.body, maxLines = 1)
+            BasicTextField(
+                value = value,
+                onValueChange = onChange,
+                singleLine = true,
+                textStyle = Type.body.copy(color = D.Black),
+                cursorBrush = SolidColor(D.Blue),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(onSearch = { focus.clearFocus() }),
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+        if (value.isNotEmpty()) {
+            Box(
+                Modifier.size(48.dp).clip(CircleShape).clickable { onChange("") },
+                contentAlignment = Alignment.Center,
+            ) { HiIcon(Hi.Close, D.Quiet, 20.dp, contentDescription = "Clear search") }
+        }
     }
 }
 
@@ -365,11 +481,11 @@ private fun ServiceRow(service: Shop.Service, onOpen: () -> Unit) {
 /** §3.1's logo: a 48 tile, corner 12, on the brand's ground, hairline outline, 4 of padding. */
 @Composable
 private fun BrandTile(product: Shop.Product, name: String) {
-    val art = rememberBrandArt(product.artUrl)
+    val art = rememberLogoArt(product.artUrl)
     val shape = RoundedCornerShape(12.dp)
     Box(
         Modifier.size(48.dp).clip(shape)
-            .background(brandColour(product.guide.brandHex) ?: ground(art))
+            .background(logoGround(art, brandColour(product.guide.brandHex)))
             .border(1.5.dp, D.Line, shape)
             // 4, "never cropped": these are logos of wildly different shapes and a wordmark run
             // to the tile's edges reads as cut off.
@@ -387,13 +503,6 @@ private fun BrandTile(product: Shop.Product, name: String) {
             Text(name.take(1).uppercase(), color = D.Black, style = Type.heading)
         }
     }
-}
-
-/** Which ground a measured logo belongs on, or the idle panel while there is nothing to judge. */
-private fun ground(art: BrandArt?): Color = when (art?.ground) {
-    Ground.Dark -> GroundDark
-    Ground.Light -> GroundLight
-    null -> GroundIdle
 }
 
 // -- §3.2 the service's page -------------------------------------------------------------------
@@ -428,17 +537,14 @@ private fun ServicePage(
     val guide = product.guide
 
     Column(Modifier.fillMaxSize()) {
-        Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
+        Column(Modifier.weight(1f).verticalScroll(rememberHeldScroll("shopPage:${service.id}"))) {
             // The back target is a full 48 and the row is pulled 12 back, so the arrow itself
             // lands on the page's start edge with the touch target still intact.
             Row(
-                Modifier.fillMaxWidth().offset(x = (-12).dp),
+                Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Box(
-                    Modifier.size(48.dp).clip(CircleShape).clickable(onClick = onBack),
-                    contentAlignment = Alignment.Center,
-                ) { HiIcon(Hi.ArrowLeft, D.Black, 24.dp, contentDescription = "Back") }
+                BackArrow(onBack)
                 Text(
                     service.name, color = D.Black, style = Type.title,
                     maxLines = 1, overflow = TextOverflow.Ellipsis,
@@ -464,9 +570,10 @@ private fun ServicePage(
                 CardTabs(service, card) { card = it }
                 chosen.label?.let {
                     Spacer(Modifier.height(12.dp))
-                    // "For {what this card covers}." The card's own curated line when there is
-                    // one; the tab's own words otherwise, which are the server's product name.
-                    val what = product.guide.line ?: it
+                    // "For {what this card covers}." The tab's own noun phrase ("Train tickets")
+                    // first, because `line` is the whole product's sentence and reads wrongly
+                    // after "For"; then the line, then the tab's words.
+                    val what = product.guide.tabLine ?: product.guide.line ?: it
                     Text(
                         "For ${what.trimEnd('.').lowercase()}.",
                         color = D.Quiet, style = Type.caption,
@@ -524,61 +631,46 @@ private fun ServicePage(
     }
 }
 
+/** The logo panel's height, and the inset the logo sits inside: 88 − 2 × 12 leaves a 64 logo. */
+private val PAGE_LOGO_H = 88.dp
+private val PAGE_LOGO_PAD_H = 16.dp
+private val PAGE_LOGO_PAD_V = 12.dp
+
 /**
- * §3.2's logo: 48 tall at its natural width, flush with the page's start edge, never cropped.
+ * §3.2's logo: a full-width panel, 88 tall, with the logo centred and fitted inside 16 × 12 of
+ * ground — never cropped, never stretched.
  *
- * A logo drawn for a light ground stands bare. One drawn for a dark ground — white lettering —
- * keeps a dark ground behind it, in a 56-tall box, corner 16, padding 16 × 12, or it would be
- * white on white. §3.2 words that as "the brand's colour"; [GroundDark] is what stands in while
- * [Shop.Guide.brandHex] is empty, and [brandColour] takes over the moment the server sends one.
+ * **Why a panel and not the logo bare.** The first version drew the logo 48 tall at its natural
+ * width on the page's white, and that fails three ways at once. A square mark is 48 wide and a
+ * wide wordmark is only as tall as its letters — Himalaya (302 × 168) came out about 86 wide and
+ * Disney+ Hotstar's lettering about 20 tall, both read as "small". A white logo (Tinder's) has
+ * nothing to show against white. And a mid-tone brand colour fooled the dark/light test (see
+ * [logoGround]). A fixed panel fixes all three with one rule: the logo is fitted into the same
+ * 64-tall, width-bounded box whatever its shape, so wordmarks run wide and squares stay square,
+ * and the panel's ground is chosen by [logoGround] so the logo is always legible on it.
+ *
+ * The logo is the full-resolution decode (`full = true`): the 128 px one the list tiles use is a
+ * quarter of what this box needs and would draw soft.
  */
 @Composable
 private fun PageLogo(product: Shop.Product) {
-    val art = rememberBrandArt(product.artUrl) ?: return
-    val brand = brandColour(product.guide.brandHex)
-    val dark = if (brand != null) needsDarkBox(brand) else art.ground == Ground.Dark
-
-    if (!dark) {
-        Image(
-            art.logo, contentDescription = null,
-            // Height fixed, width free: the layout's own max width still bounds it, so an
-            // unusually wide wordmark scales down inside the gutter instead of running past it.
-            modifier = Modifier.height(48.dp),
-            contentScale = ContentScale.Fit,
-            alignment = Alignment.CenterStart,
-        )
-        return
-    }
+    val art = rememberLogoArt(product.artUrl, full = true)
+    val shape = RoundedCornerShape(16.dp)
     Box(
-        Modifier.height(56.dp).clip(RoundedCornerShape(16.dp)).background(brand ?: GroundDark)
-            .padding(horizontal = 16.dp, vertical = 12.dp),
-        contentAlignment = Alignment.CenterStart,
+        Modifier.fillMaxWidth().height(PAGE_LOGO_H).clip(shape)
+            .background(logoGround(art, brandColour(product.guide.brandHex)))
+            .border(1.5.dp, D.Line, shape)
+            .padding(horizontal = PAGE_LOGO_PAD_H, vertical = PAGE_LOGO_PAD_V),
+        contentAlignment = Alignment.Center,
     ) {
-        Image(
-            art.logo, contentDescription = null,
-            modifier = Modifier.fillMaxHeight(), contentScale = ContentScale.Fit,
-        )
+        art?.let {
+            Image(
+                it.logo, contentDescription = null,
+                modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Fit,
+            )
+        }
     }
 }
-
-/**
- * Whether a brand colour the server named is dark enough to need keeping behind the logo.
- *
- * Measured against the page's own white through the same WCAG luminance `groundFor` uses, so
- * the two routes to the same decision cannot disagree: a colour that a white-lettered logo
- * would need is one that white text can actually sit on.
- */
-private fun needsDarkBox(brand: Color): Boolean = brand != D.White && run {
-    val lum = 0.2126f * linearOf(brand.red) +
-        0.7152f * linearOf(brand.green) +
-        0.0722f * linearOf(brand.blue)
-    lum < 0.19f
-}
-
-/** sRGB → linear light. The crossover `groundFor` documents sits at luminance ≈ 0.19. */
-private fun linearOf(v: Float): Float =
-    if (v <= 0.04045f) v / 12.92f
-    else Math.pow(((v + 0.055f) / 1.055f).toDouble(), 2.4).toFloat()
 
 /**
  * §3.2's tabs, for a brand that sells several cards: a sideways row of pills, 48 tall, the
@@ -717,9 +809,7 @@ private fun BuySheet(
             // 88% of the screen, and no more: the sheet is allowed to be long for a brand with
             // eleven price points, but never a second full screen on top of a full screen.
             val tallest = LocalConfiguration.current.screenHeightDp.dp * 0.88f
-            Column(
-                Modifier.heightIn(max = tallest).verticalScroll(rememberScrollState()),
-            ) {
+            Column(Modifier.heightIn(max = tallest)) {
                 Amounts(service, card, email, onEmail, usdc) { value ->
                     onBuy(card.product, value)
                 }
@@ -737,7 +827,7 @@ private fun BuySheet(
  * disabled button is the ordinary disabled look rather than a refusal in red.
  */
 @Composable
-private fun Amounts(
+private fun ColumnScope.Amounts(
     service: Shop.Service,
     card: Shop.Card,
     email: String?,
@@ -753,11 +843,17 @@ private fun Amounts(
     }
     var chosen by remember(product.id) { mutableStateOf<Int?>(null) }
     val pick = chosen?.let { prices.getOrNull(it) }
-    // What it costs in USDC. Null until the server sends a figure per denomination — see
-    // [Shop.Package.usdPrice] — in which case the button cannot claim a price and does not.
+    // What it costs in USDC — an estimate, from the server (see [Shop.Package.usdEstimate]). Null
+    // where it has none, in which case the button cannot claim a price and does not.
     val cost = pick?.usdPrice?.toBigDecimalOrNull()
-    val short = cost != null && usdc != null && cost > usdc
+    val short = notEnough(cost, usdc, pick?.usdEstimate == true)
 
+    // The sheet is two parts: everything that can be long scrolls in the middle, and the button is
+    // pinned beneath it. With one scroll over the whole sheet, a brand with many price points
+    // pushed Pay off the bottom and it had to be scrolled to — the one control that matters, and
+    // the one that must always be in reach. `weight(fill = false)` lets the scroll area be as
+    // short as its content when there is little of it, so a short sheet is still short.
+    Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState())) {
     Spacer(Modifier.height(16.dp))
     Row(Modifier.fillMaxWidth()) {
         Text(
@@ -834,13 +930,17 @@ private fun Amounts(
         Spacer(Modifier.height(Space.tight))
     }
     Text(ALSO_IN_APP, color = D.Quiet, style = Type.caption)
+    }
 
-    Spacer(Modifier.height(16.dp))
+    Spacer(Modifier.height(12.dp))
     PrimaryButton(
         label = when {
             short -> "Not enough USDC"
-            // A price to say, and the balance covers it.
-            cost != null -> usdcLabel(cost)?.let { "Pay $it" } ?: "Pay"
+            // A price to say, and the balance covers it. Only an EXACT price goes on the button:
+            // an estimate is in the box ("about 5.49 USDC") and the button stays a bare Pay
+            // until the invoice returns the real figure, which `buy()` checks against the
+            // balance again before anything is signed.
+            cost != null && pick?.usdEstimate != true -> usdcLabel(cost)?.let { "Pay $it" } ?: "Pay"
             else -> "Pay"
         },
         onClick = { pick?.let { onPay(it.value) } },
@@ -849,7 +949,7 @@ private fun Amounts(
         // the order on the invoice and refuses there, honestly, with the real figure.
         enabled = pick != null && !short,
     )
-    Spacer(Modifier.height(32.dp))
+    Spacer(Modifier.height(8.dp))
 }
 
 /**
@@ -883,7 +983,7 @@ private fun PriceBox(
                 color = D.Black, style = Type.title.figure(),
             )
             // What it costs, in the token it is paid with — null until the server sends one.
-            pack.usdPrice?.toBigDecimalOrNull()?.let(::usdcLabel)?.let {
+            costLabel(pack)?.let {
                 Spacer(Modifier.height(Space.tight))
                 Text(
                     it, color = D.Quiet,

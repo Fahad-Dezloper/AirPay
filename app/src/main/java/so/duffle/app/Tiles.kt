@@ -22,6 +22,12 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.text.style.TextAlign
@@ -215,6 +221,13 @@ private class BillTile(
      */
     val brand: Boolean,
     val sections: List<String>,
+    /**
+     * For a brand tile: the service it is the door to, by [Shop.services]' own key — a product id,
+     * or "makemytrip" for the grouped brand. With a page per service, a tile that IS one brand
+     * opens that brand's page rather than a list it is the first row of
+     * (ui/PORT-2026-10-02-shop.md §5). Null for a shelf tile.
+     */
+    val service: String? = null,
 ) {
     fun shelf(stocked: List<Shop.Section>): Shop.Section? = sections.firstNotNullOfOrNull { want ->
         stocked.firstOrNull { it.title.equals(want, ignoreCase = true) }
@@ -237,16 +250,19 @@ private val BILL_TILES = listOf(
     BillTile("Phone", R.drawable.ic_recharge, brand = false, sections = listOf("Phone")),
     BillTile(
         "Hotstar", R.drawable.hotstar, brand = true,
-        sections = listOf("TV & streaming", "Streaming", "TV"),
+        sections = listOf("TV & streaming", "Streaming", "TV"), service = "hotstar-india",
     ),
     BillTile("Cinema", R.drawable.ic_movie, brand = false, sections = listOf("Cinema")),
     BillTile(
         "PhonePe", R.drawable.phonepe, brand = true,
-        sections = listOf("Bills & wallets", "Bills"),
+        sections = listOf("Bills & wallets", "Bills"), service = "phonepe-india",
     ),
     BillTile("Food", R.drawable.ic_meal, brand = false, sections = listOf("Food")),
     BillTile("Shopping", R.drawable.ic_bag, brand = false, sections = listOf("Shopping")),
-    BillTile("MakeMyTrip", R.drawable.makemytrip, brand = true, sections = listOf("Travel")),
+    BillTile(
+        "MakeMyTrip", R.drawable.makemytrip, brand = true, sections = listOf("Travel"),
+        service = "makemytrip",
+    ),
 )
 
 /**
@@ -258,35 +274,58 @@ private val BILL_TILES = listOf(
  * shelf is worse than no tile. That is still why a tile can be missing: the eight are fixed,
  * but a tile whose shelf is absent or bare is dropped rather than drawn as a dead end.
  */
-/**
- * Everything the eight bill tiles do not cover, as one shelf.
- *
- * Built here rather than routed to a "More" section on the server, because what is left over
- * depends on which of the seven named tiles found a shelf — and Games, or anything the server
- * adds later, must not vanish just because it lost its own tile. De-duplicated by product id:
- * two shelves can list the same voucher.
- *
- * `internal`, and lifted out of [ShopTiles], because Rewards' "Recommended for you" row sends
- * its "See all" to exactly this shelf (user call, 2026-10-01). Two routes to one page means one
- * function; built twice, the two would drift the first time a tile was added.
- *
- * Null when nothing is left over — a door onto an empty shelf is worse than no door.
- */
-internal fun moreSection(sections: List<Shop.Section>): Shop.Section? {
-    val stocked = sections.filter { it.products.isNotEmpty() }
-    val spoken = BILL_TILES.mapNotNull { it.shelf(stocked)?.title }.toSet()
-    val rest = stocked.filterNot { it.title in spoken }
-    return rest.takeIf { it.isNotEmpty() }?.let { left ->
-        Shop.Section("More", left.flatMap { it.products }.distinctBy { p -> p.id })
-    }
-}
+/** What the full list is called, and what [ShopSection]'s host tests to know it is not a shelf. */
+internal const val MORE_TITLE = "More"
 
+/**
+ * Every service, as one list — the page the More tile and Rewards' "See all" both open
+ * (ui/PORT-2026-10-02-shop.md §3, §5). [Shop.services] puts the well-known brands first and
+ * groups MakeMyTrip's five products into one row.
+ *
+ * It was the leftovers: whatever the seven named tiles did not claim. With a page per service that
+ * made Hotstar and PhonePe reachable only through their tiles and absent from "More", and the
+ * sandbox's shop is one list with every service in it. De-duplicated by product id, because two
+ * shelves can list the same voucher. Null when nothing is stocked — a door onto an empty list is
+ * worse than no door.
+ *
+ * `internal` and shared because two routes to one page means one function; built twice, they
+ * would drift the first time a shelf was added.
+ */
+internal fun moreSection(sections: List<Shop.Section>): Shop.Section? =
+    sections.flatMap { it.products }.distinctBy { it.id }
+        .takeIf { it.isNotEmpty() }?.let { Shop.Section(MORE_TITLE, it) }
+
+/**
+ * Whether a section is the phone-recharge shelf, which gets its own screen. The full list contains
+ * recharge products too, so "has a recharge product" no longer means "is the Phone shelf".
+ */
+internal fun Shop.Section.isRechargeShelf(): Boolean =
+    title != MORE_TITLE && products.any { it.isMobileRecharge }
+
+/**
+ * @param onOpen the shelf to show, and the product to open on top of it when the tile is a single
+ *   brand. A brand whose product is not in the catalogue (out of stock) opens the full list
+ *   instead of an empty page.
+ */
 @Composable
-internal fun ShopTiles(sections: List<Shop.Section>, onOpen: (Shop.Section) -> Unit) {
+internal fun ShopTiles(sections: List<Shop.Section>, onOpen: (Shop.Section, Shop.Product?) -> Unit) {
     val stocked = sections.filter { it.products.isNotEmpty() }
-    val shown = BILL_TILES.mapNotNull { tile -> tile.shelf(stocked)?.let { tile to it } }
-    val more = moreSection(sections)?.let {
-        BillTile("More", R.drawable.ic_more, brand = false, sections = emptyList()) to it
+    val all = moreSection(sections)
+    val allServices = remember(all) { all?.let { Shop.services(it.products) }.orEmpty() }
+
+    // Where each tile goes. A brand tile with its product in stock opens that page straight away;
+    // one without falls back to its shelf, and a shelf that is not stocked either is no tile.
+    val shown = BILL_TILES.mapNotNull { tile ->
+        val brand = tile.service?.let { key -> allServices.firstOrNull { it.id == key }?.lead }
+        val shelf = tile.shelf(stocked)
+        when {
+            brand != null && all != null -> tile to (all to brand)
+            shelf != null -> tile to (shelf to null)
+            else -> null
+        }
+    }
+    val more = all?.let {
+        BillTile("More", R.drawable.ic_more, brand = false, sections = emptyList()) to (it to null)
     }
 
     // 20 on both axes, and 20 rather than 10: with the tile's grey body gone, the gap is the
@@ -297,8 +336,8 @@ internal fun ShopTiles(sections: List<Shop.Section>, onOpen: (Shop.Section) -> U
         // three wide tiles beside four narrow ones is the giveaway that a grid is faked.
         (shown + listOfNotNull(more)).chunked(4).forEach { row ->
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(20.dp)) {
-                row.forEach { (tile, shelf) ->
-                    Tile(tile.label, Modifier.weight(1f), onClick = { onOpen(shelf) }) {
+                row.forEach { (tile, target) ->
+                    Tile(tile.label, Modifier.weight(1f), onClick = { onOpen(target.first, target.second) }) {
                         if (tile.brand) BrandIcon(tile.icon) else LineIcon(tile.icon)
                     }
                 }
@@ -358,22 +397,23 @@ private fun Tile(
 ) {
     val interaction = remember { MutableInteractionSource() }
     Column(
-        modifier.then(PressScale(interaction)).clip(RoundedCornerShape(18.dp))
+        modifier.then(PressScale(interaction))
             .clickable(interaction, indication = null, onClick = onClick),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
         icon()
         Spacer(Modifier.height(8.dp))
-        // Two lines, centred, and the tile grows to hold them. The sandbox's note assumes
-        // "one 18px caption line", which is true of every label but "MakeMyTrip" — that one
-        // wraps in a quarter-width column, and the second line was being cut off. §8 of
-        // ui/PORT.md: text grows and nothing clips. Centred, so a wrapped label still sits
-        // under its own mark rather than hanging to one side of it.
+        // One line, always. "MakeMyTrip" is a hair wider than a quarter of the row: wrapping split
+        // the word in two ("MakeMyTri / p"). It is centred under its mark and allowed to overhang
+        // the tile into the 20dp gap between tiles. That only works because the tile no longer
+        // clips: its rounded `clip` cut the overhang off ("MakeMyTri▯"), and a tile has nothing
+        // for a clip to do — there is no indication, and a click is hit-tested by bounds.
         Text(
             label, color = D.Black, style = Type.caption,
-            textAlign = TextAlign.Center, maxLines = 2,
-            modifier = Modifier.fillMaxWidth(),
+            textAlign = TextAlign.Center, maxLines = 1, softWrap = false,
+            overflow = TextOverflow.Visible,
+            modifier = Modifier.fillMaxWidth().wrapContentWidth(Alignment.CenterHorizontally, unbounded = true),
         )
     }
 }
