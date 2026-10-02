@@ -26,6 +26,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -37,6 +39,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -56,6 +59,8 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.layout
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.res.painterResource
@@ -261,20 +266,20 @@ private fun threadRows(
 
 // ───────────────────────────────────────────────────────────────────────────── words
 
-/** "aashu.skr" → "aashu". §8.1's card titles and §8.4's outcome lines all use the first name. */
 /**
- * The short form used mid-sentence: "Payment to Aashu", not "Payment to Aashu Kumar".
+ * The short form of somebody's name for mid-sentence use: "Payment to Aashu", not "Payment to
+ * Aashu Kumar" — and for somebody nobody named, the start of their address ("Payment to FRB4kE").
  *
- * [PLACEHOLDERS] are left whole. They are not names — they are what the app writes down when
- * nobody told it a name — and cutting one to its first word produced "Payment to Scanned" on a
- * real screen. A label the app wrote itself is either said in full or not treated as a name.
+ * The name rule lives in `rememberCalled` ([Called.scanned], [addressStart]); this only decides
+ * whether the shown text may be cut. An address start is not a name and has no "first word", and
+ * the shortened address of an anonymous contact would be cut at the "…" or not at all, so both
+ * are said whole. Only a real name — yours, a domain, or a claimed one — is shortened.
  */
-private fun firstName(name: String): String =
-    if (name in PLACEHOLDERS) name
-    else name.split(' ', '.').firstOrNull { it.isNotBlank() } ?: name
-
-/** Labels this app assigns when a payload carried none — see `ScanActivity`. */
-private val PLACEHOLDERS = setOf("Scanned code")
+private fun firstName(called: Called): String {
+    val shown = called.shown
+    if (called.scanned || called.kind == Called.Kind.Anonymous) return shown
+    return shown.split(' ', '.').firstOrNull { it.isNotBlank() } ?: shown
+}
 
 /** §8.1: "Payment to Aashu" · "Payment to you" · "You asked Aashu" · "Aashu asked you". */
 private fun titleOf(row: ThreadRow, them: String): String = when (row.kind) {
@@ -453,7 +458,7 @@ private fun Modifier.barGround(
         }
     }
     drawRoundRect(
-        fill, topLeft = Offset(-bleed, 0f), size = Size(w, size.height + r),
+        fill, topLeft = Offset(-bleed, 0f), size = Size(w, size.height + r), // r is 0 for a square bar: exactly the bar's own height
         cornerRadius = CornerRadius(r),
     )
     if (hairline) {
@@ -534,7 +539,7 @@ internal fun Thread(
     }
 
     val rows = threadRows(who, toPay, owed, notes, rewards)
-    val them = firstName(called.shown)
+    val them = firstName(called)
 
     val open = openItem?.let { id -> rows.firstOrNull { it.id == id } }
     if (open != null) {
@@ -554,18 +559,26 @@ internal fun Thread(
         )
         // A Box, so the bar floats OVER the conversation rather than queueing up after it —
         // which is the whole reason §8.3 gives it a see-through ground.
+        //
+        // The room the list leaves under itself is the bar's MEASURED height, reported by the
+        // bar itself, not a constant: the field grows to four lines and the bar grows with it,
+        // and a fixed [BAR_SPACE] then lets the newest message slide under the see-through ground.
+        // [BAR_SPACE] is only the first frame's guess, before the bar has been measured.
+        var barPx by remember { mutableIntStateOf(0) }
+        val barRoom = if (barPx > 0) with(LocalDensity.current) { barPx.toDp() } else BAR_SPACE
         Box(Modifier.weight(1f).fillMaxWidth()) {
             if (rows.isEmpty()) {
-                NothingYet(who, called, them, onSay, Modifier.align(Alignment.Center))
+                NothingYet(who, called, them, onSay, barRoom, Modifier.align(Alignment.Center))
             } else {
                 Conversation(
-                    rows = rows, them = them, paying = paying,
+                    rows = rows, them = them, paying = paying, barRoom = barRoom,
                     onPay = onPay, onDecline = onDecline, onOpenItem = onOpenItem,
                 )
             }
             MessageBar(
                 peer = who.address, onSay = onSay, onPay = onOpen,
                 modifier = Modifier.align(Alignment.BottomCenter),
+                onHeight = { barPx = it },
             )
         }
     }
@@ -585,12 +598,7 @@ private fun ThreadHeader(who: Contact, called: Called, onBack: () -> Unit, onRen
         Modifier.fillMaxWidth().padding(bottom = Space.row),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(
-            Modifier.size(48.dp).clip(CircleShape).clickable(onClick = onBack)
-                .semantics { contentDescription = "Back" },
-            contentAlignment = Alignment.Center,
-        ) { HiIcon(Hi.ArrowLeft, D.Black, 24.dp) }
-        Spacer(Modifier.width(Space.tight))
+        BackArrow(onBack)
         // The face on the person's OWN colour, seeded by the address so they look the same here,
         // in §3 People and on a transaction row.
         FaceDisc(called.shown, who.address, 40.dp)
@@ -601,6 +609,13 @@ private fun ThreadHeader(who: Contact, called: Called, onBack: () -> Unit, onRen
                     called.shown, color = D.Black, style = Type.heading, maxLines = 1,
                     overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false),
                 )
+                if (called.scanned) {
+                    // The scan mark PeopleRow's NameLine draws after the same address start: no
+                    // name was given, the person was met by scanning. NameLine itself is a caption
+                    // step and cannot carry a heading, so the mark is repeated here.
+                    Spacer(Modifier.width(Space.tight))
+                    HiIcon(Hi.Scan, D.Quiet, 14.dp)
+                }
                 if (who.seeker) {
                     Spacer(Modifier.width(Space.tight))
                     HiIcon(Hi.Verified, D.BlueInk, 20.dp)
@@ -633,10 +648,11 @@ private fun NothingYet(
     called: Called,
     them: String,
     onSay: (String) -> Unit,
+    barRoom: Dp,
     modifier: Modifier = Modifier,
 ) {
     Column(
-        modifier.fillMaxWidth().padding(bottom = BAR_SPACE),
+        modifier.fillMaxWidth().padding(bottom = barRoom),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         FaceDisc(called.shown, who.address, 64.dp)
@@ -681,6 +697,7 @@ private fun Conversation(
     rows: List<ThreadRow>,
     them: String,
     paying: String?,
+    barRoom: Dp,
     onPay: (Inbox.Item) -> Unit,
     onDecline: (Inbox.Item) -> Unit,
     onOpenItem: (String?) -> Unit,
@@ -696,10 +713,25 @@ private fun Conversation(
             add(row)
         }
     }
+    // A new message has to be SEEN. The list is reversed, so index 0 is the bottom; but a lazy list
+    // keeps the item the person was looking at where it was, so a message arriving at index 0
+    // pushed everything up by one and landed *below* the edge — under the translucent bar, which is
+    // how a freshly sent message could be half-hidden behind the field it was typed in. When the
+    // newest row changes and the list is not already resting at the bottom, bring it back there.
+    // Left alone when the person has scrolled up on purpose to read: that only happens if they are
+    // already away from index 0 *and* nothing new arrived.
+    val state = rememberLazyListState()
+    val newest = rows.lastOrNull()?.id
+    LaunchedEffect(newest) {
+        if (state.firstVisibleItemIndex > 0 || state.firstVisibleItemScrollOffset != 0) {
+            state.animateScrollToItem(0)
+        }
+    }
     LazyColumn(
         Modifier.fillMaxSize(),
+        state = state,
         reverseLayout = true,
-        contentPadding = PaddingValues(bottom = BAR_SPACE),
+        contentPadding = PaddingValues(bottom = barRoom),
     ) {
         items(flat.asReversed(), key = { if (it is ThreadRow) it.id else "d:$it" }) { entry ->
             if (entry is String) {
@@ -909,6 +941,8 @@ private fun MessageBar(
     onSay: (String) -> Unit,
     onPay: () -> Unit,
     modifier: Modifier = Modifier,
+    /** The bar's whole height in px, ground included — what the list must leave under itself. */
+    onHeight: (Int) -> Unit = {},
 ) {
     var draft by remember(peer) { mutableStateOf("") }
     val typing = draft.isNotBlank()
@@ -922,7 +956,9 @@ private fun MessageBar(
     val swap by animateFloatAsState(if (typing) 1f else 0f, tween(200), label = "payOrSend")
 
     Row(
-        modifier.fillMaxWidth()
+        // Outermost, so it reads the same box [barGround] paints and the padding below sits
+        // inside it: the ground, the room reserved and the bar are one height by construction.
+        modifier.fillMaxWidth().onSizeChanged { onHeight(it.height) }
             .barGround(D.White.copy(alpha = .6f))
             .padding(top = BAR_TOP, bottom = BAR_BOTTOM),
         verticalAlignment = Alignment.CenterVertically,
@@ -1029,11 +1065,7 @@ private fun ItemPage(
 
     Column(Modifier.fillMaxSize()) {
         Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState())) {
-            Box(
-                Modifier.size(48.dp).clip(CircleShape).clickable(onClick = onBack)
-                    .semantics { contentDescription = "Back" },
-                contentAlignment = Alignment.Center,
-            ) { HiIcon(Hi.ArrowLeft, D.Black, 24.dp) }
+            BackArrow(onBack)
 
             Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
                 StatusDot(row.stage, 64.dp)

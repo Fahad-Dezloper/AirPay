@@ -8,6 +8,33 @@ import java.security.MessageDigest
 import java.util.Base64
 
 /**
+ * The label this app writes itself when a scanned QR carried no name (`ScanActivity`).
+ *
+ * It is not a name anybody gave: shown as-is it reads as a person called "Scanned code", and
+ * their avatar becomes an "S". Kept as one literal here so the writer and every reader agree.
+ */
+internal const val SCANNED_PLACEHOLDER = "Scanned code"
+
+/** How many leading characters of an address stand in for a name nobody gave. */
+private const val ADDRESS_START = 6
+
+/** True when [label] is the app's own placeholder rather than a name — see [SCANNED_PLACEHOLDER]. */
+internal fun isPlaceholderName(label: String): Boolean = label.trim() == SCANNED_PLACEHOLDER
+
+/** The start of an address, with no ellipsis: short enough to recognise, too short to pretend to be a name. */
+internal fun addressStart(address: String): String = address.trim().take(ADDRESS_START)
+
+/**
+ * The text to show for somebody, for string contexts (thread titles, notifications, history).
+ *
+ * A real name always wins and is returned unchanged; only the placeholder is swapped for the
+ * address start. Row UI additionally draws a scan mark after it (see `NameLine`), which plain
+ * text cannot, so the address start alone is what a string gets.
+ */
+internal fun displayName(label: String, address: String): String =
+    if (isPlaceholderName(label)) addressStart(address) else label
+
+/**
  * The name an address owns on chain — `dezloper.skr`, `toly.sol` — or nothing.
  *
  * An address is the one thing on screen nobody can read, and this is the only tier of identity

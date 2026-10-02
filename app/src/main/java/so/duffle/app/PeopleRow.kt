@@ -78,6 +78,12 @@ internal data class Called(
      * address owns dezloper.skr". Worth saying out loud where money moves.
      */
     val borrowed: Boolean = false,
+    /**
+     * True when [shown] is only the start of the address because the contact came from a scanned
+     * QR with no name ([isPlaceholderName]). Drawn with the scan mark after it, so a nameless
+     * person reads as "met by scanning" rather than as someone called "Scanned code".
+     */
+    val scanned: Boolean = false,
 ) {
     enum class Kind { Yours, Verified, Claimed, Anonymous }
 
@@ -107,6 +113,10 @@ internal fun rememberCalled(contact: Contact): Called {
         when {
             !yours.isNullOrBlank() -> Called(yours, domain, Called.Kind.Yours, found.borrowed)
             domain != null -> Called(domain, domain, Called.Kind.Verified, found.borrowed)
+            // Below yours and a domain on purpose: the placeholder is only what is left when
+            // nobody gave a name, so any real name above has already won.
+            !claimed.isNullOrBlank() && isPlaceholderName(claimed) ->
+                Called(addressStart(contact.address), null, Called.Kind.Anonymous, false, scanned = true)
             !claimed.isNullOrBlank() -> Called(claimed, null, Called.Kind.Claimed, false)
             else -> Called(contact.short, null, Called.Kind.Anonymous, false)
         }
@@ -202,6 +212,11 @@ internal fun NameLine(
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f, fill = false),
         )
+        if (called.scanned) {
+            // The same mark as the "Scan any QR" button: no name, only a scan.
+            Spacer(Modifier.width(Space.tight))
+            HiIcon(Hi.Scan, D.Quiet, 14.dp)
+        }
         if (tick) {
             Spacer(Modifier.width(Space.tight))
             // 16 is the icon size beside a caption, so the tick carries the line's own weight.
