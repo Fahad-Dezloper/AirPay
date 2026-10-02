@@ -218,7 +218,7 @@ internal fun PopupScreen(
             shown = true
         }
         launch { scrim.animateTo(1f, tween(220)) }
-        offset.animateTo(0f, Arrive)
+        offset.animateTo(0f, SheetRise)
     }
     // Nothing leaves while money is in flight: the payment would carry on with no screen to report it.
     val canLeave = phase !is Phase.Working
@@ -242,9 +242,9 @@ internal fun PopupScreen(
 
     val drag = rememberDraggableState { delta ->
         scope.launch {
-            val next = offset.value + delta
-            // Pulled upward it resists and stops a little way up; downward it follows the finger.
-            offset.snapTo(if (next < 0f) (offset.value + delta * .25f).coerceAtLeast(-40f) else next)
+            // Never above its resting edge: pulled up, it simply stays put. Downward it follows
+            // the finger.
+            offset.snapTo((offset.value + delta).coerceAtLeast(0f))
         }
     }
     // Everything that moves every frame — the sheet's height while it resizes, how far it has been
@@ -274,13 +274,13 @@ internal fun PopupScreen(
             Modifier.fillMaxWidth()
                 .onSizeChanged { sheetHeight = it.height.toFloat() }
                 // Below the screen until it has been measured, so it never flashes in place.
-                .graphicsLayer { translationY = if (shown) offset.value else size.height.toFloat() }
+                .graphicsLayer { translationY = if (shown) offset.value.coerceAtLeast(0f) else size.height.toFloat() }
                 .draggable(
                     drag, Orientation.Vertical, enabled = shown && !leaving,
                     onDragStopped = { velocity ->
                         // Far enough, or flicked: go. Otherwise settle back where it was.
                         if (offset.value > sheetHeight * .25f || velocity > 1_200f) leave()
-                        else offset.animateTo(0f, spring(0.9f, 247f), initialVelocity = velocity)
+                        else offset.animateTo(0f, SheetSettle, initialVelocity = velocity)
                     },
                 )
                 .background(D.White, RoundedCornerShape(topStart = Tray.OUTER, topEnd = Tray.OUTER))

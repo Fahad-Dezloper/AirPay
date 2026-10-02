@@ -2,6 +2,7 @@ package so.duffle.app
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
@@ -69,6 +70,17 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 /**
+ * How the side panel arrives and settles: no spring.
+ *
+ * [Arrive] and [Settle] are under-damped on purpose for things that rise out of the page, where
+ * a little overshoot reads as weight. A panel that enters from an edge has nothing past its
+ * resting place but the page behind it: overshooting 0 slides the panel out into the screen
+ * and then back, exposing a gap on its left. So this is a tween that decelerates into place and
+ * stops exactly there.
+ */
+private val Glide = tween<Float>(280, easing = FastOutSlowInEasing)
+
+/**
  * A sheet that comes in from the left.
  *
  * [Tray] could not be reused: everything about it — the grab handle at the top, the drag axis,
@@ -95,7 +107,7 @@ internal fun SideSheet(onClose: () -> Unit, content: @Composable ColumnScope.() 
         offset.snapTo(-w)
         shown = true
         launch { scrim.animateTo(1f, tween(220)) }
-        offset.animateTo(0f, Arrive)
+        offset.animateTo(0f, Glide)
     }
 
     fun leave() {
@@ -122,7 +134,7 @@ internal fun SideSheet(onClose: () -> Unit, content: @Composable ColumnScope.() 
             .drawBehind {
                 // Fades with the drag as well as with the animation, so pulling the panel
                 // halfway off shows half a scrim rather than a full one that snaps at the end.
-                val gone = if (width > 0f) (-offset.value / width).coerceIn(0f, 1f) else 0f
+                val gone = if (width > 0f) (-offset.value.coerceAtMost(0f) / width).coerceIn(0f, 1f) else 0f
                 drawRect(Color.Black.copy(alpha = .28f * scrim.value * (1f - gone)))
             }
             .clickable(remember { MutableInteractionSource() }, indication = null) { leave() },
@@ -131,12 +143,12 @@ internal fun SideSheet(onClose: () -> Unit, content: @Composable ColumnScope.() 
         Column(
             Modifier.fillMaxHeight().fillMaxWidth(.88f)
                 .onSizeChanged { width = it.width.toFloat() }
-                .graphicsLayer { translationX = if (shown) offset.value else -size.width }
+                .graphicsLayer { translationX = if (shown) offset.value.coerceAtMost(0f) else -size.width }
                 .draggable(
                     drag, Orientation.Horizontal, enabled = shown && !leaving,
                     onDragStopped = { velocity ->
                         if (-offset.value > width * .25f || velocity < -1_200f) leave()
-                        else scope.launch { offset.animateTo(0f, Settle, initialVelocity = velocity) }
+                        else scope.launch { offset.animateTo(0f, Glide, initialVelocity = velocity) }
                     },
                 )
                 .background(D.White, RoundedCornerShape(topEnd = Tray.OUTER, bottomEnd = Tray.OUTER))
@@ -553,8 +565,6 @@ private fun DrawerRow(
     title: String, detail: String? = null, onOpen: (() -> Unit)? = null,
 ) {
     val interaction = remember { MutableInteractionSource() }
-    // The chevron means "forward", so it points the other way in a right-to-left layout.
-    val rtl = LocalLayoutDirection.current == LayoutDirection.Rtl
     Row(
         Modifier
             .then(if (onOpen == null) Modifier else PressScale(interaction))
@@ -576,18 +586,9 @@ private fun DrawerRow(
         Spacer(Modifier.width(Space.inline))
         // Quiet, and unlabelled: it is an affordance, not information, and the row's own title
         // is what a screen reader should read.
-        // 16dp, the size of any mark beside a line of text, with the glyph drawn on the
-        // 24-unit grid the marks share: 4.8 → 19.2 across, the full height, stroke 3.744.
-        // Heavier than markStroke on purpose — two strokes this short have to hold on their
-        // own at the end of a row.
-        Canvas(Modifier.size(16.dp)) {
-            val u = size.width / 24f
-            val tip = if (rtl) 4.8f * u else 19.2f * u
-            val base = if (rtl) 19.2f * u else 4.8f * u
-            drawLine(D.Quiet, Offset(base, 0f), Offset(tip, size.height / 2),
-                strokeWidth = 3.744f * u, cap = StrokeCap.Round)
-            drawLine(D.Quiet, Offset(tip, size.height / 2), Offset(base, size.height),
-                strokeWidth = 3.744f * u, cap = StrokeCap.Round)
-        }
+        // Hugeicons ArrowRight01 at 16dp, in the icon system's own stroke (1.5 at this size):
+        // light and small, as the heavy hand-drawn pair it replaced was not. It mirrors in a
+        // right-to-left layout by itself ([Hi.ArrowRight] is in the mirrored set).
+        HiIcon(Hi.ArrowRight, D.Quiet, 16.dp)
     }
 }

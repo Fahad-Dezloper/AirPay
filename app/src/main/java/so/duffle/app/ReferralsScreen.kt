@@ -14,6 +14,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.draggable
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -265,7 +266,7 @@ private fun ReferStack(
         offset.snapTo(h)
         shown = true
         launch { scrim.animateTo(1f, tween(220)) }
-        offset.animateTo(0f, Arrive)
+        offset.animateTo(0f, SheetRise)
     }
 
     fun leave() {
@@ -291,11 +292,29 @@ private fun ReferStack(
     val dim by animateFloatAsState(if (how) .20f else 0f, Settle, label = "dim")
     val parked by animateFloatAsState(if (how) 0f else 1f, Settle, label = "second")
 
+    // The second sheet follows the finger like the first. Its position is `parked` (how far it is
+    // tucked away, animated) and this (how far it has been pulled down); the drawn offset is the
+    // larger of the two, so a drag-dismiss slides it the rest of the way down and the tuck-away
+    // that follows has nothing left to do. It had no drag at all — it moved only by the toggle.
+    val howOffset = remember { Animatable(0f) }
+    LaunchedEffect(parked) { if (parked >= 1f) howOffset.snapTo(0f) }
+    val howDrag = rememberDraggableState { delta ->
+        scope.launch { howOffset.snapTo((howOffset.value + delta).coerceAtLeast(0f)) }
+    }
+
     val drag = rememberDraggableState { delta ->
         scope.launch {
-            val next = offset.value + delta
-            // Upward drag is resisted rather than refused, so the sheet feels attached.
-            offset.snapTo(if (next < 0f) (offset.value + delta * .25f).coerceAtLeast(-40f) else next)
+            // Never above its resting edge: pulled up, it simply stays put.
+            offset.snapTo((offset.value + delta).coerceAtLeast(0f))
+        }
+    }
+    // The first sheet scrolls inside; dragging that content has to pull the sheet too. Without
+    // this the scroll took every drag and only the few pixels of handle moved the sheet — which
+    // is why this one felt undraggable next to the others. See [sheetNestedScroll].
+    val nested = remember {
+        sheetNestedScroll(offset, scope, enabled = { !leaving && !how }) { v ->
+            if (offset.value > height * .25f || v > 1_200f) leave()
+            else scope.launch { offset.animateTo(0f, SheetSettle, initialVelocity = v) }
         }
     }
 
@@ -319,17 +338,18 @@ private fun ReferStack(
             Modifier.fillMaxWidth()
                 .onSizeChanged { height = it.height.toFloat() }
                 .graphicsLayer {
-                    translationY = (if (shown) offset.value else size.height) + lift.dp.toPx()
+                    translationY = (if (shown) offset.value.coerceAtLeast(0f) else size.height) + lift.dp.toPx()
                     scaleX = shrink
                     scaleY = shrink
                     transformOrigin = TransformOrigin(.5f, 0f)
                 }
+                .nestedScroll(nested)
                 .draggable(
                     drag, Orientation.Vertical, enabled = shown && !leaving && !how,
                     onDragStopped = { velocity ->
                         // Far enough, or flicked: go. Otherwise settle back.
                         if (offset.value > height * .25f || velocity > 1_200f) leave()
-                        else scope.launch { offset.animateTo(0f, Settle, initialVelocity = velocity) }
+                        else scope.launch { offset.animateTo(0f, SheetSettle, initialVelocity = velocity) }
                     },
                 ),
         ) {
@@ -379,8 +399,21 @@ private fun ReferStack(
                 .offset {
                     // Parked far below the display until it has been measured, so it never
                     // flashes over the first sheet on the frame before its height is known.
-                    IntOffset(0, if (howHeight > 0f) (parked * howHeight).roundToInt() else 20_000)
+                    val tucked = if (howHeight > 0f) parked * howHeight else 20_000f
+                    IntOffset(0, maxOf(tucked, howOffset.value).roundToInt())
                 }
+                .draggable(
+                    howDrag, Orientation.Vertical, enabled = how,
+                    onDragStopped = { velocity ->
+                        // Far enough, or flicked: send it down. Otherwise settle back up.
+                        if (howOffset.value > howHeight * .25f || velocity > 1_200f) {
+                            howOffset.animateTo(howHeight, tween(180, easing = FastOutLinearInEasing))
+                            how = false
+                        } else {
+                            howOffset.animateTo(0f, SheetSettle, initialVelocity = velocity)
+                        }
+                    },
+                )
                 .topEdgeShadow(Tray.OUTER),
         ) {
             SheetPanel(swallowTaps = how || parked < 1f) {
@@ -979,7 +1012,7 @@ internal fun ReferralsTab(
         loading = false
     }
 
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+    Column(Modifier.fillMaxSize().verticalScroll(rememberHeldScroll("referrals"))) {
         if (connected == null) {
             LegacyBlank(
                 "Connect a wallet",

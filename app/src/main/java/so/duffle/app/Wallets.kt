@@ -103,15 +103,31 @@ data class Linked(
             else -> SolidColor(colour)
         }
 
+    /**
+     * Seeker's entry is the original "Seeker + r" artwork (`public/seekerr.png`), centre-cropped
+     * to a square so it needs no letterbox wherever a wallet mark is drawn in a square box.
+     */
     val iconRes: Int
         get() = when {
             matches("phantom") -> R.drawable.ic_wallet_phantom
             matches("solflare") -> R.drawable.ic_wallet_solflare
             matches("backpack") -> R.drawable.ic_wallet_backpack
-            matches("seeker", "solanamobile", "seed vault", ".skr") -> R.drawable.ic_wallet_seeker
+            matches("seeker", "solanamobile", "seed vault", ".skr") -> R.drawable.brand_seeker_classic
             matches("ledger") -> R.drawable.ic_wallet_ledger
             else -> R.drawable.ic_wallet_chip
         }
+
+    /**
+     * The mark on the wallet CARD in the pile beside the balance.
+     *
+     * Seeker has two marks and each has its own job. On the card it is `seeker.png` (the small
+     * square icon); everywhere else the wallet appears — the line above the total balance, the
+     * profile panel, the wallet details, a thread — it is the "Seeker + r" artwork,
+     * [iconRes]. Every other wallet uses one mark for both.
+     */
+    val cardIconRes: Int
+        get() = if (matches("seeker", "solanamobile", "seed vault", ".skr")) R.drawable.ic_wallet_seeker
+        else iconRes
 
     val iconTint: Color?
         get() = when {
