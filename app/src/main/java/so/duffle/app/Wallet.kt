@@ -6,6 +6,7 @@ import androidx.activity.ComponentActivity
 import com.solana.mobilewalletadapter.clientlib.ActivityResultSender
 import com.solana.mobilewalletadapter.clientlib.ConnectionIdentity
 import com.solana.mobilewalletadapter.clientlib.MobileWalletAdapter
+import com.solana.mobilewalletadapter.clientlib.RpcCluster
 import com.solana.mobilewalletadapter.clientlib.Solana
 import com.solana.mobilewalletadapter.clientlib.TransactionResult
 import org.sol4k.Base58
@@ -53,6 +54,10 @@ class Wallet(private val activity: ComponentActivity) {
         // and a wallet sitting on the other one fails a payment in a way that reads like a
         // network fault rather than a mismatch.
         blockchain = Solana.Mainnet
+        // The same thing said the older way, for a wallet that speaks the first version of the
+        // protocol and never reads `blockchain`. Left unset, that one defaults to devnet.
+        @Suppress("DEPRECATION")
+        rpcCluster = RpcCluster.MainnetBeta
         token?.let { authToken = it }
     }
 
@@ -60,6 +65,16 @@ class Wallet(private val activity: ComponentActivity) {
     private var adapter = newAdapter(linked.selected()?.token ?: prefs.getString(KEY_TOKEN, null))
 
     init {
+        // A wallet session belongs to the cluster it was issued for, and the wallet goes on
+        // treating it that way: a session from when this app ran on devnet made Seeker Wallet
+        // refuse a mainnet payment with "this transaction is for devnet". Every session from
+        // before the move is dropped once. The accounts stay; the next payment asks the wallet
+        // again, on mainnet, and is given a session for mainnet.
+        if (prefs.getString(KEY_SESSION_CLUSTER, null) != SESSION_CLUSTER) {
+            linked.all().forEach { linked.clearToken(it.address) }
+            prefs.edit().remove(KEY_TOKEN).putString(KEY_SESSION_CLUSTER, SESSION_CLUSTER).apply()
+            adapter = newAdapter(null)
+        }
         // A wallet connected before AirPay could hold more than one. Without this it keeps
         // working and shows as "No wallet", because the list it is meant to appear in is empty.
         if (linked.all().isEmpty()) {
@@ -368,6 +383,8 @@ class Wallet(private val activity: ComponentActivity) {
         const val IDENTITY_URI = "https://duffle.so"
 
         private const val KEY_TOKEN = "auth_token"
+        private const val KEY_SESSION_CLUSTER = "session_cluster"
+        private const val SESSION_CLUSTER = "mainnet-beta"
         private const val KEY_ADDRESS = "address"
 
         /**

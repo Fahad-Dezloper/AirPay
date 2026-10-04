@@ -3,6 +3,7 @@ package so.duffle.app
 import android.content.Context
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.AnimatedVisibilityScope
 import androidx.compose.animation.BoundsTransform
 import androidx.compose.animation.EnterTransition
@@ -704,6 +705,130 @@ internal fun WalletPicker(apps: List<WalletLink.App>, onPick: (WalletLink.App) -
             if (i < apps.lastIndex) RowLine()
         }
         Spacer(Modifier.height(Space.lead))
+    }
+}
+
+/** Which page of the add-a-wallet sheet is showing. */
+private enum class AddStep { Choose, External, Hardware }
+
+/**
+ * Adding a wallet, in two steps: first which KIND, then the list or the tap.
+ *
+ * A wallet app (Phantom, Solflare, the Seeker's own) is linked through Mobile Wallet Adapter, as
+ * before. A hardware wallet is a card held against the back of the phone. That second path is the
+ * screen only for now: it shows what to do and says plainly that it is not live, and it never
+ * pretends to have read a card.
+ */
+@Composable
+internal fun AddWalletFlow(apps: List<WalletLink.App>, onPick: (WalletLink.App) -> Unit) {
+    var step by rememberSaveable { mutableStateOf(AddStep.Choose) }
+    Column(Modifier.fillMaxWidth()) {
+        when (step) {
+            AddStep.Choose -> {
+                Text("Add a wallet", color = D.Black, style = Type.title)
+                Spacer(Modifier.height(Space.tight))
+                Text("AirPay never sees your keys, the wallet signs.", color = D.Quiet, style = Type.caption)
+                Spacer(Modifier.height(Space.lead))
+                SheetRow(Hi.Wallet, "Connect a wallet app", "Phantom, Solflare and other wallets on this phone") {
+                    step = AddStep.External
+                }
+                RowLine()
+                SheetRow(Hi.Nfc, "Connect a hardware wallet", "Tap a card on the back of your phone") {
+                    step = AddStep.Hardware
+                }
+                Spacer(Modifier.height(Space.lead))
+            }
+            AddStep.External -> {
+                BackLink { step = AddStep.Choose }
+                WalletPicker(apps, onPick)
+            }
+            AddStep.Hardware -> {
+                BackLink { step = AddStep.Choose }
+                CardTapAnimation()
+                Spacer(Modifier.height(Space.lead))
+                Text("Tap your card on the back of your phone", color = D.Black, style = Type.title)
+                Spacer(Modifier.height(Space.tight))
+                Text(
+                    "Hold it flat against the back, near the top, until the phone buzzes.",
+                    color = D.Quiet, style = Type.body,
+                )
+                Spacer(Modifier.height(Space.lead))
+                Text(
+                    "Hardware wallets are coming soon. Nothing is read yet.",
+                    color = D.Black, style = Type.caption,
+                    modifier = Modifier.clip(RoundedCornerShape(6.dp)).background(D.Highlight)
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                )
+                Spacer(Modifier.height(Space.section))
+            }
+        }
+    }
+}
+
+/** A quiet "Back" at the head of a sheet's second page. */
+@Composable
+private fun BackLink(onBack: () -> Unit) {
+    Row(
+        Modifier.clip(RoundedCornerShape(10.dp)).clickable(onClick = onBack)
+            .heightIn(min = 44.dp).padding(end = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        HiIcon(Hi.ArrowLeft, D.Quiet, 20.dp)
+        Spacer(Modifier.width(4.dp))
+        Text("Back", color = D.Quiet, style = Type.body)
+    }
+}
+
+/**
+ * A card coming down onto the back of a phone, over and over: the gesture, shown rather than
+ * described. The rings appear as the card arrives, where the phone's NFC coil reads it.
+ */
+@Composable
+private fun CardTapAnimation() {
+    val loop = androidx.compose.animation.core.rememberInfiniteTransition(label = "cardTap")
+    val t by loop.animateFloat(
+        0f, 1f,
+        androidx.compose.animation.core.infiniteRepeatable(
+            tween(1400, easing = FastOutSlowInEasing), androidx.compose.animation.core.RepeatMode.Reverse,
+        ),
+        label = "approach",
+    )
+    Box(Modifier.fillMaxWidth().height(210.dp), contentAlignment = Alignment.BottomCenter) {
+        // The back of the phone, rising out of the sheet: body, camera, and the edge of a lens.
+        Box(
+            Modifier.width(132.dp).height(168.dp)
+                .clip(RoundedCornerShape(topStart = 26.dp, topEnd = 26.dp))
+                .background(D.Black),
+        ) {
+            Box(Modifier.padding(start = 16.dp, top = 16.dp).size(34.dp).clip(CircleShape).background(Color(0xFF4A4A49)))
+            Box(Modifier.padding(start = 25.dp, top = 25.dp).size(16.dp).clip(CircleShape).background(Color(0xFF1E1E1D)))
+        }
+        // Where the card is read. Faint while the card is away, clear as it lands.
+        repeat(2) { i ->
+            Box(
+                Modifier.padding(bottom = 96.dp).size((70 + i * 34).dp)
+                    .graphicsLayer { alpha = (t - 0.35f).coerceIn(0f, 1f) * (0.9f - i * 0.4f) }
+                    .border(2.dp, D.Blue, CircleShape),
+            )
+        }
+        // The card: a brand-blue face with a chip, tilted a little, travelling down to the phone.
+        Box(
+            Modifier.padding(bottom = 74.dp)
+                .graphicsLayer {
+                    translationY = -(1f - t) * 64.dp.toPx()
+                    rotationZ = -8f + 4f * t
+                }
+                .width(168.dp).height(104.dp)
+                .cardShadow(14.dp)
+                .clip(RoundedCornerShape(14.dp))
+                .background(androidx.compose.ui.graphics.Brush.linearGradient(listOf(Color(0xFF0B6FD6), D.Blue))),
+        ) {
+            Box(
+                Modifier.padding(start = 16.dp, top = 18.dp).size(width = 30.dp, height = 22.dp)
+                    .clip(RoundedCornerShape(5.dp)).background(Color(0xFFFFD98A)),
+            )
+            Box(Modifier.align(Alignment.BottomEnd).padding(14.dp)) { HiIcon(Hi.Nfc, D.White, 22.dp) }
+        }
     }
 }
 
