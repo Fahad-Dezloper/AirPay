@@ -55,6 +55,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
@@ -243,6 +244,8 @@ internal fun ProfileDrawer(
      * call site hands it the sheet — not left as a no-op, which would be a door to nowhere.
      */
     onRefer: () -> Unit = { onGo(Tab.REFERRALS) },
+    /** Signs out of every wallet and goes back to the first screen. */
+    onLogout: () -> Unit = {},
 ) {
     val context = LocalContext.current
     // The linked list is read from the wallet store rather than taken as a parameter: it is the
@@ -372,6 +375,31 @@ internal fun ProfileDrawer(
             // One line, and the version and the network are both read off something real:
             // `BuildConfig.VERSION_NAME` and `Chain.NETWORK`, which derives the cluster from the
             // endpoint the build actually talks to rather than from a string beside it.
+            if (address != null) {
+                Spacer(Modifier.height(Space.section))
+                // Two taps: it signs out of every wallet at once, and getting back means going
+                // through each wallet app again. An ink outline, not red, because nothing is
+                // spent or lost: history stays on the phone and the wallets are untouched.
+                var confirming by remember { mutableStateOf(false) }
+                val context = LocalContext.current
+                val out = remember { MutableInteractionSource() }
+                Box(
+                    Modifier.fillMaxWidth().then(PressScale(out))
+                        .clip(RoundedCornerShape(18.dp))
+                        .border(1.5.dp, D.Black, RoundedCornerShape(18.dp))
+                        .clickable(out, indication = null) {
+                            if (confirming) onLogout() else { confirming = true; Haptics.tick(context) }
+                        }
+                        .heightIn(min = 52.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        if (confirming) "Tap again to log out of all wallets" else "Log out",
+                        color = D.Black, style = Type.heading, textAlign = TextAlign.Center,
+                    )
+                }
+            }
+
             Spacer(Modifier.height(Space.section))
             Text("AirPay $version · $network", color = D.Quiet, style = CaptionTnum,
                 modifier = Modifier.fillMaxWidth())

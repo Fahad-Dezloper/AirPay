@@ -48,6 +48,13 @@ data class Linked(
     val short: String get() = "${address.take(4)}…${address.takeLast(4)}"
 
     /**
+     * What tells one linked wallet from another: its address, and nothing else. One card per
+     * public key. Two apps that sign for the same key are the same wallet twice, and the second
+     * one is refused when it is linked, with a reason (see [Wallet.link]).
+     */
+    val id: String get() = address
+
+    /**
      * What this ACCOUNT calls itself, when that is a name rather than the app's own brand.
      *
      * Seeker Wallet reports an SNS domain — "dezloper.skr" — which is the owner's name and
@@ -219,7 +226,9 @@ class Wallets(ctx: Context) {
 
     fun all(): List<Linked> = try {
         val arr = JSONArray(prefs.getString(KEY_LIST, "[]"))
-        (0 until arr.length()).mapNotNull { i ->
+        // One per address, the first linked: a list written while two apps could hold the same
+        // key reads back as one card.
+        (0 until arr.length()).mapNotNull<Int, Linked> { i ->
             val o = arr.optJSONObject(i) ?: return@mapNotNull null
             val address = o.optString("a")
             if (!PayRequest.isBase58Address(address)) null
@@ -232,7 +241,7 @@ class Wallets(ctx: Context) {
                 pkg = o.optString("p").ifBlank { null },
                 alias = o.optString("l").ifBlank { null },
             )
-        }
+        }.distinctBy { it.address }
     } catch (e: Exception) {
         emptyList()
     }
@@ -240,13 +249,29 @@ class Wallets(ctx: Context) {
     /** The wallet AirPay is using, or null when none is linked. */
     fun selected(): Linked? {
         val list = all()
-        val chosen = prefs.getString(KEY_SELECTED, null)
+        // The address. A build that ran for an hour wrote "address|app" here, so that is read too.
+        val chosen = prefs.getString(KEY_SELECTED, null)?.substringBefore('|')
         return list.firstOrNull { it.address == chosen } ?: list.firstOrNull()
     }
 
-    fun select(address: String) {
-        if (all().any { it.address == address }) prefs.edit().putString(KEY_SELECTED, address).apply()
+    fun select(w: Linked) {
+        if (all().any { it.id == w.id }) prefs.edit().putString(KEY_SELECTED, w.id).apply()
     }
+
+    /** By address alone, for callers that only know one. The first wallet holding it. */
+    fun select(address: String) {
+        all().firstOrNull { it.address == address }?.let { select(it) }
+    }
+
+    /** The wallet already linked for [address], whichever app it came through. */
+    fun holding(address: String): Linked? = all().firstOrNull { it.address == address }
+
+    /**
+     * True when [pkg] is the app [held] was linked through, so linking it again only refreshes
+     * the session. An entry with no app recorded went to the phone's own wallet.
+     */
+    fun sameApp(held: Linked, pkg: String?): Boolean =
+        held.pkg == pkg || pkg == null || (held.pkg == null && pkg == SEEKER_WALLET)
 
     /**
      * Links a wallet, or refreshes the session of one already linked. Selecting it is the
@@ -254,7 +279,8 @@ class Wallets(ctx: Context) {
      * to pay from it.
      */
     fun add(address: String, token: String?, name: String, uri: String?, pkg: String? = null): Linked {
-        val existing = all().firstOrNull { it.address == address }
+        val list = all()
+        val existing = list.firstOrNull { it.address == address }
         val linked = Linked(
             address = address,
             token = token ?: existing?.token,
@@ -266,32 +292,35 @@ class Wallets(ctx: Context) {
             pkg = pkg ?: existing?.pkg,
             alias = existing?.alias,
         )
-        save(all().filterNot { it.address == address } + linked)
-        if (prefs.getString(KEY_SELECTED, null) == null) select(address)
+        val wasSelected = existing != null && selected()?.id == existing.id
+        save(list.filterNot { it.id == existing?.id } + linked)
+        // Its id changes when an old entry learns which app it is, and the choice follows it.
+        if (prefs.getString(KEY_SELECTED, null) == null || wasSelected) select(linked)
         return linked
     }
 
     /** The picker's name for a wallet beats a domain: "Phantom", not "phantom.app". */
-    fun rename(address: String, name: String) {
-        save(all().map { if (it.address == address) it.copy(name = name) else it })
+    fun rename(w: Linked, name: String) {
+        save(all().map { if (it.id == w.id) it.copy(name = name) else it })
     }
 
     /** The person's own name for a wallet. Blank clears it, back to what the wallet calls itself. */
-    fun setAlias(address: String, alias: String?) {
+    fun setAlias(w: Linked, alias: String?) {
         val clean = alias?.trim()?.take(24)?.ifBlank { null }
-        save(all().map { if (it.address == address) it.copy(alias = clean) else it })
+        save(all().map { if (it.id == w.id) it.copy(alias = clean) else it })
     }
 
     /** The token went stale. The wallet stays listed — it is still theirs, it just needs a tap. */
-    fun clearToken(address: String) {
-        save(all().map { if (it.address == address) it.copy(token = null) else it })
+    fun clearToken(w: Linked) {
+        save(all().map { if (it.id == w.id) it.copy(token = null) else it })
     }
 
-    fun remove(address: String) {
-        save(all().filterNot { it.address == address })
-        if (prefs.getString(KEY_SELECTED, null) == address) {
+    fun remove(w: Linked) {
+        val wasSelected = selected()?.id == w.id
+        save(all().filterNot { it.id == w.id })
+        if (wasSelected) {
             prefs.edit().remove(KEY_SELECTED).apply()
-            all().firstOrNull()?.let { select(it.address) }
+            all().firstOrNull()?.let { select(it) }
         }
     }
 
@@ -314,5 +343,7 @@ class Wallets(ctx: Context) {
     private companion object {
         const val KEY_LIST = "list"
         const val KEY_SELECTED = "selected"
+        /** The Seeker's own wallet app, which is what a link with no app recorded went to. */
+        const val SEEKER_WALLET = "com.solanamobile.wallet"
     }
 }

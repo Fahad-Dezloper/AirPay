@@ -214,8 +214,8 @@ internal fun WalletsScreen(
     }
 
     var open by rememberSaveable { mutableStateOf<String?>(null) }
-    LaunchedEffect(list) { if (open != null && list.none { it.address == open }) open = null }
-    val openW = list.firstOrNull { it.address == open }
+    LaunchedEffect(list) { if (open != null && list.none { it.id == open }) open = null }
+    val openW = list.firstOrNull { it.id == open }
     // Kept after closing so the sheet has something to draw while it slides out.
     var last by remember { mutableStateOf<Linked?>(null) }
     LaunchedEffect(openW) { if (openW != null) last = openW }
@@ -273,7 +273,7 @@ internal fun WalletsScreen(
                         }
                         Spacer(Modifier.height(Space.lead))
                         list.forEach { w ->
-                            val active = w.address == selected
+                            val active = w.id == selected
                                                         // Padding BEFORE height: `height(cardH).padding(...)` put the 12dp gap
                             // inside the card's own height, so the list card was 12dp shorter than
                             // the lifted one and visibly stretched on the way up and shrank on the
@@ -285,15 +285,15 @@ internal fun WalletsScreen(
                                 Box(
                                     Modifier.fillMaxSize().clip(RoundedCornerShape(24.dp))
                                         .clickable(remember { MutableInteractionSource() }, indication = null) {
-                                            if (!settling) open = w.address
+                                            if (!settling) open = w.id
                                         },
                                 ) {
                                     Slot(visible = open != w.address) {
                                         WalletFace(
-                                            w, active, { loads[w.address]?.worth?.usd }, { loads[w.address] == null }, { if (w.address == sheetW?.address) dim.value else 0f },
+                                            w, active, { loads[w.address]?.worth?.usd }, { loads[w.address] == null }, { if (w.id == sheetW?.id) dim.value else 0f },
                                             onCopy = { clip.setText(AnnotatedString(w.address)); Haptics.tick(ctx) },
                                             modifier = Modifier.fillMaxSize().sharedBounds(
-                                                rememberSharedContentState("wallet-${w.address}"), this,
+                                                rememberSharedContentState("wallet-${w.id}"), this,
                                                 enter = EnterTransition.None, exit = ExitTransition.None,
                                                 boundsTransform = LIFT,
                                             ),
@@ -356,10 +356,10 @@ internal fun WalletsScreen(
                                 .requiredSize(cardW, cardH),
                         ) {
                             WalletFace(
-                                w, w.address == selected, { loads[w.address]?.worth?.usd }, { loads[w.address] == null }, { dim.value },
+                                w, w.id == selected, { loads[w.address]?.worth?.usd }, { loads[w.address] == null }, { dim.value },
                                 onCopy = { clip.setText(AnnotatedString(w.address)); Haptics.tick(ctx) },
                                 modifier = Modifier.fillMaxSize().sharedBounds(
-                                    rememberSharedContentState("wallet-${w.address}"), this,
+                                    rememberSharedContentState("wallet-${w.id}"), this,
                                     enter = EnterTransition.None, exit = ExitTransition.None,
                                     boundsTransform = LIFT,
                                 ),
@@ -384,7 +384,7 @@ internal fun WalletsScreen(
                                 val standing = remember(w.address, vouchTick, list) { standingOf(ctx, w, list) }
                                 WalletSheet(
                                     w = w,
-                                    active = w.address == selected,
+                                    active = w.id == selected,
                                     load = { loads[w.address] },
                                     standing = standing,
                                     handle = handle,
@@ -430,9 +430,11 @@ private fun Slot(visible: Boolean, modifier: Modifier = Modifier, content: @Comp
 
 /** The card's face: the same drawing in the list and lifted out of it. */
 @Composable
-private fun WalletFace(
+internal fun WalletFace(
     w: Linked, active: Boolean, usd: () -> Double?, loading: () -> Boolean, lift: () -> Float,
     onCopy: () -> Unit, modifier: Modifier,
+    /** Drawn in the bottom corner in place of the "Active" pill: the tap sheet's contactless sign. */
+    corner: (@Composable () -> Unit)? = null,
 ) {
     val lum = 0.2126f * w.colour.red + 0.7152f * w.colour.green + 0.0722f * w.colour.blue
     val ink = if (lum > 0.5f) D.Black else D.White
@@ -480,6 +482,7 @@ private fun WalletFace(
                 Spacer(Modifier.height(Space.tight))
                 Balance(usd, loading, if (w.isSeeker) D.Black else ink)
             }
+            corner?.invoke()
             // White on #1F7A35 is 5.39:1; the bright green is 3.32 and fails at this size. The
             // white ring is what separates the pill from Phantom's purple and Backpack's black.
             AnimatedVisibility(

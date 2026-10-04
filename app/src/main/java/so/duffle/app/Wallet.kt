@@ -71,7 +71,7 @@ class Wallet(private val activity: ComponentActivity) {
         // before the move is dropped once. The accounts stay; the next payment asks the wallet
         // again, on mainnet, and is given a session for mainnet.
         if (prefs.getString(KEY_SESSION_CLUSTER, null) != SESSION_CLUSTER) {
-            linked.all().forEach { linked.clearToken(it.address) }
+            linked.all().forEach { linked.clearToken(it) }
             prefs.edit().remove(KEY_TOKEN).putString(KEY_SESSION_CLUSTER, SESSION_CLUSTER).apply()
             adapter = newAdapter(null)
         }
@@ -98,7 +98,7 @@ class Wallet(private val activity: ComponentActivity) {
      * the same path a stale token already takes.
      */
     fun use(w: Linked) {
-        linked.select(w.address)
+        linked.select(w)
         address = w.address
         // A fresh adapter, so the one we carry is not still pointed at the previous wallet's app.
         adapter = newAdapter(w.token)
@@ -130,6 +130,13 @@ class Wallet(private val activity: ComponentActivity) {
             if (acct == null) Outcome.Failed("wallet returned no account")
             else {
                 val a = Base58.encode(acct.publicKey)
+                // The phone's default wallet answered with an address that is already linked
+                // through another app. That card is kept as it is and simply put in use: it is
+                // the same account, and the app the person linked it through stays the one asked.
+                linked.holding(a)?.takeIf { it.pkg != null && it.pkg != SEEKER_WALLET_PKG }?.let { held ->
+                    use(held)
+                    return Outcome.Ok(a)
+                }
                 // The wallet names itself here, which is the only honest source for the label
                 // on its card: anything else would be us guessing which app the user picked.
                 val w = linked.add(
@@ -158,12 +165,24 @@ class Wallet(private val activity: ComponentActivity) {
         when (val r = WalletLink.authorize(app.pkg) { activity.startActivity(it) }) {
             is WalletLink.Linking.Failed -> Outcome.Failed(r.why)
             is WalletLink.Linking.Ok -> {
+                // One card per address. A second app that signs for an address already linked
+                // is the same wallet again (on a Seeker, Solflare and Seeker Wallet both use the
+                // phone's own account). It used to replace the first card without a word, which
+                // looked like a wallet being disconnected. Now it is refused, and says why.
+                val held = linked.holding(r.address)
+                if (held != null && !linked.sameApp(held, app.pkg)) {
+                    val through = held.name.takeIf { !it.equals("Wallet", true) } ?: "another wallet app"
+                    return Outcome.Failed(
+                        "That account (${held.short}) is already linked through $through. " +
+                            "Pick a different account in ${app.label}, or link a different wallet."
+                    )
+                }
                 val w = linked.add(
                     address = r.address, token = r.token,
                     // The app's own name on this phone, which is what the person just tapped.
                     name = app.label, uri = r.uri, pkg = app.pkg,
                 )
-                linked.rename(r.address, app.label)
+                linked.rename(w, app.label)
                 use(w)
                 Outcome.Ok(r.address)
             }
@@ -203,7 +222,7 @@ class Wallet(private val activity: ComponentActivity) {
                 is WalletLink.Signing.Signed -> SendOutcome.Signed(r.tx)
                 is WalletLink.Signing.Failed -> SendOutcome.Failed(r.why)
                 WalletLink.Signing.NeedsReconnect -> {
-                    linked.clearToken(w.address)
+                    linked.clearToken(w)
                     SendOutcome.Failed("${w.name} needs linking again. Open Wallets and add it.")
                 }
             }
@@ -278,9 +297,21 @@ class Wallet(private val activity: ComponentActivity) {
         prefs.edit().remove(KEY_TOKEN).apply()
     }
 
+    /**
+     * Signs out of every wallet at once. Each wallet is forgotten with its session, so the app is
+     * back where it was before any wallet was connected. Nothing on chain changes, and nothing
+     * is asked of the wallet apps: this only forgets what this phone was holding.
+     */
+    fun logoutAll() {
+        linked.all().forEach { linked.remove(it) }
+        prefs.edit().remove(KEY_TOKEN).remove(KEY_ADDRESS).apply()
+        address = null
+        adapter = newAdapter(null)
+    }
+
     /** A real disconnect: the user asked to sign out. */
     private fun forget() {
-        address?.let { linked.remove(it) }
+        linked.selected()?.let { linked.remove(it) }
         address = linked.selected()?.address
         forgetToken()
         // Another linked wallet takes over rather than leaving the app with none.
@@ -383,6 +414,7 @@ class Wallet(private val activity: ComponentActivity) {
         const val IDENTITY_URI = "https://duffle.so"
 
         private const val KEY_TOKEN = "auth_token"
+        private const val SEEKER_WALLET_PKG = "com.solanamobile.wallet"
         private const val KEY_SESSION_CLUSTER = "session_cluster"
         private const val SESSION_CLUSTER = "mainnet-beta"
         private const val KEY_ADDRESS = "address"
