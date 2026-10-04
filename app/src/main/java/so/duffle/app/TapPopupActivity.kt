@@ -128,6 +128,7 @@ class TapPopupActivity : ComponentActivity() {
                     onDecline = ::decline,
                     onLater = ::later,
                     onVerified = { held -> p?.let { Contacts(this).verify(it.address, held) } },
+                    onRequestInstead = { startActivity(RequestActivity.intent(this)); finish() },
                     onRetry = { phase = Phase.Ready },
                     onExplorer = { sig -> runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(Chain.explorerUrl(sig)))) } },
                     previewAmount = previewAmount,
