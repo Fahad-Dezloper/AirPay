@@ -46,3 +46,55 @@ class Describe(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Watcher(unittest.TestCase):
+    """The loop a lagging RPC node used to cause: the same payments announced for ever."""
+
+    def setUp(self):
+        from duffleserver.service import Service
+        from duffleserver.store import Store
+
+        class Rpc:
+            def __init__(self): self.lists = []
+            def call(self, method, params):
+                # A signature starting with "old" happened long before watching began.
+                import time
+                return [{"signature": s, "err": None, "blockTime": 1 if s.startswith("old") else time.time()}
+                        for s in self.lists.pop(0)]
+            def transaction(self, sig): return tx([OTHER, ME], [5_000_000_000, 0], [4_499_995_000, 500_000_000])
+
+        self.rpc = Rpc()
+        self.svc = Service(Store(), self.rpc)
+        self.svc.store.add_device(ME, "t" * 40)
+        self.sent = []
+        self.svc._deliver = lambda to, ev: self.sent.append(ev["signature"]) or 1
+
+    def look(self, sigs):
+        self.rpc.lists.append(sigs)
+        return self.svc.watch_wallets()
+
+    def test_the_first_look_announces_nothing(self):
+        self.assertEqual(0, self.look(["c", "b", "a"]))
+
+    def test_a_new_payment_is_announced_once(self):
+        self.look(["b", "a"])
+        self.assertEqual(1, self.look(["c", "b", "a"]))
+        self.assertEqual(0, self.look(["c", "b", "a"]))
+        self.assertEqual(["c"], self.sent)
+
+    def test_a_node_that_is_behind_does_not_replay_anything(self):
+        self.look(["b", "a"])
+        self.look(["c", "b", "a"])            # c arrives
+        for _ in range(5):
+            self.look(["b", "a"])             # a lagging node: c is missing from its answer
+            self.look(["c", "b", "a"])        # a caught-up node: c is back
+        self.assertEqual(["c"], self.sent)
+
+    def test_an_older_window_from_a_lagging_node_announces_nothing(self):
+        self.look(["c", "b", "a"])
+        # The node is behind: its window has slid down to a transaction from before the first
+        # look that no earlier answer contained.
+        self.assertEqual(0, self.look(["b", "a", "old-1"]))
+        self.assertEqual(0, self.look(["c", "b", "a"]))
+        self.assertEqual([], self.sent)

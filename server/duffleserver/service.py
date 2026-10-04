@@ -69,7 +69,8 @@ class Service:
         self._noticed = 0.0
         self._looked = 0.0
         self._paid_at = 0.0
-        self._activity_last: dict[str, str] = {}
+        self._activity_seen: dict[str, dict[str, None]] = {}
+        self._activity_since: dict[str, float] = {}
         self._pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="check")
         self._inflight: set[str] = set()
         self._inflight_lock = threading.Lock()
@@ -1095,28 +1096,58 @@ class Service:
 
     #: How often each registered wallet is looked at for movement.
     ACTIVITY_EVERY = 6.0
+    #: Signatures remembered per address. Far more than one look returns, so a lagging node's
+    #: older list is always inside it.
+    ACTIVITY_REMEMBER = 500
+    #: Allowance for this machine's clock and the chain's disagreeing, in seconds.
+    ACTIVITY_SKEW = 30.0
 
     def watch_wallets(self) -> int:
         """Tell each registered wallet about money that moved in it. Returns how many were told.
 
-        Remembers the newest signature seen per address and reports only what is newer. The
-        first look at an address just records where it stands, so a wallet is never greeted with
-        its whole history. A transfer that settled an AirPay request already has its own "paid"
-        notice and is skipped here, so the recipient is told once.
+        Every signature ever seen for an address is remembered, and only one never seen before is
+        reported. The first look at an address records what is there and reports nothing, so a
+        wallet is never greeted with its history.
+
+        It used to keep a single "newest signature" per address and report whatever sat above it.
+        The RPC provider answers from several nodes, and one that is a little behind returns a
+        list WITHOUT the newest transaction. The cursor then pointed at something not in the
+        list, the code fell back to announcing the top three, the cursor moved backwards, and
+        the next answer from a caught-up node announced the newest one again: the same payments,
+        every few seconds, for ever. A set of seen signatures cannot move backwards.
+
+        A transfer that settled an AirPay request already has its own "paid" notice and is
+        skipped here, so the recipient is told once.
         """
         told = 0
         for addr in self.store.device_recipients():
             try:
-                sigs = self.rpc.call("getSignaturesForAddress", [addr, {"limit": 8, "commitment": "confirmed"}]) or []
+                sigs = self.rpc.call("getSignaturesForAddress", [addr, {"limit": 10, "commitment": "confirmed"}]) or []
             except Exception:                                    # noqa: BLE001
                 continue
-            fresh = [x["signature"] for x in sigs if isinstance(x, dict) and x.get("err") is None]
-            last = self._activity_last.get(addr)
-            self._activity_last[addr] = fresh[0] if fresh else last
-            if last is None:
+            rows = [x for x in sigs if isinstance(x, dict) and x.get("err") is None and x.get("signature")]
+            ok = [x["signature"] for x in rows]
+            seen = self._activity_seen.get(addr)
+            if seen is None:
+                self._activity_seen[addr] = dict.fromkeys(ok)
+                self._activity_since[addr] = time.time()
                 continue
-            new = fresh[: fresh.index(last)] if last in fresh else fresh[:3]
-            for sig in reversed(new):
+            # Unseen is not enough on its own. A node that is behind returns an OLDER window of
+            # ten, whose last entry is a transaction from before the first look that was never in
+            # any earlier answer. So a signature must also have happened after watching began.
+            since = self._activity_since.get(addr, time.time()) - self.ACTIVITY_SKEW
+            new = []
+            for x in rows:
+                sig = x["signature"]
+                if sig in seen:
+                    continue
+                when = x.get("blockTime")
+                if isinstance(when, (int, float)) and when >= since:
+                    new.append(sig)
+                else:
+                    seen[sig] = None          # old, or undated: remembered, never announced
+            for sig in reversed(new):            # oldest first, as they happened
+                seen[sig] = None
                 if self.store.signature_settled(sig):
                     continue
                 try:
@@ -1126,7 +1157,10 @@ class Service:
                 for change in activity.describe(tx, addr) if tx else []:
                     self._deliver(addr, {"type": "wallet", "signature": sig, **change})
                     told += 1
+            while len(seen) > self.ACTIVITY_REMEMBER:
+                seen.pop(next(iter(seen)))
         return told
+
 
     # -- .air names: an AirPay handle, looked up here rather than on a chain -------------------
 
