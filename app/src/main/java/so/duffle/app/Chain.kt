@@ -44,7 +44,38 @@ object Chain {
     const val LAMPORTS_PER_SOL = 1_000_000_000.0
 
     /** Solana's fee is ~5000 lamports, but leave headroom rather than land on the boundary. */
-    private const val FEE_HEADROOM_LAMPORTS = 50_000L
+    internal const val FEE_HEADROOM_LAMPORTS = 50_000L
+    /** What one signature costs. The fee of every transfer this app builds for one signer. */
+    const val NETWORK_FEE_LAMPORTS = 5_000L
+
+    /**
+     * The least SOL a wallet may be left holding, other than none. The chain refuses any
+     * transaction that leaves a wallet between zero and this ("insufficient funds for rent").
+     */
+    const val RENT_MIN_LAMPORTS = 890_880L
+    /** Below what the app shows (0.0001 SOL): a remainder this small is part of "all of it". */
+    private const val DUST_LAMPORTS = 100_000L
+
+    /**
+     * How much to actually send when somebody asks to send [asked] lamports out of [held].
+     *
+     * Sending everything is not refused for want of a fee: the fee comes out of the amount and
+     * the rest goes. "Everything" includes a typed amount that matches the balance as the app
+     * shows it, which is cut to four places, so the wallet really holds a few lamports more;
+     * those go too, because the chain will not let them stay behind.
+     *
+     * Null when it cannot be sent: more than is held, nothing left after the fee, or a remainder
+     * too big to call dust and too small for the chain to allow ([RENT_MIN_LAMPORTS]).
+     */
+    fun sendable(asked: Long, held: Long, fee: Long = NETWORK_FEE_LAMPORTS): Long? {
+        if (asked <= 0 || asked > held || held <= fee) return null
+        val rest = held - asked - fee
+        return when {
+            rest < DUST_LAMPORTS -> held - fee
+            rest < RENT_MIN_LAMPORTS -> null
+            else -> asked
+        }
+    }
 
     sealed interface Built {
         data class Ok(val tx: ByteArray) : Built
@@ -83,8 +114,13 @@ object Chain {
         if (blockhashOverride == null) {
             when (val b = balance(payer)) {
                 is Balance.Ok -> {
-                    val need = (lamports + FEE_HEADROOM_LAMPORTS) / LAMPORTS_PER_SOL
-                    if (b.sol < need) return Built.NotEnough(fmt(b.sol), fmt(lamports / LAMPORTS_PER_SOL), "SOL")
+                    val held = Math.round(b.sol * LAMPORTS_PER_SOL)
+                    // Emptying the wallet is allowed: the amount plus the one-signature fee is
+                    // exactly what it holds, which leaves zero, and zero is a balance the chain
+                    // accepts. Short of that, the usual headroom is asked for.
+                    val emptying = lamports + NETWORK_FEE_LAMPORTS == held
+                    if (!emptying && held < lamports + FEE_HEADROOM_LAMPORTS)
+                        return Built.NotEnough(fmt(b.sol), fmt(lamports / LAMPORTS_PER_SOL), "SOL")
                 }
                 is Balance.Offline -> return Built.Offline(b.detail)
             }
@@ -122,12 +158,21 @@ object Chain {
      * A transaction needing one signer must arrive with one zero-filled slot reserved.
      * Verified by TxShapeTest, which asserts the leading byte.
      */
-    private fun reserveSignatureSlot(serialized: ByteArray): ByteArray {
+    private fun reserveSignatureSlot(serialized: ByteArray, slots: Int = 1): ByteArray {
         if (serialized.isEmpty()) return serialized
         // Already has slots (signed or pre-reserved) — leave it alone.
         if (serialized[0].toInt() != 0) return serialized
-        return byteArrayOf(1) + ByteArray(64) + serialized.copyOfRange(1, serialized.size)
+        return byteArrayOf(slots.toByte()) + ByteArray(64 * slots) + serialized.copyOfRange(1, serialized.size)
     }
+
+    /**
+     * Somebody else paying this transaction's network fee, and what they take for it.
+     *
+     * For a buyer who holds USDC and no SOL. [feePayer] is AirPay's fee wallet: it is the
+     * transaction's fee payer and nothing else in it. [feeUnits] of USDC go to [feeAccount], its
+     * token account, in the same transaction, so the fee is paid or nothing is.
+     */
+    data class Sponsor(val feePayer: String, val feeAccount: String, val feeUnits: Long)
 
     const val TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
     const val TOKEN_2022_PROGRAM = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
@@ -203,6 +248,8 @@ object Chain {
         blockhashOverride: String? = null,
         programOverride: String? = null,
         recipientAccountExists: Boolean? = null,
+        /** Set when the buyer has no SOL: see [Sponsor]. Null is the ordinary, self-paid transfer. */
+        sponsor: Sponsor? = null,
         /** Mainnet throughout. See [post]. */
     ): Built {
         if (!PayRequest.isBase58Address(payer)) return Built.Bad("Your wallet address looks wrong.")
@@ -233,7 +280,15 @@ object Chain {
                 exists(destination.toBase58())?.not() ?: return Built.Offline("could not reach Solana")
             } else false
 
-            if (live) {
+            // A new token account costs SOL rent, which is more than a fee and not something the
+            // fee wallet pays for.
+            if (sponsor != null && needsAccount) return Built.Bad("This payment needs SOL in your wallet.")
+            val owed = units + (sponsor?.feeUnits ?: 0L)
+
+            if (live && sponsor != null) {
+                val held = tokenBalance(source.toBase58()) ?: return Built.Offline("could not reach Solana")
+                if (held < owed) return Built.NotEnough(fmtUnits(held, decimals), fmtUnits(owed, decimals), symbol)
+            } else if (live) {
                 val held = tokenBalance(source.toBase58()) ?: return Built.Offline("could not reach Solana")
                 if (held < units) return Built.NotEnough(fmtUnits(held, decimals), fmtUnits(units, decimals), symbol)
                 // Tokens move, but the fee — and the recipient's new account, if they have never
@@ -272,6 +327,24 @@ object Chain {
                 ),
                 programId = programKey,
             )
+            if (sponsor != null) {
+                // The fee, in the same token, to the fee wallet's own account. The fee wallet is
+                // the fee payer and appears in no instruction: that is the rule it signs under.
+                val fee = BaseInstruction(
+                    data = transferCheckedData(sponsor.feeUnits, decimals),
+                    keys = listOf(
+                        AccountMeta(source, signer = false, writable = true),
+                        AccountMeta(mintKey, signer = false, writable = false),
+                        AccountMeta(PublicKey(sponsor.feeAccount), signer = false, writable = true),
+                        AccountMeta(from, signer = true, writable = false),
+                    ),
+                    programId = programKey,
+                )
+                // Two signers, so two slots: the fee wallet's first, then the buyer's.
+                return Built.Ok(reserveSignatureSlot(
+                    Transaction(blockhash, listOf(transfer, fee), feePayer = PublicKey(sponsor.feePayer)).serialize(), slots = 2,
+                ))
+            }
             val instructions = if (needsAccount) listOf(createAccount, transfer) else listOf(transfer)
             Built.Ok(reserveSignatureSlot(Transaction(blockhash, instructions, feePayer = from).serialize()))
         } catch (e: Exception) {

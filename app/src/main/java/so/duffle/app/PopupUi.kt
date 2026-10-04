@@ -170,6 +170,8 @@ internal fun PopupScreen(
     cameFrom: String? = null,
     /** The chain's answer on this peer's Genesis token, for whoever wants to remember it. */
     onVerified: (Boolean) -> Unit = {},
+    /** From the armed sheet: this phone wants to be paid, so open the request screen. */
+    onRequestInstead: () -> Unit = {},
 ) {
     // Hoisted so the amount survives the switch from typing to paying: the same number stays on
     // screen while the button below it reports progress.
@@ -331,7 +333,7 @@ internal fun PopupScreen(
                         // Waiting for the other phone. Shares the AnimatedContent with every
                         // other state, so when the tap lands the sheet grows into the keypad
                         // on the same spring rather than closing and reopening as a new one.
-                        "armed" -> ArmedBody()
+                        "armed" -> ArmedBody(onRequestInstead)
                         // The keypad and the device page both stay built; switching only fades one
                         // out and the other in. Rebuilding the keypad form on the way back — amount,
                         // chip, twelve keys, shared-element setup — cost 85-150ms frames.
@@ -409,7 +411,7 @@ private val InPerson = setOf("nfc", "hce", "app", "tap-button")
  * is live) and does it by showing what to do with it.
  */
 @Composable
-private fun ArmedBody() {
+private fun ArmedBody(onRequestInstead: () -> Unit) {
     Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
         TapHero(Modifier.fillMaxWidth())
         Spacer(Modifier.height(Space.row))
@@ -418,6 +420,10 @@ private fun ArmedBody() {
         Text("Hold your phones\ntogether", color = D.Black, style = Type.title, textAlign = TextAlign.Center)
         Spacer(Modifier.height(24.dp))
         NfcTip()
+        // The other half of the same moment: this phone is the one being paid. It needs nobody
+        // on the other side yet, so it is offered here, before any tap.
+        Spacer(Modifier.height(Space.row))
+        TextLink("Request instead", onRequestInstead)
     }
 }
 
@@ -898,7 +904,7 @@ private fun Form(
                     ?: holdings?.firstOrNull() ?: SolPlaceholder
                 ConfirmBody(peer, payAmount, shown, known = holdings != null && held != null, working = working,
                     reward = reward,
-                    onConfirm = { onPay(payAmount, if (req == null) shown else null) }, onBack = { onConfirming(false) })
+                    onConfirm = { sending -> onPay(sending, if (req == null) shown else null) }, onBack = { onConfirming(false) })
             } else {
                 Entry(peer, working, amount, onAmount, token, onToken, holdings, { onConfirming(true) }, onRequest, onDecline, onLater,
                     // Shown here too when the amount is already fixed: on a request there is
@@ -1027,11 +1033,6 @@ private fun Entry(
                     DeclineButton(onDecline, Modifier.weight(1f))
                     SecondaryButton("Later", onLater, Modifier.weight(1f))
                 }
-                // Why it earns nothing, at the foot (§1.2): a reason, not a headline. It used to
-                // take the reward line's place under the amount, where the eye reads it as what
-                // this ask is FOR. Down here it is what it is — a footnote to a decision that
-                // has already been made on the amount and who is asking.
-                WhyNothing(reward)
                 // Said under the answer, not above it: somebody looking at a stranger's ask is
                 // deciding whether to open their wallet, so what this app cannot reach is part
                 // of the decision.
@@ -1101,11 +1102,21 @@ private fun ConfirmBody(
     working: String?,
     /** What this payment would earn. Asked by the caller, long before this screen opened. */
     reward: Rewards.Preview?,
-    onConfirm: () -> Unit,
+    /** Called with the amount that is really sent, which is less than typed when the fee comes out of it. */
+    onConfirm: (String) -> Unit,
     onBack: () -> Unit,
 ) {
-    val units = PayRequest.baseUnits(amount, token.decimals) ?: 0L
-    val fee = 5_000L // one signature; the wallet may add a small priority fee on top
+    val asked = PayRequest.baseUnits(amount, token.decimals) ?: 0L
+    val fee = Chain.NETWORK_FEE_LAMPORTS // one signature
+    // Sending all the SOL there is leaves nothing to pay the fee with. That is not refused: the
+    // fee comes out of the amount and the rest is sent. Only for an amount somebody typed; a
+    // request names its own figure, and paying less than it asks would not settle it.
+    val typed = peer is TapPayload.Card && token.isSol && known
+    val sending = if (typed) Chain.sendable(asked, token.units, fee) else null
+    val fromAmount = sending != null && sending != asked
+    // Would leave an amount the chain does not allow a wallet to hold: too little to keep.
+    val stuck = typed && sending == null && asked + fee <= token.units
+    val units = sending ?: asked
     // A first payment in a token also opens the recipient's account for it — checked, not assumed.
     val needsAccount by produceState<Boolean?>(initialValue = null, token.token, peer.address) {
         value = if (token.isSol) false else withContext(Dispatchers.IO) {
@@ -1118,25 +1129,27 @@ private fun ConfirmBody(
     val setupLamports = if (needsAccount == true) 2_039_280L else 0L
     val solCost = fee + setupLamports + if (token.isSol) units else 0L
     val left = if (token.isSol) token.units - solCost else token.units - units
-    val enough = known && left >= 0
+    val enough = known && left >= 0 && !stuck
     val brand = Brand.of(peer, LocalVerified.current)
 
     Column(Modifier.fillMaxWidth()) {
         Box(Modifier.shared("logo-${token.token}")) { TokenImage(token, 52.dp) }
         Spacer(Modifier.height(Space.inline))
-        Row(verticalAlignment = Alignment.Bottom) {
+        // Number and symbol sit on one baseline, the way a price is written. Bottom-aligning the
+        // two boxes and nudging the small one up by eye left them a few pixels apart.
+        Row {
             // The `display` step, exactly as on the keypad, so the number moves between the two
             // screens without changing shape. It is the biggest thing on the sheet, and the step
             // is a maximum: nothing here is larger.
             Text(
                 amount, color = D.Black, style = Type.display, softWrap = false, maxLines = 1,
-                modifier = Modifier.weight(1f, fill = false).shared("amount"),
+                modifier = Modifier.weight(1f, fill = false).alignByBaseline().shared("amount"),
             )
             Spacer(Modifier.width(Space.inline))
             // `title` here against `heading` on the keypad: the symbol still grows as the review
             // opens, and both ends of that growth are scale steps.
             Text(token.symbol, color = D.Black, style = Type.title,
-                modifier = Modifier.padding(bottom = 6.dp).shared("symbol-${token.token}", bounds = true))
+                modifier = Modifier.alignByBaseline().shared("symbol-${token.token}", bounds = true))
         }
         Text("to ${peer.label.ifBlank { "them" }}", color = D.Quiet, style = Type.caption)
 
@@ -1154,6 +1167,9 @@ private fun ConfirmBody(
         DetailRow("Address") { Value("${peer.address.take(6)}…${peer.address.takeLast(6)}") }
         DetailRow("Network") { Value("Solana mainnet") }
         DetailRow("Network fee") { Value("~${Chain.fmtUnits(fee, 9)} SOL") }
+        if (fromAmount) {
+            DetailRow("They receive") { Value("${Chain.fmtUnits(units, 9)} SOL", strong = true) }
+        }
         if (needsAccount == true) {
             DetailRow("New account") { Value("~${Chain.fmtUnits(setupLamports, 9)} SOL") }
         }
@@ -1165,10 +1181,35 @@ private fun ConfirmBody(
             )
         }
 
+        if (fromAmount) {
+            // The one line on this sheet that changes what arrives, so it is marked, and centred
+            // so it reads as a note about the whole payment and not as one more row.
+            //
+            // Amber, not the reward's yellow and not red: yellow here already means "you gain",
+            // and red means something failed. Amber is the colour people read as "notice this
+            // before you go on", which is exactly what this is.
+            Spacer(Modifier.height(Space.inline))
+            Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                Text(
+                    "Network fee is taken from this amount",
+                    color = NOTICE_INK, style = Type.body.copy(fontWeight = FontWeight.SemiBold), maxLines = 1,
+                    modifier = Modifier.background(NOTICE_MARK, RoundedCornerShape(6.dp)).padding(horizontal = 8.dp, vertical = 3.dp),
+                )
+            }
+        }
+        if (stuck) {
+            Spacer(Modifier.height(Space.tight))
+            Text(
+                "This would leave less than ${Chain.fmtUnits(Chain.RENT_MIN_LAMPORTS, 9)} SOL, which Solana does not allow a wallet to keep. Send all of it, or a little less.",
+                color = D.DangerInk, style = Type.caption,
+            )
+        }
+
         RewardLine(reward)
 
         Spacer(Modifier.height(20.dp))
-        PrimaryButton(working ?: if (enough) "Confirm and pay" else if (known) "Not enough ${token.symbol}" else "No ${token.symbol} in your wallet", onConfirm, Modifier.fillMaxWidth().shared("primary", bounds = true),
+        PrimaryButton(working ?: if (enough || stuck) "Confirm and pay" else if (known) "Not enough ${token.symbol}" else "No ${token.symbol} in your wallet",
+            { onConfirm(if (fromAmount) Chain.fmtUnits(units, 9) else amount) }, Modifier.fillMaxWidth().shared("primary", bounds = true),
             enabled = enough, loading = working != null)
         AnimatedVisibility(visible = working == null) { TextLink("Back", onBack, modifier = Modifier.shared("secondary", bounds = true)) }
     }
@@ -1183,21 +1224,16 @@ private fun ConfirmBody(
  */
 @Composable
 private fun RewardLine(reward: Rewards.Preview?) {
-    val why = Rewards.sayWhy(reward)
-    AnimatedVisibility(visible = reward != null && (reward.earns || why != null)) {
-        val earns = reward?.earns == true
-        // No well behind either line: both used to sit in one, and one of them was a 7% wash of
-        // D.Blue, which is the shape of tint the palette forbids. What is earned goes on the
-        // highlight instead, like a marker pen. The refusal is a reason, not a prize, so it takes
-        // no mark at all.
+    // Only a payment that earns says anything. One that earns nothing says nothing: a line about
+    // a reward that is not coming is noise on the screen where money is being sent.
+    AnimatedVisibility(visible = reward?.earns == true) {
         Row(
             Modifier.fillMaxWidth().padding(top = Space.lead),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            HIcon(if (earns) R.drawable.hi_gift else R.drawable.hi_info, if (earns) D.Black else D.Quiet, 18.dp)
+            HIcon(R.drawable.hi_gift, D.Black, 18.dp)
             Spacer(Modifier.width(Space.inline))
-            if (earns) Marked("Earns ${reward?.skr} SKR")
-            else Text(why.orEmpty(), color = D.Quiet, style = Type.body)
+            Marked("Earns ${reward?.skr} SKR")
         }
     }
 }
@@ -1223,34 +1259,6 @@ private fun EarnsLine(reward: Rewards.Preview?) {
             // `gap-2`, not `Space.inline`: an 18 icon beside a 15sp line, not an avatar beside a row.
             Spacer(Modifier.width(8.dp))
             Marked("Earns ${reward?.skr} SKR")
-        }
-    }
-}
-
-/**
- * Why this payment earns nothing, at the foot of the ask: §1.2.
- *
- * Nobody should learn a reward rule by not being paid, so it is still said before they decide —
- * but under the two answers and above "AirPay never holds your keys.", which is where the other
- * thing this sheet owes them already sits. Caption and quiet, with the info mark rather than the
- * gift: it takes no highlight, because it is not a prize.
- *
- * Nothing is drawn when there is no reason. [Rewards.sayWhy] returns null both for a payment
- * that earns and for `not_a_seeker` — the badge in the header already said that, and it is not
- * news to the person holding the phone.
- */
-@Composable
-private fun WhyNothing(reward: Rewards.Preview?) {
-    val why = Rewards.sayWhy(reward)
-    AnimatedVisibility(visible = reward != null && reward.earns.not() && why != null) {
-        Row(
-            Modifier.fillMaxWidth().padding(top = Space.lead),
-            horizontalArrangement = Arrangement.Center,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            HiIcon(Hi.Info, D.Quiet, 16.dp)
-            Spacer(Modifier.width(8.dp))
-            Text(why.orEmpty(), color = D.Quiet, style = Type.caption)
         }
     }
 }
@@ -1305,6 +1313,10 @@ private val ValueStrong = ValueText.copy(fontWeight = FontWeight.Bold)
  * take the red. `D.Highlight` only ever sits behind ink text; alone on white it is invisible at
  * 1.15:1, so it is never a dot, a line, a ring or a border.
  */
+/** The marker for a heads-up: amber behind dark amber ink (8.6:1). */
+private val NOTICE_MARK = Color(0xFFFFE2A8)
+private val NOTICE_INK = Color(0xFF5C3A00)
+
 @Composable
 private fun Marked(text: String) = Text(
     text, color = D.Black, style = Type.body, maxLines = 1,
