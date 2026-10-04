@@ -14,6 +14,7 @@ from urllib.parse import parse_qs, urlparse
 
 from .chain import Rpc
 from .service import config_as_dict
+from .plans import PlanCatalogue
 from .shop import Shop
 from .store import Conflict
 
@@ -57,6 +58,7 @@ def make_handler(service, helius_auth: str | None, limiter: RateLimit | None = N
     #: to strangers and does cryptography.
     read_limiter = RateLimit(600)
     auth_limiter = RateLimit(20)
+    plan_catalogue = PlanCatalogue()
     # An unconfigured shop is an empty shelf, not a missing endpoint: the app asks either way
     # and draws nothing rather than showing an error it cannot act on.
     shop = shop or Shop(None)
@@ -181,6 +183,11 @@ def make_handler(service, helius_auth: str | None, limiter: RateLimit | None = N
                 # Public on purpose: the app shows these amounts, and a screen promising a
                 # number the server no longer pays would be worse than showing nothing.
                 return self._json(200, config_as_dict(service.reward_config()))
+            if url.path == "/v1/plans":
+                # Public: it is the network's own published catalogue, cached here so phones do
+                # not each ask the network. It only describes plans; it sells nothing.
+                op = (parse_qs(url.query).get("operator") or [""])[0]
+                return self._json(200, {"operator": op, "plans": plan_catalogue.plans(op)})
             if url.path == "/v1/handles":
                 # Public, like a name service: who owns a name is not a secret, and a person has to be
                 # findable before they are paid. Rate-limited by the read limiter above.
