@@ -77,7 +77,7 @@ internal fun PayAnyoneSheet(onClose: () -> Unit, onFound: (address: String, labe
 
     // What Pay would pay: a pick, or an exact match for what is typed.
     val target = picked ?: found.firstOrNull { it.name.equals(text.trim(), ignoreCase = true) }
-    val go = { target?.let { t -> onFound(t.address, if (t.name == t.address) "Scanned code" else t.name) }; Unit }
+    val go = { target?.let { t -> onFound(t.address, if (t.name == t.address) "Wallet address" else t.name) }; Unit }
 
     ModalBottomSheet(onDismissRequest = onClose, sheetState = sheet, containerColor = D.White, dragHandle = null) {
         Column(
@@ -126,7 +126,12 @@ internal fun PayAnyoneSheet(onClose: () -> Unit, onFound: (address: String, labe
                     val on = picked?.address == c.address && picked?.name == c.name
                     Row(
                         Modifier.fillMaxWidth().heightIn(min = 56.dp)
-                            .clickable { picked = c; text = c.name; keyboard?.hide() }
+                            // Choosing somebody IS the decision to pay them: the row opens the
+                            // payment itself. It used to only tick the row and wait for Pay.
+                            .clickable {
+                                picked = c; keyboard?.hide()
+                                onFound(c.address, if (c.name == c.address) "Wallet address" else c.name)
+                            }
                             .padding(vertical = 6.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
@@ -154,22 +159,25 @@ internal fun PayAnyoneSheet(onClose: () -> Unit, onFound: (address: String, labe
  * wallet address has no registry and gets a plain wallet glyph.
  */
 @Composable
-private fun RegistryMark(name: String) {
-    val size = 40.dp
-    when {
-        name.endsWith(".skr") -> androidx.compose.foundation.Image(
+internal fun RegistryMark(name: String, size: androidx.compose.ui.unit.Dp = 40.dp) {
+    when (registryOf(name)) {
+        ".skr" -> androidx.compose.foundation.Image(
             androidx.compose.ui.res.painterResource(R.drawable.brand_seeker), name,
             Modifier.size(size).clip(CircleShape), contentScale = androidx.compose.ui.layout.ContentScale.Crop,
         )
-        name.endsWith(".sol") -> androidx.compose.foundation.Image(
+        ".sol" -> androidx.compose.foundation.Image(
             androidx.compose.ui.res.painterResource(R.drawable.id_sol), name,
             Modifier.size(size).clip(CircleShape), contentScale = androidx.compose.ui.layout.ContentScale.Crop,
         )
-        name.endsWith(".air") -> Box(Modifier.size(size).clip(CircleShape).background(D.Blue), contentAlignment = Alignment.Center) {
+        ".air" -> Box(Modifier.size(size).clip(CircleShape).background(D.Blue), contentAlignment = Alignment.Center) {
             MarkCanvas(Mark.Rings, size * 0.6f, notch = D.Blue, tint = D.White)
         }
         else -> Box(Modifier.size(size).clip(CircleShape).background(D.Blue.copy(alpha = .14f)), contentAlignment = Alignment.Center) {
-            HiIcon(Hi.Wallet, D.BlueInk, 22.dp)
+            HiIcon(Hi.Wallet, D.BlueInk, size * 0.55f)
         }
     }
 }
+
+/** Which registry a name belongs to, by its ending: ".skr", ".sol", ".air", or null for none. */
+internal fun registryOf(name: String?): String? =
+    name?.trim()?.lowercase()?.let { n -> listOf(".skr", ".sol", ".air").firstOrNull { n.endsWith(it) && n.length > it.length } }
