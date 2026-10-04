@@ -63,6 +63,9 @@
         <activity
             android:name=".RequestActivity"
             android:exported="false"
+            android:theme="@style/Theme.Duffle.Popup"
+            android:excludeFromRecents="true"
+            android:showWhenLocked="true"
             android:screenOrientation="portrait" />
 
         <activity
@@ -72,7 +75,14 @@
             android:taskAffinity="so.duffle.app.popup"
             android:launchMode="singleTask"
             android:excludeFromRecents="true"
+            android:showWhenLocked="true"
+            android:turnScreenOn="true"
             android:windowSoftInputMode="adjustResize">
+            <!-- Double-press power, when AirPay is the phone's wallet app. -->
+            <intent-filter>
+                <action android:name="android.service.quickaccesswallet.action.VIEW_WALLET" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
             <intent-filter>
                 <action android:name="android.nfc.action.NDEF_DISCOVERED" />
                 <category android:name="android.intent.category.DEFAULT" />
@@ -91,6 +101,22 @@
             <meta-data
                 android:name="android.nfc.cardemulation.host_apdu_service"
                 android:resource="@xml/apduservice" />
+        </service>
+
+        <!-- Lets the phone treat AirPay as a wallet app, so double-press power can open it.
+             The system only listens to a service that demands this permission of its caller. -->
+        <service
+            android:name=".AirPayWalletService"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:permission="android.permission.BIND_QUICK_ACCESS_WALLET_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.quickaccesswallet.QuickAccessWalletService" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <meta-data
+                android:name="android.quickaccesswallet"
+                android:resource="@xml/quickaccesswallet" />
         </service>
 
         <service
