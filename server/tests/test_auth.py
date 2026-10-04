@@ -256,6 +256,13 @@ class HttpAuthTest(unittest.TestCase):
         token = self.login(self.key, self.me)
         self.assertEqual(403, self.call("/v1/shop/invoice", {"product_id": "x", "refund_address": self.other}, token)[0])
 
+    def test_an_invoice_is_only_issued_in_a_currency_the_shop_takes(self):
+        token = self.login(self.key, self.me)
+        code, out = self.call("/v1/shop/invoice", {
+            "product_id": "x", "refund_address": self.me, "payment_method": "usdt_solana"}, token)
+        self.assertEqual(400, code)
+        self.assertIn("not supported", out.get("error", ""))
+
     def test_logout_revokes(self):
         token = self.login(self.key, self.me)
         self.assertEqual(200, self.call("/v1/auth/logout", {}, token)[0])

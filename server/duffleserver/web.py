@@ -25,6 +25,9 @@ MAX_BODY = 2 * 1024 * 1024
 #: webhook (a nudge, never data) and the two admin routes, which check the admin token instead.
 PUBLIC_POST = {"/v1/shop/product", "/v1/shop/webhook", "/v1/offers", "/v1/rewards/config"}
 HEARTBEAT = 15.0
+#: What a shop invoice may be paid in. Checked against real invoices: Bitrefill quotes USDC and
+#: SOL on Solana for this account, and refuses USDT ("unsupported_payment_method").
+PAY_METHODS = ("usdc_solana", "solana")
 _PROOF_PATH = re.compile(r"^/v1/offers/([A-Za-z0-9_-]{1,64})/proof$")
 _CLAIM_PATH = re.compile(r"^/v1/offers/([A-Za-z0-9_-]{1,64})/claim$")
 _REWARDS_PATH = re.compile(r"^/v1/rewards/([1-9A-HJ-NP-Za-km-z]{32,44})$")
@@ -287,10 +290,16 @@ def make_handler(service, helius_auth: str | None, limiter: RateLimit | None = N
                     # somebody else, or buy as somebody else.
                     if body.get("refund_address") != me:
                         return self._forbidden()
+                    # What it is paid in. Only what the shop has been seen to accept on Solana:
+                    # anything else is refused here rather than passed on to be refused there.
+                    method = str(body.get("payment_method") or "usdc_solana")
+                    if method not in PAY_METHODS:
+                        return self._json(400, {"error": "that payment method is not supported"})
                     try:
                         public = os.environ.get("PUBLIC_URL")
                         out = shop.invoice(
                             str(body.get("product_id") or ""), body.get("value"),
+                            payment_method=method,
                             phone_number=body.get("phone_number") or None,
                             refund_address=body.get("refund_address") or None,
                             package_id=body.get("package_id") or None,
@@ -302,7 +311,10 @@ def make_handler(service, helius_auth: str | None, limiter: RateLimit | None = N
                             service.store.remember_purchase(
                                 out["invoice_id"], body.get("refund_address") or None,
                                 str(body.get("product_id") or "")[:80], shop.category_of(str(body.get("product_id") or "")),
-                                out.get("amount") if isinstance(out.get("amount"), int) else None)
+                                # The recorded cost is USDC base units. A SOL invoice is in
+                                # lamports, which would read as a wildly wrong price, so it is
+                                # left empty rather than written in the wrong unit.
+                                out.get("amount") if method == "usdc_solana" and isinstance(out.get("amount"), int) else None)
                         return self._json(200, out)
                     except Exception as e:
                         # Includes "out of stock" and "no such product", which are answers
