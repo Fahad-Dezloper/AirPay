@@ -25,6 +25,18 @@ object Shop {
     const val USDC_MAINNET = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
     const val USDC_DECIMALS = 6
 
+    /**
+     * What a purchase can be paid in.
+     *
+     * These are the two the shop was seen to quote on Solana (it refuses USDT). Paying in SOL is
+     * not a swap: the shop prices the same order in SOL itself and the invoice asks for exactly
+     * that many lamports, so nothing is converted on the way and there is no slippage to lose.
+     */
+    enum class PayWith(val method: String, val symbol: String, val decimals: Int) {
+        USDC("usdc_solana", "USDC", USDC_DECIMALS),
+        SOL("solana", "SOL", 9),
+    }
+
     val enabled get() = ServerClient.enabled
 
     data class Product(
@@ -330,13 +342,15 @@ object Shop {
     data class Invoice(
         val id: String,
         val address: String,
-        /** Base units of [currency] — 11960000 is 11.96 USDC. */
+        /** Base units of [currency] — 11960000 is 11.96 USDC, and lamports for SOL. */
         val amount: Long,
         val currency: String,
         val productId: String,
         val value: String,
         /** When this app stops trusting the price. See [QUOTE_LIFE_MS]. */
         val quotedAt: Long = System.currentTimeMillis(),
+        /** How many decimal places [amount] is written in: 6 for USDC, 9 for SOL. */
+        val decimals: Int = USDC_DECIMALS,
     ) {
         /**
          * What it cost, written once and stored — `Orders.Order.paid` keeps this exact string
@@ -351,7 +365,7 @@ object Shop {
          * rather than rounds, stays in [BigDecimal], and follows the phone.
          */
         val shown: String get() = Money.token(
-            BigDecimal.valueOf(amount).movePointLeft(USDC_DECIMALS), currency,
+            BigDecimal.valueOf(amount).movePointLeft(decimals), currency,
         )
         val expired get() = System.currentTimeMillis() - quotedAt > QUOTE_LIFE_MS
     }
@@ -491,10 +505,12 @@ object Shop {
         refund: String? = null,
         packageId: String? = null,
         email: String? = null,
+        payWith: PayWith = PayWith.USDC,
     ): Invoice? {
         val o = ServerClient.ask("/v1/shop/invoice", JSONObject().apply {
             put("product_id", productId)
             put("value", value)
+            put("payment_method", payWith.method)
             packageId?.takeIf { it.isNotBlank() }?.let { put("package_id", it) }
             phone?.takeIf { it.isNotBlank() }?.let { put("phone_number", it) }
             refund?.takeIf { it.isNotBlank() }?.let { put("refund_address", it) }
@@ -504,8 +520,10 @@ object Shop {
         val amount = o.optLong("amount", 0L).takeIf { it > 0 } ?: return null
         return Invoice(
             id = o.optString("invoice_id"), address = address, amount = amount,
-            currency = o.optString("currency", "USDC"),
-            productId = productId, value = value,
+            // The invoice names its own currency. One that is not what was asked for is not
+            // paid: the amount would be read in the wrong unit.
+            currency = o.optString("currency", payWith.symbol).takeIf { it.equals(payWith.symbol, true) } ?: return null,
+            productId = productId, value = value, decimals = payWith.decimals,
         )
     }
 

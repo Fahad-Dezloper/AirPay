@@ -304,6 +304,9 @@ class MainActivity : ComponentActivity() {
     }
     private var status by mutableStateOf<Status>(Status.Idle)
 
+    /** A purchase from the shop, from the moment a plan is tapped to the moment it is paid. */
+    private var purchase by mutableStateOf<Purchase?>(null)
+
     /** Set on resume so every open request is checked at once rather than on its schedule. */
     @Volatile private var checkAllNow = true
     private var offlineStreak = 0
@@ -449,77 +452,100 @@ class MainActivity : ComponentActivity() {
         return mine in theirs || (mine == "jio" && "jio" in theirs)
     }
 
-    private fun buy(product: Shop.Product, value: String, category: String, phone: String? = null) {
+    private fun buy(
+        product: Shop.Product, value: String, category: String, phone: String? = null,
+        extra: Plans.Extra? = null, payWith: Shop.PayWith = Shop.PayWith.USDC,
+        /** The price the sheet already showed. Used as it is while it is still fresh. */
+        quoted: Shop.Invoice? = null,
+    ) {
+        // Everything this purchase says goes to its own sheet, not to a line of text at the top of
+        // the page: what is being bought, what the wallet is being asked for, and how it ended.
+        val item = Purchase.Item(product, value, category, phone, extra)
         // The server issues the invoice to the signed-in wallet, so this needs a session. Ask for it
         // first, then carry on with the same purchase.
         if (ServerClient.enabled && connected != null && !Session.valid(connected)) {
-            gated("complete this purchase") { buy(product, value, category, phone) }
+            purchase = null   // the authorization sheet takes over; the purchase resumes after it
+            gated("complete this purchase") { buy(product, value, category, phone, extra, payWith) }
             return
         }
         val payer = connected
         if (payer == null) {
-            status = Status.Problem("Connect a wallet first", "The shop pays from your wallet.")
+            purchase = Purchase.Problem(item, "Connect a wallet first", "The shop pays from your wallet.")
             return
         }
         // Still refused, but only when there is genuinely no number — the recharge screen
         // collects one, and anything reaching here without it would 400 at Bitrefill.
         if (product.needsPhone && phone.isNullOrBlank()) {
-            status = Status.Problem("Needs a phone number",
+            purchase = Purchase.Problem(item, "Needs a phone number",
                 "${product.name.removeSuffix(" India")} credits a number directly. Enter one first.")
             return
         }
         lifecycleScope.launch {
             busy = true
+            // The sheet has usually asked for the price already, so the figure the buyer read is
+            // the one that is paid. Only a missing or stale quote is asked for again.
+            val fresh = quoted?.takeIf { !it.expired && it.currency == payWith.symbol && it.value == value }
+            purchase = Purchase.Working(item, if (fresh != null) "Approve in your wallet" else "Getting the price…", payWith, fresh?.shown)
             try {
-                push("shop: asking for a price…")
-                // The payer's own wallet as the refund address: if the order cannot be
-                // filled, the money has somewhere to come back to.
-                val inv = Shop.invoice(
-                    product.id, value, phone,
-                    refund = payer,
-                    packageId = product.packages.firstOrNull { it.value == value }?.id,
-                    // Optional. Without it Bitrefill notifies the account that owns the API
-                    // key rather than the person who paid.
-                    email = Identity.email(this@MainActivity),
-                )
+                val inv = fresh ?: quote(item, payWith)
                 if (inv == null) {
-                    status = Status.Problem("Couldn't get a price", "The shop didn't answer. Try again.")
+                    purchase = Purchase.Problem(item, "Couldn't get a price", "The shop didn't answer. Try again.")
                     return@launch
                 }
                 push("shop: ${inv.shown} to ${inv.address.take(8)}…")
-                status = Status.Working("Approve ${inv.shown} in your wallet")
+                // The exact price goes on the sheet's own "You pay" line, so the button only has
+                // to say what to do next.
+                purchase = Purchase.Working(item, "Approve in your wallet", payWith, inv.shown)
+                // No SOL for the network fee: the fee wallet pays it and takes it back in USDC.
+                // Only then. A wallet that has SOL pays its own fee as it always did.
+                val sponsor = if (payWith == Shop.PayWith.USDC && needsFeePaid()) ServerClient.sponsor() else null
                 val built = withContext(Dispatchers.IO) {
-                    Chain.buildTokenTransfer(
-                        payer = payer, recipient = inv.address, mint = Shop.USDC_MAINNET,
-                        units = inv.amount, decimals = Shop.USDC_DECIMALS,
-                        reference = PayRequest.newReference(), symbol = "USDC",
-                    )
+                    when (payWith) {
+                        Shop.PayWith.USDC -> Chain.buildTokenTransfer(
+                            payer = payer, recipient = inv.address, mint = Shop.USDC_MAINNET,
+                            units = inv.amount, decimals = Shop.USDC_DECIMALS,
+                            reference = PayRequest.newReference(), symbol = "USDC",
+                            sponsor = sponsor,
+                        )
+                        // The shop priced this order in SOL itself; the invoice is in lamports
+                        // and exactly that many are sent.
+                        Shop.PayWith.SOL -> Chain.buildTransfer(
+                            payer = payer, recipient = inv.address, lamports = inv.amount,
+                            reference = PayRequest.newReference(),
+                        )
+                    }
                 }
                 when (built) {
-                    is Chain.Built.Bad -> status = Status.Problem("Can't pay this", built.why)
-                    is Chain.Built.Offline -> status = Status.Problem("You're offline", "Nothing was sent.")
-                    is Chain.Built.NotEnough -> status = Status.Problem(
-                        "Not enough USDC",
-                        "This needs ${inv.shown} of real USDC on mainnet, in the wallet you have selected.")
+                    is Chain.Built.Bad -> purchase = Purchase.Problem(item, "Can't pay this", built.why)
+                    is Chain.Built.Offline -> purchase = Purchase.Problem(item, "You're offline", "Nothing was sent.")
+                    is Chain.Built.NotEnough -> purchase = Purchase.Problem(item,
+                        if (built.symbol.contains("fees")) "Not enough SOL for the fee" else "Not enough ${payWith.symbol}",
+                        if (built.symbol.contains("fees")) "You need a little SOL for the network fee."
+                        else "You don't have enough ${payWith.symbol}. This costs ${inv.shown}.")
                     is Chain.Built.Ok -> {
                         // The quote is checked again here rather than only when it was made:
                         // the wallet may have been open for a while.
                         if (inv.expired) {
-                            status = Status.Problem("Price expired",
+                            purchase = Purchase.Problem(item, "Price expired",
                                 "That quote is over two minutes old. Nothing was sent. Try again.")
                             return@launch
                         }
                         when (val signed = wallet.signOnly(built.tx)) {
                             is Wallet.SendOutcome.Signed -> {
                                 if (inv.expired) {
-                                    status = Status.Problem("Price expired",
+                                    purchase = Purchase.Problem(item, "Price expired",
                                         "The quote died while your wallet was open. Nothing was sent.")
                                     return@launch
                                 }
-                                when (val sent = withContext(Dispatchers.IO) { Chain.submit(signed.tx) }) {
+                                purchase = Purchase.Working(item, "Sending the payment…", payWith, inv.shown)
+                                // A sponsored payment still needs the fee wallet's signature, so
+                                // it goes to the server, which adds it and submits.
+                                val outcome = if (sponsor != null) ServerClient.sponsorSubmit(signed.tx)
+                                    else withContext(Dispatchers.IO) { Chain.submit(signed.tx) }
+                                when (val sent = outcome) {
                                     is Chain.Submitted.Ok -> {
                                         push("✓ shop: paid ${inv.shown}, ${sent.signature.take(12)}…")
-                                        status = Status.Sent(sent.signature)
+                                        purchase = Purchase.Done(item, inv.shown, sent.signature, inv.id)
                                         // Written down before it is watched. The watcher below
                                         // dies with the screen; this is what survives it, and
                                         // what the next launch asks about.
@@ -534,17 +560,17 @@ class MainActivity : ComponentActivity() {
                                         // Delivery trails the payment by seconds.
                                         launch { watchOrder(inv) }
                                     }
-                                    is Chain.Submitted.Rejected -> status = Status.Problem(
+                                    is Chain.Submitted.Rejected -> purchase = Purchase.Problem(item, 
                                         "Payment refused",
                                         if (sent.why.contains("blockhash", true))
                                             "It took too long and expired. Nothing was sent. Try again."
                                         else sent.why)
-                                    Chain.Submitted.Offline -> status = Status.Problem(
+                                    Chain.Submitted.Offline -> purchase = Purchase.Problem(item, 
                                         "You're offline", "It was signed but never sent.")
                                 }
                             }
-                            is Wallet.SendOutcome.Failed -> status = Status.Problem("Not bought", signed.why)
-                            Wallet.SendOutcome.NeedsReconnect -> status = Status.Problem(
+                            is Wallet.SendOutcome.Failed -> purchase = Purchase.Problem(item, "Not bought", signed.why)
+                            Wallet.SendOutcome.NeedsReconnect -> purchase = Purchase.Problem(item, 
                                 "Reconnect your wallet", "The session ended. Connect again and retry.")
                         }
                     }
@@ -555,6 +581,32 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /** True when the wallet is known to hold too little SOL to pay a network fee itself. */
+    private fun needsFeePaid(): Boolean =
+        (balance as? Chain.Balance.Ok)?.let { it.sol * 1_000_000_000.0 < Chain.FEE_HEADROOM_LAMPORTS } == true
+
+    /**
+     * The shop's price for [item] in [payWith], or null when it cannot be asked for yet (no
+     * wallet, not signed in, no number) or the shop did not answer.
+     */
+    private suspend fun quote(item: Purchase.Item, payWith: Shop.PayWith): Shop.Invoice? {
+        val payer = connected ?: return null
+        if (ServerClient.enabled && !Session.valid(payer)) return null
+        if (item.product.needsPhone && item.phone.isNullOrBlank()) return null
+        push("shop: asking for a price…")
+        // The payer's own wallet as the refund address: if the order cannot be filled, the money
+        // has somewhere to come back to.
+        return Shop.invoice(
+            item.product.id, item.value, item.phone,
+            refund = payer,
+            packageId = item.product.packages.firstOrNull { it.value == item.value }?.id,
+            // Optional. Without it Bitrefill notifies the account that owns the API key rather
+            // than the person who paid.
+            email = Identity.email(this@MainActivity),
+            payWith = payWith,
+        )
+    }
+
     /** Asks what became of an order until it is delivered, or until asking stops being useful. */
     private suspend fun watchOrder(inv: Shop.Invoice) {
         repeat(12) {
@@ -562,10 +614,15 @@ class MainActivity : ComponentActivity() {
             val d = Shop.order(inv.id) ?: return@repeat
             push("shop: order ${d.status}")
             orders.setStatus(inv.id, d.status)
+            (purchase as? Purchase.Done)?.takeIf { it.invoiceId == inv.id }?.let {
+                purchase = it.copy(delivered = d.delivered)
+            }
             // The code, saved the moment it exists. This screen is often gone by the time
             // delivery lands, so it cannot be the only place it is kept.
             d.redemption?.let {
                 orders.setCode(inv.id, it.toJson())
+                // The code has its own sheet; the purchase sheet steps aside for it.
+                if ((purchase as? Purchase.Done)?.invoiceId == inv.id) purchase = null
                 showCodeFor = inv.id
             }
             refreshLists()
@@ -1494,7 +1551,7 @@ class MainActivity : ComponentActivity() {
                                         found = operatorNote,
                                         onFind = { findOperator(it, sec) },
                                         past = bought,
-                                        onBuy = { p, v, phone -> buy(p, v, sec.title, phone) },
+                                        onBuy = { p, v, phone, extra -> purchase = Purchase.Review(Purchase.Item(p, v, sec.title, phone, extra)) },
                                     )
                                 } else {
                                     ShopSection(
@@ -1961,11 +2018,33 @@ class MainActivity : ComponentActivity() {
                 // opened it and §2.3 replaced it with a second sheet stacked inside `ReferSheet`,
                 // so nothing could set it any more — it went with the `Tab.REFERRALS` branch.
 
+                // A purchase lives in a sheet of its own: review, progress, and how it ended.
+                purchase?.let { state ->
+                    PurchaseSheet(
+                        state = state,
+                        onPay = { payWith, quoted -> with(state.item) { buy(product, value, category, phone, extra, payWith, quoted) } },
+                        quote = { payWith -> quote(state.item, payWith) },
+                        sponsor = { ServerClient.sponsor() },
+                        // What the wallet holds, in base units. Null while it is not known, which
+                        // is never treated as "nothing": an unknown balance blocks no one.
+                        have = { payWith ->
+                            when (payWith) {
+                                Shop.PayWith.SOL -> (balance as? Chain.Balance.Ok)?.let { (it.sol * 1_000_000_000.0).toLong() }
+                                Shop.PayWith.USDC -> if (balance !is Chain.Balance.Ok) null
+                                    else holdings.firstOrNull { it.mint == Shop.USDC_MAINNET }?.units ?: 0L
+                            }
+                        },
+                        onRetry = { purchase = Purchase.Review(state.item) },
+                        onClose = { purchase = null },
+                        onExplorer = { sig -> runCatching { startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(Chain.explorerUrl(sig)))) } },
+                    )
+                }
+
                 // Adding a wallet is a sheet over the Wallets screen, not a page that replaces it.
                 picker?.let { apps ->
                     Tray(onClose = { picker = null }) {
                         Spacer(Modifier.height(Space.lead))
-                        WalletPicker(apps, onPick = { app -> picker = null; linkWallet(app) })
+                        AddWalletFlow(apps, onPick = { app -> picker = null; linkWallet(app) })
                     }
                 }
 
@@ -3438,8 +3517,15 @@ private fun RechargeSection(
     onFind: (String) -> Unit,
     /** Everything bought before, so the screen can say what was chosen for this number last. */
     past: List<Orders.Order>,
-    onBuy: (Shop.Product, String, String) -> Unit,
+    /** Product, value, the number as +91…, and what the network publishes about the plan, if known. */
+    onBuy: (Shop.Product, String, String, Plans.Extra?) -> Unit,
 ) {
+    // What the network itself says about its plans, where the server can read it (Jio today).
+    // It only describes: an empty list just means the plans are drawn the plain way.
+    val operatorKey = operator?.id?.let { if ("jio" in it) "jio" else null }
+    val catalogue by produceState(emptyList<Plans.Extra>(), operatorKey) {
+        value = operatorKey?.let { ServerClient.planCatalogue(it) } ?: emptyList()
+    }
     // Only the products that actually credit a number. The Phone section also carries eSIMs
     // and Viber credit, which are not recharges and would only be in the way here.
     val operators = remember(section) { section.products.filter { it.isMobileRecharge } }
@@ -3497,7 +3583,7 @@ private fun RechargeSection(
                 Text("Recent recharges", color = D.Black, style = Type.heading)
                 Spacer(Modifier.height(Space.lead))
                 val cardShape = RoundedCornerShape(22.dp)
-                Column(Modifier.fillMaxWidth().clip(cardShape).border(1.5.dp, D.Line, cardShape)) {
+                Column(Modifier.fillMaxWidth().clip(cardShape).background(PLAN_WASH).border(1.5.dp, PLAN_EDGE, cardShape)) {
                     recents.forEachIndexed { i, o ->
                         val n = o.recipient!!.removePrefix("+91")
                         val mark = operatorMark(o.name)
@@ -3573,7 +3659,7 @@ private fun RechargeSection(
             // One card for the whole question "who, on what, and what next": the number and its
             // network with the one way to disagree, what this number bought last time, and the
             // small data top-ups that people reach for when they have run out mid-day.
-            Spacer(Modifier.height(Space.section))
+            Spacer(Modifier.height(8.dp))
             val symbol = symbolFor(chosen.currency)
             val headPlans = remember(chosen.id) {
                 chosen.packages.ifEmpty { chosen.values.map { Shop.Package(it, it.toIntOrNull() ?: 0) } }
@@ -3614,7 +3700,9 @@ private fun RechargeSection(
                         Text(
                             "Change", color = D.BlueInk, style = Type.caption,
                             textDecoration = androidx.compose.ui.text.style.TextDecoration.Underline,
-                            modifier = Modifier.clickable { picking = true }.padding(vertical = 8.dp),
+                            // No tall padding here: it made this line taller than the number above
+                            // it, so the two lines sat off-centre against the logo.
+                            modifier = Modifier.clickable { picking = true }.padding(vertical = 2.dp),
                         )
                     }
                 }
@@ -3631,16 +3719,21 @@ private fun RechargeSection(
                 listOfNotNull(again, data, fiveG).distinctBy { it.value }.take(2)
             }
             if (picks.isNotEmpty() && e164 != null) {
-                Spacer(Modifier.height(Space.section))
+                Spacer(Modifier.height(PLAN_GAP))
                 Text("Suggested plans", color = D.Black, style = Type.heading)
                 Spacer(Modifier.height(Space.lead))
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                // One height for both: the row is as tall as its taller card, and each card fills it.
+                Row(
+                    Modifier.fillMaxWidth().height(androidx.compose.foundation.layout.IntrinsicSize.Min),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
                     picks.forEach { pack ->
                         val d = Plans.of(pack.value)
                         val shape = RoundedCornerShape(18.dp)
                         Column(
-                            Modifier.weight(1f).clip(shape).border(1.5.dp, D.Line, shape)
-                                .clickable { onBuy(chosen, pack.value, e164) }.padding(14.dp),
+                            Modifier.weight(1f).fillMaxHeight().clip(shape).background(PLAN_WASH).border(1.5.dp, PLAN_EDGE, shape)
+                                .clickable { onBuy(chosen, pack.value, e164, Plans.extrasFor(pack.value, pack.amount, catalogue).firstOrNull()) }
+                                .padding(14.dp),
                         ) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text(currencyStyled("$symbol${pack.price}"), color = D.Black, style = Type.title.figure(), modifier = Modifier.weight(1f))
@@ -3656,7 +3749,7 @@ private fun RechargeSection(
                             Spacer(Modifier.height(4.dp))
                             Text(
                                 listOfNotNull(d.data, d.validity?.replaceFirstChar { it.uppercase() }).joinToString(" • ").ifEmpty { pack.value },
-                                color = D.Black, style = Type.body, maxLines = 3,
+                                color = D.Black, style = Type.body, maxLines = 2, overflow = TextOverflow.Ellipsis,
                             )
                         }
                     }
@@ -3706,15 +3799,21 @@ private fun RechargeSection(
                 Text("Pick a network to see what it sells.", color = D.Black, style = Type.body)
             }
         } else {
-            Spacer(Modifier.height(Space.section))
+            Spacer(Modifier.height(PLAN_GAP))
             val plans = remember(chosen.id) {
                 chosen.packages.ifEmpty { chosen.values.map { Shop.Package(it, it.toIntOrNull() ?: 0) } }
                     .sortedBy { it.amount }
             }
-            Text(
-                if (chosen.sellsPlans) "PLANS" else "TOP-UP",
-                color = D.Quiet, style = Type.micro,
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    if (chosen.sellsPlans) "PLANS" else "TOP-UP",
+                    color = D.Quiet, style = Type.micro, modifier = Modifier.weight(1f),
+                )
+                // Who sells every recharge on this page.
+                HiIcon(Hi.Info, D.Quiet, 14.dp)
+                Spacer(Modifier.width(6.dp))
+                Text("Sold by Bitrefill", color = D.Quiet, style = Type.micro)
+            }
             if (!chosen.sellsPlans) {
                 Spacer(Modifier.height(Space.lead))
                 // Two things said plainly rather than left to be discovered.
@@ -3751,6 +3850,19 @@ private fun RechargeSection(
                 Spacer(Modifier.height(12.dp))
             }
             val shelved = remember(chosen.id) { plans.associateWith { Plans.shelves(it.value) } }
+            // What the network publishes about each plan sold here, matched on price and checked.
+            val extraOf = remember(chosen.id, catalogue) {
+                plans.associateWith { Plans.extrasFor(it.value, it.amount, catalogue) }
+            }
+            // The network's own shelves are used once most plans have a description; until then
+            // (or for a network with no catalogue) the shelves are read off the plan's own line.
+            val described = extraOf.values.count { it.isNotEmpty() }
+            val useNetwork = described > 0 && described * 2 >= plans.size
+            val netTabs = remember(extraOf) {
+                catalogue.map { it.category }.distinct().filter { c -> extraOf.values.any { l -> l.any { it.category == c } } }
+            }
+            var netTab by rememberSaveable(chosen.id) { mutableStateOf<String?>(null) }
+
             val validityShelves = setOf(Plans.Shelf.Short, Plans.Shelf.Month, Plans.Shelf.Quarter, Plans.Shelf.Yearly)
             val present = remember(shelved) {
                 Plans.Shelf.entries.filter { sh -> shelved.values.any { sh in it } }
@@ -3778,27 +3890,27 @@ private fun RechargeSection(
                     }
                 }
             }
-            if (tabs.size > 1) {
-                // Underlined tabs, not pills: this row switches the LIST, where the chips above
-                // only narrow it.
-                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(22.dp)) {
-                    tabs.forEach { t ->
-                        val sel = shelf == t
-                        Column(Modifier.clickable { shelf = t }.heightIn(min = 44.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                            Spacer(Modifier.height(10.dp))
-                            Text(t.label, color = if (sel) D.Black else D.Quiet, style = if (sel) Type.heading else Type.body)
-                            Spacer(Modifier.height(8.dp))
-                            Box(Modifier.height(3.dp).width(if (sel) 28.dp else 0.dp).background(D.Blue, RoundedCornerShape(2.dp)))
-                        }
-                    }
+            // Underlined tabs, not pills: this row switches the LIST, where the chips above only
+            // narrow it. The names are the network's own shelves when it publishes them.
+            val tabLabels: List<Pair<String, () -> Unit>> =
+                if (useNetwork) listOf("All" to { netTab = null }) + netTabs.map { c -> Plans.tabName(c) to { netTab = c } }
+                else tabs.map { t -> t.label to { shelf = t } }
+            val tabOn: (Int) -> Boolean = { i ->
+                if (useNetwork) (if (i == 0) netTab == null else netTabs.getOrNull(i - 1) == netTab) else tabs.getOrNull(i) == shelf
+            }
+            if (tabLabels.size > 1) {
+                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    tabLabels.forEachIndexed { i, (label, pick) -> PlanTab(label, tabOn(i), pick) }
                 }
-                Spacer(Modifier.height(10.dp))
+                Spacer(Modifier.height(12.dp))
             }
 
             val ready = e164 != null
-            val shown = plans.filter {
-                Plans.matches(query, it.value, it.amount) && shelf in (shelved[it] ?: emptySet()) &&
-                    (length == null || length in (shelved[it] ?: emptySet()))
+            val shown = plans.filter { p ->
+                Plans.matches(query, p.value, p.amount) &&
+                    (length == null || length in (shelved[p] ?: emptySet())) &&
+                    (if (useNetwork) netTab == null || extraOf[p].orEmpty().any { it.category == netTab }
+                    else shelf in (shelved[p] ?: emptySet()))
             }
             if (shown.isEmpty()) {
                 Text(
@@ -3810,47 +3922,68 @@ private fun RechargeSection(
             val planShape = RoundedCornerShape(20.dp)
             shown.forEach { pack ->
                 val detail = remember(pack.value) { Plans.of(pack.value) }
-                val perks = remember(pack.value) { Plans.benefits(pack.value) }
+                // The row for the shelf being looked at, so a plan on two shelves shows its own.
+                val ex = extraOf[pack].orEmpty().let { l -> l.firstOrNull { it.category == netTab } ?: l.firstOrNull() }
+                // The apps bundled with the plan: the network's own list where there is one, else
+                // the ones named in the shop's line, which come without pictures.
+                val perks = ex?.subscriptions?.takeIf { it.isNotEmpty() }
+                    ?: remember(pack.value) { Plans.benefits(pack.value).map { Plans.Sub(it, null) } }
+                val tag = ex?.tag?.takeIf { it.isNotBlank() } ?: if (detail.fast) "True 5G" else null
                 Column(
                     Modifier.fillMaxWidth().padding(bottom = 12.dp).clip(planShape)
-                        .border(1.5.dp, D.Line, planShape)
-                        .clickable(enabled = ready) { onBuy(chosen, pack.value, e164!!) }
-                        .padding(16.dp),
+                        .background(PLAN_WASH).border(1.5.dp, PLAN_EDGE, planShape)
+                        .clickable(enabled = ready) { onBuy(chosen, pack.value, e164!!, ex) },
                 ) {
-                    if (detail.fast || "unlimited" in pack.value.lowercase()) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            if (detail.fast) PlanPill("5G")
-                            if ("unlimited" in pack.value.lowercase()) PlanPill("Unlimited")
-                        }
-                        Spacer(Modifier.height(10.dp))
+                    // The plan's own headline, flush in the top corner like a tab on a folder.
+                    if (tag != null) {
+                        Text(
+                            tag, color = D.Black, style = Type.micro, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.clip(RoundedCornerShape(bottomEnd = 12.dp)).background(D.Highlight)
+                                .padding(horizontal = 14.dp, vertical = 6.dp),
+                        )
                     }
-                    Row(verticalAlignment = Alignment.Top) {
-                        Column(Modifier.width(96.dp)) {
-                            Text(
-                                currencyStyled("$symbol${pack.price}"),
-                                color = if (ready) D.Black else D.Quiet, style = Type.title.figure(),
-                            )
-                            Plans.perDay(pack.amount, detail.days, symbol)?.let {
-                                Text(currencyStyled(it), color = D.Quiet, style = Type.caption.figure())
+                    Column(Modifier.padding(start = 16.dp, end = 12.dp, top = if (tag != null) 12.dp else 16.dp, bottom = 16.dp)) {
+                        // One way in: the whole card opens the plan, and the arrow says so.
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.width(98.dp)) {
+                                Text(
+                                    currencyStyled("$symbol${pack.price}"),
+                                    color = if (ready) D.Black else D.Quiet, style = Type.title.figure(), maxLines = 1,
+                                )
+                                Plans.perDay(pack.amount, detail.days, symbol)?.let {
+                                    Text(currencyStyled(it), color = D.Quiet, style = Type.caption.figure(), maxLines = 1)
+                                }
+                            }
+                            Box(Modifier.width(1.5.dp).height(40.dp).background(PLAN_EDGE))
+                            Spacer(Modifier.width(14.dp))
+                            val validity = ex?.validity?.takeIf { it.isNotBlank() } ?: detail.validity?.replaceFirstChar { c -> c.uppercase() }
+                            val data = ex?.data?.takeIf { it.isNotBlank() } ?: detail.data
+                            if (validity != null || data != null) {
+                                Labelled("Validity", validity ?: "-", Modifier.width(92.dp))
+                                // A top-up buys talktime, not data: the same column, named for what it holds.
+                                val talktime = "talktime" in pack.value.lowercase() || "top-up" in pack.value.lowercase()
+                                Labelled(if (talktime) "Talktime" else "Data", data ?: "-", Modifier.weight(1f))
+                            } else {
+                                Text(pack.value, color = D.Black, style = Type.body, modifier = Modifier.weight(1f))
+                            }
+                            Box(Modifier.size(32.dp).clip(CircleShape).background(D.White), contentAlignment = Alignment.Center) {
+                                HiIcon(Hi.ArrowRight, if (ready) D.BlueInk else D.Quiet, 18.dp)
                             }
                         }
-                        if (detail.validity != null || detail.data != null) {
-                            detail.validity?.let { Labelled("Validity", it.replaceFirstChar { c -> c.uppercase() }, Modifier.width(88.dp)) }
-                            detail.data?.let { Labelled("Data", it, Modifier.weight(1f)) }
-                        } else {
-                            Text(pack.value, color = D.Quiet, style = Type.caption, modifier = Modifier.weight(1f))
-                        }
-                        HiIcon(Hi.ArrowUpRight, if (ready) D.BlueInk else D.Quiet, 20.dp)
-                    }
-                    if (perks.isNotEmpty()) {
                         Spacer(Modifier.height(12.dp))
-                        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            perks.forEach { PlanPill(it, outlined = true) }
+                        Box(Modifier.fillMaxWidth().height(1.5.dp).background(PLAN_EDGE))
+                        Spacer(Modifier.height(10.dp))
+                        // The important things, one to a line and lined up, instead of the network's
+                        // whole description run together.
+                        val lines = remember(pack.value, ex) { planSummary(ex, pack.value) }
+                        lines.take(2).forEach { BulletLine(it, maxLines = 1) }
+                        if (lines.size > 2) {
+                            Text("+${lines.size - 2} more", color = D.Quiet, style = Type.caption, modifier = Modifier.padding(start = 14.dp, top = 2.dp))
                         }
-                    }
-                    if (detail.validity != null || detail.data != null) {
-                        Spacer(Modifier.height(Space.tight))
-                        Text(pack.value, color = D.Quiet, style = Type.caption)
+                        if (perks.isNotEmpty()) {
+                            Spacer(Modifier.height(12.dp))
+                            SubscriptionIcons(perks)
+                        }
                     }
                 }
             }
@@ -4408,6 +4541,22 @@ private fun TxnRow(t: History.Txn, onFile: (History.Spend) -> Unit = {}, onOpen:
                 )
                 t.spend != null -> CategoryIcon(t.spend, ICON_BOX)
                 else -> AddCategory(enabled = fileable) { asking = true }
+            }
+            // Where their name comes from, as a small mark on the face: the Seeker mark for a
+            // .skr name (so they hold a Genesis Token), the name service's for .sol, AirPay's own
+            // for .air. The face keeps their initial and colour, so two .skr people still differ.
+            val isPerson = t.who == History.Who.PERSON || (t.who == History.Who.ADDRESS && t.incoming)
+            val named = if (!isPerson) null else {
+                val ctx = LocalContext.current
+                t.title.takeIf { registryOf(it) != null }
+                    ?: t.address?.let { Identity.domain(ctx, it) }?.takeIf { registryOf(it) != null }
+            }
+            val busyBadge = t.state == History.State.CONFIRMING || t.state == History.State.PREPARING
+            if (named != null && !busyBadge) {
+                Box(
+                    Modifier.align(Alignment.BottomEnd).offset(x = 3.dp, y = 3.dp)
+                        .size(22.dp).clip(CircleShape).background(D.White).padding(2.dp),
+                ) { RegistryMark(named, 18.dp) }
             }
             // The in-progress badge, on the icon's bottom end corner and pushed 2dp outside it.
             // Finished rows carry none — a badge on everything says nothing.
@@ -5196,5 +5345,488 @@ private fun operatorLogoRes(product: String): Int? {
         "vodafone" in p || p.startsWith("vi ") || p == "vi" || "idea" in p -> R.drawable.net_vi
         "bsnl" in p -> R.drawable.net_bsnl
         else -> null
+    }
+}
+
+
+/**
+ * One purchase from the shop, as the four things it can be: about to be paid, being paid, paid,
+ * or stopped. It has a sheet of its own ([PurchaseSheet]) because each of those used to be a line
+ * of text pushed onto the top of the page, where it looked like a log entry and not a receipt.
+ */
+internal sealed interface Purchase {
+    val item: Item
+
+    /** What is being bought. [phone] is the number a recharge credits, as +91…; null otherwise. */
+    data class Item(
+        val product: Shop.Product, val value: String, val category: String, val phone: String?,
+        /** What the network publishes about this plan, when the server could read it. */
+        val extra: Plans.Extra? = null,
+    )
+
+    data class Review(override val item: Item) : Purchase
+    /** [price] is the invoice's own figure once there is one: "1.21 USDC". */
+    data class Working(
+        override val item: Item, val text: String,
+        val payWith: Shop.PayWith = Shop.PayWith.USDC, val price: String? = null,
+    ) : Purchase
+    data class Done(
+        override val item: Item, val paid: String, val signature: String, val invoiceId: String,
+        val delivered: Boolean = false,
+    ) : Purchase
+    data class Problem(override val item: Item, val title: String, val detail: String) : Purchase
+}
+
+@Composable
+private fun PurchaseSheet(
+    state: Purchase,
+    onPay: (Shop.PayWith, Shop.Invoice?) -> Unit,
+    quote: suspend (Shop.PayWith) -> Shop.Invoice?,
+    sponsor: suspend () -> Chain.Sponsor?,
+    have: (Shop.PayWith) -> Long?,
+    onRetry: () -> Unit,
+    onClose: () -> Unit,
+    onExplorer: (String) -> Unit,
+) {
+    val item = state.item
+    val name = item.product.name.removeSuffix(" India").removeSuffix(" Bundles")
+    val recharge = item.phone != null
+    val symbol = symbolFor(item.product.currency)
+    // "₹500 top-up" for a bare amount, the plan's own words for a plan.
+    val what = item.value.toDoubleOrNull()?.let { "$symbol${it.toLong()}" + if (recharge) " top-up" else "" } ?: item.value
+    val pack = item.product.packages.firstOrNull { it.value == item.value }
+
+    // Not dismissible mid-payment: closing the sheet would not stop the payment, only hide it.
+    Tray(onClose = onClose, dismissible = state !is Purchase.Working) {
+        Spacer(Modifier.height(Space.lead))
+        val logo = if (recharge) operatorLogoRes(item.product.name) else null
+        // What it is paid in. Kept by the sheet, so it survives a failed try and "Try again".
+        var chosenPay by remember { mutableStateOf(Shop.PayWith.USDC) }
+        val working = state as? Purchase.Working
+        if (state is Purchase.Review || working != null) {
+            // The review reads like a receipt written in advance: what it is, what it gives, what
+            // comes with it, the small print, and one button that says the amount.
+            //
+            // Paying keeps this same layout. It used to swap to a spinner page, then swap its words
+            // twice (price, approve), which read as the sheet flickering. Now only the button and
+            // the "You pay" line change.
+            val payWith = working?.payWith ?: chosenPay
+            val ex = item.extra
+            val price = pack?.let { "$symbol${it.price}" }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    if (recharge && price != null) "$price plan details" else if (price != null && item.value.toDoubleOrNull() != null) "$price $name" else name,
+                    color = D.Black, style = Type.title, modifier = Modifier.weight(1f), maxLines = 2, overflow = TextOverflow.Ellipsis,
+                )
+                // No way out while it is being paid: closing would hide the payment, not stop it.
+                if (working == null) Box(
+                    Modifier.size(44.dp).clip(CircleShape).clickable(onClick = onClose),
+                    contentAlignment = Alignment.Center,
+                ) { HiIcon(Hi.Close, D.Black, 22.dp, contentDescription = "Close") }
+                else Spacer(Modifier.size(44.dp))
+            }
+            if (recharge) {
+                Spacer(Modifier.height(Space.tight))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (logo != null) {
+                        Image(painterResource(logo), null, Modifier.size(22.dp).clip(CircleShape), contentScale = ContentScale.Crop)
+                        Spacer(Modifier.width(8.dp))
+                    }
+                    Text("$name  ·  ${item.phone!!.replace("+91", "+91 ")}", color = D.Quiet, style = Type.caption)
+                }
+            }
+            Spacer(Modifier.height(Space.lead))
+
+            // Everything between the title and the button scrolls, so a plan with a long list of
+            // benefits never pushes the button off the screen.
+            Column(Modifier.heightIn(max = 460.dp).verticalScroll(rememberScrollState())) {
+                val detail = Plans.of(item.value)
+                val validity = ex?.validity?.takeIf { it.isNotBlank() } ?: detail.validity?.replaceFirstChar { it.uppercase() }
+                val data = ex?.data?.takeIf { it.isNotBlank() } ?: detail.data
+                if (validity != null || data != null) {
+                    Row(Modifier.fillMaxWidth()) {
+                        validity?.let { SheetStat("Validity", it, Modifier.weight(1f)) }
+                        data?.let {
+                            val talktime = "talktime" in item.value.lowercase() || "top-up" in item.value.lowercase()
+                            SheetStat(if (talktime) "Talktime" else "Data", it, Modifier.weight(1f))
+                        }
+                    }
+                    Spacer(Modifier.height(Space.lead))
+                    RowLine()
+                } else {
+                    Text(what, color = D.Black, style = Type.body)
+                    Spacer(Modifier.height(Space.lead))
+                    RowLine()
+                }
+
+                // What comes with the plan, each with its own picture.
+                if (ex != null && ex.subscriptions.isNotEmpty()) {
+                    Spacer(Modifier.height(Space.lead))
+                    Text("Additional benefits", color = D.Black, style = Type.heading)
+                    val loader = svgCapable()
+                    ex.subscriptions.forEachIndexed { i, sub ->
+                        Row(Modifier.fillMaxWidth().padding(vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                            val shape = RoundedCornerShape(10.dp)
+                            Box(
+                                Modifier.size(40.dp).clip(shape).background(D.White).border(1.dp, PLAN_EDGE, shape),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                var loaded by remember(sub.icon) { mutableStateOf(false) }
+                                if (!loaded) Text(sub.title.take(1).uppercase(), color = D.Quiet, style = Type.caption)
+                                if (sub.icon != null) {
+                                    coil.compose.AsyncImage(
+                                        model = sub.icon, contentDescription = null, imageLoader = loader,
+                                        modifier = Modifier.fillMaxSize().padding(3.dp), contentScale = ContentScale.Fit,
+                                        onSuccess = { loaded = true },
+                                    )
+                                }
+                            }
+                            Spacer(Modifier.width(Space.inline))
+                            Text(sub.title, color = D.Black, style = Type.body, modifier = Modifier.weight(1f))
+                        }
+                        if (i < ex.subscriptions.lastIndex) RowLine()
+                    }
+                    RowLine()
+                }
+
+                // The plan in the network's own words, set out so it can be read down a column:
+                // the facts as label and value, then each point of the description on its own line.
+                val facts = ex?.details.orEmpty()
+                val points = Plans.points(ex?.description?.removePrefix("Benefits:"))
+                val notes = ex?.notes.orEmpty()
+                if (facts.isNotEmpty() || points.isNotEmpty() || notes.isNotEmpty()) {
+                    Spacer(Modifier.height(Space.lead))
+                    Text("Plan details", color = D.Black, style = Type.heading)
+                    Spacer(Modifier.height(Space.tight))
+                    facts.forEach { (label, value) -> PurchaseFact(label, value) }
+                    if (points.isNotEmpty()) {
+                        Spacer(Modifier.height(Space.inline))
+                        points.forEach { BulletLine(it, color = D.Black, style = Type.body) }
+                    }
+                    notes.forEach { note ->
+                        // A note is often a heading followed by its own list.
+                        val parts = Plans.points(note)
+                        Spacer(Modifier.height(Space.inline))
+                        if (parts.size > 1) {
+                            Text(parts.first().trimEnd(':'), color = D.Black, style = Type.body)
+                            Spacer(Modifier.height(Space.tight))
+                            parts.drop(1).forEach { BulletLine(it) }
+                        } else {
+                            BulletLine(note)
+                        }
+                    }
+                }
+                Spacer(Modifier.height(Space.lead))
+            }
+
+            RowLine()
+            Spacer(Modifier.height(Space.inline))
+
+            // The shop's own price in each currency, asked for as soon as one is chosen, so the
+            // figure on this sheet is the figure that is paid and not a guess at it.
+            val quotes = remember { mutableStateMapOf<Shop.PayWith, Shop.Invoice>() }
+            var asking by remember { mutableStateOf(false) }
+            LaunchedEffect(payWith, working == null) {
+                if (working != null || quotes[payWith]?.expired == false) return@LaunchedEffect
+                asking = true
+                try { quote(payWith)?.let { quotes[payWith] = it } } finally { asking = false }
+            }
+            val quoted = quotes[payWith]?.takeIf { !it.expired }
+            val solRate by produceState<Double?>(initialValue = null) { value = Prices.solUsd() }
+            // Base units this costs in [p]: the quote when there is one, else worked out from the
+            // listed dollar price. The second is only for checking the wallet, never shown as the price.
+            fun cost(p: Shop.PayWith): Long? = quotes[p]?.amount ?: pack?.usdPrice?.toBigDecimalOrNull()?.let { usd ->
+                when (p) {
+                    Shop.PayWith.USDC -> usd.movePointRight(p.decimals).toLong()
+                    Shop.PayWith.SOL -> solRate?.takeIf { it > 0 }?.let {
+                        usd.divide(BigDecimal.valueOf(it), 9, java.math.RoundingMode.UP).movePointRight(9).toLong()
+                    }
+                }
+            }
+            // No SOL at all for a network fee. Then AirPay's fee wallet pays it and takes the
+            // same back in USDC, which is asked about only in that case.
+            val noSol = have(Shop.PayWith.SOL)?.let { it < Chain.FEE_HEADROOM_LAMPORTS } == true
+            val helper by produceState<Chain.Sponsor?>(initialValue = null, noSol) {
+                value = if (noSol) sponsor() else null
+            }
+            val covered = payWith == Shop.PayWith.USDC && noSol && helper != null
+            // Whether the wallet can pay in [p]. Null means not known yet, which blocks nothing.
+            fun canPay(p: Shop.PayWith): Boolean? {
+                val need = cost(p) ?: return null
+                val held = have(p) ?: return null
+                return held >= need + when {
+                    p == Shop.PayWith.SOL -> Chain.FEE_HEADROOM_LAMPORTS
+                    noSol -> helper?.feeUnits ?: 0L
+                    else -> 0L
+                }
+            }
+            val other = Shop.PayWith.entries.first { it != payWith }
+            val short = working == null && canPay(payWith) == false
+            // A USDC payment needs a little SOL for the network fee, unless that is covered.
+            val noFee = working == null && !short && payWith == Shop.PayWith.USDC && noSol && helper == null
+
+            // What it is paid in. The shop prices the same order in either, so choosing SOL costs
+            // the same value and nothing is swapped.
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Pay with", color = D.Black, style = Type.body, modifier = Modifier.weight(1f))
+                Shop.PayWith.entries.forEach { p ->
+                    val on = p == payWith
+                    val shape = RoundedCornerShape(999.dp)
+                    Row(
+                        Modifier.padding(start = 8.dp).clip(shape)
+                            .background(if (on) D.Black else Color.Transparent)
+                            .border(1.5.dp, if (on) D.Black else D.Line, shape)
+                            .clickable(enabled = working == null) { chosenPay = p }
+                            .heightIn(min = 40.dp).padding(start = 8.dp, end = 16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Image(
+                            painterResource(if (p == Shop.PayWith.USDC) R.drawable.token_usdc else R.drawable.token_sol),
+                            contentDescription = null, modifier = Modifier.size(24.dp).clip(CircleShape),
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(p.symbol, color = if (on) D.White else D.Black, style = Type.caption)
+                    }
+                }
+            }
+            Spacer(Modifier.height(Space.inline))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("You pay", color = D.Black, style = Type.body, modifier = Modifier.weight(1f))
+                val figure = working?.price ?: quoted?.shown
+                when {
+                    figure != null -> Text(figure, color = D.Black, style = Type.heading.figure())
+                    asking || working != null -> androidx.compose.material3.CircularProgressIndicator(
+                        color = D.Quiet, strokeWidth = 2.dp, modifier = Modifier.size(18.dp))
+                    else -> Text("Shown when you proceed", color = D.Quiet, style = Type.caption)
+                }
+            }
+            if (covered) {
+                // The fee as its own line, in the money the buyer actually holds. They are never
+                // asked to go and find SOL.
+                Spacer(Modifier.height(Space.tight))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Network fee", color = D.Quiet, style = Type.caption, modifier = Modifier.weight(1f))
+                    Text(
+                        Money.token(BigDecimal.valueOf(helper!!.feeUnits, Shop.USDC_DECIMALS), "USDC"),
+                        color = D.Quiet, style = Type.caption,
+                    )
+                }
+            }
+            // Said here, before anything is ordered: the wallet's balance is already known, so
+            // there is no reason to let somebody press the button and be refused afterwards.
+            if (short || noFee) {
+                Spacer(Modifier.height(Space.inline))
+                val shape = RoundedCornerShape(14.dp)
+                val switch = short && canPay(other) != false
+                Row(
+                    Modifier.fillMaxWidth().clip(shape).background(D.DangerInk.copy(alpha = 0.08f))
+                        .then(if (switch) Modifier.clickable { chosenPay = other } else Modifier)
+                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        when {
+                            noFee -> "You need a little SOL for the network fee."
+                            switch -> "You don't have enough ${payWith.symbol}."
+                            else -> "You don't have enough USDC or SOL for this."
+                        },
+                        color = D.DangerInk, style = Type.caption, modifier = Modifier.weight(1f),
+                    )
+                    if (switch) Text("Pay with ${other.symbol}", color = D.BlueInk, style = Type.caption,
+                        textDecoration = androidx.compose.ui.text.style.TextDecoration.Underline)
+                }
+            }
+            Spacer(Modifier.height(Space.inline))
+            PrimaryButton(
+                working?.text ?: "Proceed with payment",
+                { onPay(chosenPay, quoted) }, Modifier.fillMaxWidth(),
+                enabled = !short && !noFee, loading = working != null,
+            )
+            Spacer(Modifier.height(Space.inline))
+            // Who actually sells this, in one line. Required wherever their catalogue is sold.
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
+                HiIcon(Hi.Info, D.Quiet, 14.dp)
+                Spacer(Modifier.width(6.dp))
+                Text("Sold and delivered by Bitrefill. No AirPay fee.", color = D.Quiet, style = Type.caption, maxLines = 1)
+            }
+            Spacer(Modifier.height(Space.lead))
+            return@Tray
+        }
+
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (logo != null) {
+                Image(
+                    painterResource(logo), contentDescription = null,
+                    modifier = Modifier.size(48.dp).clip(CircleShape), contentScale = ContentScale.Crop,
+                )
+            } else {
+                Box(Modifier.size(48.dp).clip(CircleShape).background(D.Blue), contentAlignment = Alignment.Center) {
+                    Text(name.take(1).uppercase(), color = D.White, style = Type.heading)
+                }
+            }
+            Spacer(Modifier.width(Space.inline))
+            Column(Modifier.weight(1f)) {
+                Text(if (recharge) "$name recharge" else name, color = D.Black, style = Type.heading, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                item.phone?.let { Text(it.replace("+91", "+91 "), color = D.Quiet, style = Type.mono) }
+            }
+        }
+        Spacer(Modifier.height(Space.lead))
+        RowLine()
+
+        when (state) {
+            is Purchase.Review -> Unit   // drawn above
+            is Purchase.Working -> Unit  // drawn above, in the review's own layout
+            is Purchase.Done -> {
+                Spacer(Modifier.height(Space.section))
+                Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Box(Modifier.size(64.dp).clip(CircleShape).background(D.Success), contentAlignment = Alignment.Center) {
+                        HiIcon(Hi.Tick, D.White, 32.dp)
+                    }
+                    Spacer(Modifier.height(Space.lead))
+                    Text("Paid ${state.paid}", color = D.Black, style = Type.title, textAlign = TextAlign.Center)
+                    Spacer(Modifier.height(Space.tight))
+                    Text(
+                        when {
+                            recharge && state.delivered -> "Recharge delivered to ${item.phone}"
+                            recharge -> "Your recharge is on its way to ${item.phone}"
+                            state.delivered -> "Delivered"
+                            else -> "Your code is being prepared. It will open here when it is ready."
+                        },
+                        color = D.Quiet, style = Type.body, textAlign = TextAlign.Center,
+                    )
+                }
+                Spacer(Modifier.height(Space.section))
+                PrimaryButton("Done", onClose, Modifier.fillMaxWidth())
+                TextLink("View on explorer", { onExplorer(state.signature) }, modifier = Modifier.fillMaxWidth())
+            }
+            is Purchase.Problem -> {
+                Spacer(Modifier.height(Space.lead))
+                Text(state.title, color = D.DangerInk, style = Type.heading)
+                Spacer(Modifier.height(Space.tight))
+                Text(state.detail, color = D.Black, style = Type.body)
+                Spacer(Modifier.height(Space.section))
+                PrimaryButton("Try again", onRetry, Modifier.fillMaxWidth())
+                TextLink("Close", onClose, modifier = Modifier.fillMaxWidth())
+            }
+        }
+        Spacer(Modifier.height(Space.lead))
+    }
+}
+
+/** A label over a value, for the two things a plan is chosen on: how long, and how much. */
+@Composable
+private fun SheetStat(label: String, value: String, modifier: Modifier = Modifier) {
+    Column(modifier.padding(end = 12.dp)) {
+        Text(label, color = D.Quiet, style = Type.caption)
+        Spacer(Modifier.height(Space.tight))
+        Text(value, color = D.Black, style = Type.heading)
+    }
+}
+
+/** One labelled fact: the label in a fixed column, the value beside it, so a list of them lines up. */
+@Composable
+private fun PurchaseFact(label: String, value: String) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 5.dp), verticalAlignment = Alignment.Top) {
+        Text(label, color = D.Quiet, style = Type.body, modifier = Modifier.width(150.dp).padding(end = 12.dp))
+        Text(value, color = D.Black, style = Type.body, modifier = Modifier.weight(1f))
+    }
+}
+
+/** One point of a list: a dot in its own narrow column, and the text hanging to the right of it. */
+@Composable
+private fun BulletLine(
+    text: String, color: Color = D.Quiet, style: androidx.compose.ui.text.TextStyle = Type.caption,
+    maxLines: Int = Int.MAX_VALUE,
+) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.Top) {
+        Text("\u2022", color = color, style = style, modifier = Modifier.width(14.dp))
+        Text(text, color = color, style = style, maxLines = maxLines, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+    }
+}
+
+/**
+ * What a plan card says under its figures. Validity and data are already in the columns above, so
+ * this is everything else that matters: the description's own points when it has several, else
+ * the facts it does not repeat (voice, SMS), else the description as it is.
+ */
+private fun planSummary(ex: Plans.Extra?, fallback: String): List<String> {
+    val points = Plans.points(ex?.description?.removePrefix("Benefits:"))
+    if (points.size >= 2) return points
+    val facts = ex?.details.orEmpty()
+        .filterNot { (label, _) -> label.lowercase().let { "validity" in it || "data" in it } }
+        .map { (label, value) -> "$label: $value" }
+    return facts.ifEmpty { points.ifEmpty { listOf(fallback) } }
+}
+
+
+/**
+ * The recharge screens' card ground: the brand blue at a few percent, with an edge a step darker.
+ * A card on white with only a hairline read as empty space; this lifts each plan off the page
+ * without adding a shadow, and the lime tag and the ink still carry on it.
+ */
+/** Between the parts of the plan screen. They are one task, so they sit closer than sections do. */
+private val PLAN_GAP = 20.dp
+private val PLAN_WASH = Color(0xFFF2F8FF)
+private val PLAN_EDGE = Color(0xFFDCEAF9)
+
+/**
+ * One tab over the plan list. The label keeps ONE size and weight whether it is chosen or not, so
+ * choosing a tab never changes its width; only its colour and the bar under it move. The bar is as
+ * wide as the word, which is what it used not to be: a fixed 28dp stub under a label that had just
+ * grown.
+ */
+@Composable
+private fun PlanTab(label: String, selected: Boolean, onPick: () -> Unit) {
+    val ink by androidx.compose.animation.animateColorAsState(if (selected) D.Black else D.Quiet, tween(180), label = "tabInk")
+    val bar by animateFloatAsState(if (selected) 1f else 0f, tween(220, easing = FastOutSlowInEasing), label = "tabBar")
+    Column(
+        Modifier.width(androidx.compose.foundation.layout.IntrinsicSize.Max)
+            .clip(RoundedCornerShape(10.dp))
+            .clickable(remember { MutableInteractionSource() }, indication = null, onClick = onPick)
+            .padding(horizontal = 8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Spacer(Modifier.height(10.dp))
+        Text(label, color = ink, style = Type.body.copy(fontWeight = FontWeight.SemiBold), maxLines = 1)
+        Spacer(Modifier.height(8.dp))
+        Box(
+            Modifier.fillMaxWidth().height(3.dp)
+                .graphicsLayer { scaleX = bar; alpha = bar }
+                .background(D.Blue, RoundedCornerShape(2.dp)),
+        )
+    }
+}
+
+/**
+ * The apps a plan comes with, as their own pictures: up to five, then "+N". A picture that has
+ * not loaded, or an app the network gave no picture for, shows its first letter instead, so the
+ * row never has holes in it.
+ */
+@Composable
+private fun SubscriptionIcons(subs: List<Plans.Sub>) {
+    val loader = svgCapable()
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+        subs.take(5).forEach { sub ->
+            val shape = RoundedCornerShape(10.dp)
+            Box(
+                Modifier.size(36.dp).clip(shape).background(D.White).border(1.dp, PLAN_EDGE, shape)
+                    .semantics { contentDescription = sub.title },
+                contentAlignment = Alignment.Center,
+            ) {
+                // The letter stands in only until the picture is really there. It is then taken
+                // away, because some of these pictures are see-through and it would show behind.
+                var loaded by remember(sub.icon) { mutableStateOf(false) }
+                if (!loaded) Text(sub.title.take(1).uppercase(), color = D.Quiet, style = Type.caption)
+                if (sub.icon != null) {
+                    coil.compose.AsyncImage(
+                        model = sub.icon, contentDescription = null, imageLoader = loader,
+                        modifier = Modifier.fillMaxSize().padding(3.dp),
+                        contentScale = ContentScale.Fit,
+                        onSuccess = { loaded = true },
+                    )
+                }
+            }
+        }
+        if (subs.size > 5) Text("+${subs.size - 5}", color = D.Black, style = Type.body)
     }
 }

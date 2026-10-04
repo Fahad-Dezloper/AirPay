@@ -171,6 +171,36 @@ object ServerClient {
         }
     }
 
+    /** The network's own catalogue for [operator] ("jio"). Empty when there is none, or no answer. */
+    suspend fun planCatalogue(operator: String): List<Plans.Extra> {
+        val o = read("/v1/plans?operator=${URLEncoder.encode(operator, "UTF-8")}") ?: return emptyList()
+        val arr = o.optJSONArray("plans") ?: return emptyList()
+        return (0 until arr.length()).mapNotNull { i ->
+            val p = arr.optJSONObject(i) ?: return@mapNotNull null
+            val amount = p.optInt("amount", 0).takeIf { it > 0 } ?: return@mapNotNull null
+            fun strings(key: String) = p.optJSONArray(key)?.let { a -> (0 until a.length()).map { a.optString(it) }.filter { it.isNotBlank() } }.orEmpty()
+            val details = p.optJSONArray("details")?.let { a ->
+                (0 until a.length()).mapNotNull { j ->
+                    a.optJSONObject(j)?.let { d -> d.optString("label").takeIf { it.isNotBlank() }?.let { it to d.optString("value") } }
+                }
+            }.orEmpty()
+            Plans.Extra(
+                amount = amount, category = p.optString("category"), data = p.optString("data"),
+                validity = p.optString("validity"), tag = p.optString("tag"), description = p.optString("description"),
+                subscriptions = p.optJSONArray("subscriptions")?.let { a ->
+                    (0 until a.length()).mapNotNull { j ->
+                        a.optJSONObject(j)?.let { sub ->
+                            sub.optString("title").takeIf { it.isNotBlank() }?.let { title ->
+                                Plans.Sub(title, sub.optString("icon").takeIf { it.startsWith("https://") })
+                            }
+                        }
+                    }
+                }.orEmpty(),
+                details = details, notes = strings("notes"),
+            )
+        }
+    }
+
     /** `.air` names starting with [prefix], as (name, address). Empty when the server cannot be asked. */
     suspend fun airNames(prefix: String): List<Pair<String, String>> {
         val o = read("/v1/handles?prefix=${URLEncoder.encode(prefix, "UTF-8")}") ?: return emptyList()
@@ -316,6 +346,34 @@ object ServerClient {
      *   cold operator lookup takes about three seconds upstream, and a phone on ordinary wifi
      *   ran past the budget and reported "could not check" for an answer that arrived fine.
      */
+    /**
+     * Who will pay the network fee for a buyer with no SOL, or null when nobody will (the fee
+     * wallet is not set up, is not funded yet, or the server cannot be reached).
+     */
+    suspend fun sponsor(): Chain.Sponsor? {
+        val o = ask("/v1/sponsor", JSONObject()) ?: return null
+        if (!o.optBoolean("enabled")) return null
+        val payer = o.optString("fee_payer").takeIf { PayRequest.isBase58Address(it) } ?: return null
+        val account = o.optString("fee_account").takeIf { PayRequest.isBase58Address(it) } ?: return null
+        // A fee is small by definition. One above ten cents is refused here rather than paid.
+        val units = o.optLong("fee_units", 0L).takeIf { it in 1..100_000 } ?: return null
+        return Chain.Sponsor(payer, account, units)
+    }
+
+    /** Hands over a transaction the buyer signed, for the fee wallet to co-sign and submit. */
+    suspend fun sponsorSubmit(signedTx: ByteArray): Chain.Submitted {
+        val b64 = android.util.Base64.encodeToString(signedTx, android.util.Base64.NO_WRAP)
+        val (code, o) = askRaw("/v1/sponsor/submit", JSONObject().put("tx", b64), timeoutMs = 25_000)
+        o?.optString("signature")?.takeIf { code == 200 && it.length >= 60 }?.let { return Chain.Submitted.Ok(it) }
+        if (code == 0) return Chain.Submitted.Offline
+        return Chain.Submitted.Rejected(when (o?.optString("error")) {
+            "sponsor_limit" -> "Too many payments without SOL today. Add a little SOL to carry on."
+            "rejected" -> "The network refused the payment. Nothing was sent."
+            "not_signed" -> "Your wallet did not sign that. Nothing was sent."
+            else -> "The network fee could not be covered. Nothing was sent."
+        })
+    }
+
     internal suspend fun ask(path: String, body: JSONObject, timeoutMs: Int = 8_000): JSONObject? {
         if (!enabled) return null
         return withContext(Dispatchers.IO) {

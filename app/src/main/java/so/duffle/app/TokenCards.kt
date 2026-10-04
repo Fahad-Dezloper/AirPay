@@ -416,7 +416,7 @@ private fun DrawScope.tip(
  * card, rather than one per card per recomposition.
  */
 @Composable
-private fun svgCapable(): ImageLoader {
+internal fun svgCapable(): ImageLoader {
     val context = LocalContext.current
     return remember(context) {
         ImageLoader.Builder(context)

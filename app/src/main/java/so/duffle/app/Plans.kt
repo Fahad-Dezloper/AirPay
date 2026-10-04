@@ -181,4 +181,73 @@ object Plans {
         Regex("""(\d+)\s*ott apps""").find(l)?.let { out += "${it.groupValues[1]} OTT apps" }
         return out
     }
+
+    /**
+     * What the network itself publishes about a plan: the server reads the network's own
+     * catalogue (`/v1/plans`) and this is one row of it. It only DESCRIBES. What can be bought and
+     * what it costs still come from the shop.
+     */
+    data class Extra(
+        val amount: Int,
+        /** The network's shelf: "Popular Plans", "Data Packs", "Entertainment Plans"… */
+        val category: String,
+        val data: String,
+        val validity: String,
+        /** The network's own one-line pitch for the plan, or blank. */
+        val tag: String,
+        val description: String,
+        /** The apps bundled with the plan, each with the network's own small picture of it. */
+        val subscriptions: List<Sub>,
+        /** Label and value: "Voice" to "Unlimited", "SMS" to "100 SMS/Day". */
+        val details: List<Pair<String, String>>,
+        val notes: List<String>,
+    )
+
+    /** One bundled app: its name, and where its picture is, when the network gave one. */
+    data class Sub(val title: String, val icon: String?)
+
+    private val TOPUP_SHELVES = setOf("top-up voucher", "isd")
+    private val NUMBER = Regex("""\d+""")
+
+    /**
+     * The catalogue rows that describe THIS pack, or none.
+     *
+     * Matched on the price, then checked: two different plans can cost the same (a ₹1000 top-up
+     * and a ₹1000 yearly pack both exist), and a wrong description beside a real price is worse
+     * than none. So a talktime top-up only takes a top-up row, a plan never does, and where both
+     * sides state a number of days they must agree.
+     */
+    fun extrasFor(value: String, amount: Int, all: List<Extra>): List<Extra> {
+        if (amount <= 0) return emptyList()
+        val topup = "talktime" in value.lowercase() || "top-up" in value.lowercase()
+        val days = of(value).days
+        return all.filter { e ->
+            if (e.amount != amount) return@filter false
+            if ((e.category.lowercase() in TOPUP_SHELVES) != topup) return@filter false
+            val theirs = NUMBER.find(e.validity)?.value?.toIntOrNull()
+            // "1 Hour" and "Calendar Month" carry no day count on one side or the other: let through.
+            days == null || theirs == null || !e.validity.lowercase().contains("day") || theirs == days
+        }
+    }
+
+    private val NUMBERED = Regex("""(?:^|\s)\d{1,2}[.)]\s+""")
+
+    /**
+     * A plan's description as separate points.
+     *
+     * The network writes several things into one string: "1. Data 5 GB 2. Select any OTT app…", or
+     * a heading followed by bullets. Shown as one run of text those read as a muddle; split, each
+     * point can sit on its own line with the others lined up under it. A plain sentence comes back
+     * as the one point it is.
+     */
+    fun points(text: String?): List<String> {
+        val t = text?.trim().orEmpty()
+        if (t.isEmpty()) return emptyList()
+        val parts = if ('\u2022' in t) t.split('\u2022') else t.split(NUMBERED)
+        return parts.map { it.trim().trimEnd(',', ';').trim() }.filter { it.length > 1 }
+    }
+
+    /** A shelf name as a tab: "Popular Plans" reads "Popular", "Data Packs" stays as it is. */
+    fun tabName(category: String): String =
+        category.removeSuffix(" Plans").removeSuffix(" Plan").trim().ifBlank { category }
 }
