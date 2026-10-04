@@ -31,6 +31,9 @@ class TapHostApduService : HostApduService() {
     private var ndef: Ndef.Session? = null
     private var inNdefApp = false
     private var servedRequest = false
+    /** Our own AID was selected in this tap. A hand-over is only taken after that. */
+    private var tapSelected = false
+    private val handing = OfflineTx.Assembler()
 
     override fun processCommandApdu(commandApdu: ByteArray?, extras: Bundle?): ByteArray {
         val cmd = commandApdu ?: return Apdu.SW_UNKNOWN_CMD
@@ -45,6 +48,7 @@ class TapHostApduService : HostApduService() {
             }
         }
         if (Apdu.isHello(cmd)) return hello(cmd)
+        if (Apdu.isHand(cmd)) return hand(cmd)
         if (inNdefApp) {
             ndef?.handle(cmd)?.let { out ->
                 // The payload is out once a reader has read past the length prefix.
@@ -65,7 +69,39 @@ class TapHostApduService : HostApduService() {
         return p
     }
 
+    /**
+     * One piece of a payment the other phone signed with no connection. See [OfflineTx].
+     *
+     * Taken only while a screen is holding a request out ([held]): that screen is what checks
+     * the bytes and sends them, and with nobody watching they would be collected for no one.
+     * Nothing here trusts them. They are gathered, capped, and passed on to be checked.
+     */
+    private fun hand(cmd: ByteArray): ByteArray {
+        if (!tapSelected || held == null || (payload as? TapPayload.Request)?.request?.reference != held) {
+            handing.reset()
+            events.tryEmit("hand-over refused, no request on screen")
+            return Apdu.SW_NOT_READY
+        }
+        return when (val step = handing.accept(cmd)) {
+            OfflineTx.Step.More -> Apdu.SW_OK
+            is OfflineTx.Step.Bad -> {
+                Log.i(TAG, "hand-over refused ${step.sw.toHex()}")
+                events.tryEmit("hand-over refused")
+                step.sw
+            }
+            is OfflineTx.Step.Done -> {
+                Log.i(TAG, "hand-over complete, ${step.tx.size}B")
+                events.tryEmit("← took a signed payment (${step.tx.size}B)")
+                Haptics.contact(this)
+                handed.tryEmit(step.tx)
+                Apdu.SW_OK
+            }
+        }
+    }
+
     private fun selectNdefApp(): ByteArray {
+        tapSelected = false
+        handing.reset()
         val p = currentPayload() ?: run {
             // No wallet connected: there is nothing worth handing out, so look like no tag.
             Log.i(TAG, "NDEF select, but no identity yet")
@@ -78,6 +114,8 @@ class TapHostApduService : HostApduService() {
 
     private fun selectTap(): ByteArray {
         inNdefApp = false
+        tapSelected = true
+        handing.reset()
         val p = currentPayload() ?: run {
             Log.i(TAG, "SELECT but nothing to offer")
             events.tryEmit("SELECT, no wallet connected")
@@ -101,6 +139,15 @@ class TapHostApduService : HostApduService() {
         served.tryEmit(p.request)
         // Buzz here, in the service: the instant the request actually left the phone.
         Haptics.contact(this)
+        if (p.request.reference == held) {
+            // A screen is holding this request out and watching the chain for it. "Left the
+            // phone" is not "arrived": if the reader dropped it, withdrawing here would leave the
+            // owner with nothing to tap, and the next tap would get a bare card. The screen
+            // already shows the same reference to anyone who can scan it, so offering it on a
+            // second tap exposes nothing new. It is withdrawn by whoever set [held].
+            picked.tryEmit(p.request)
+            return
+        }
         // One serve, one request. Leaving it pending let the same reference go out on a
         // second tap — observed 21 seconds apart — and two payers would each have paid it.
         pending.value = null
@@ -154,6 +201,8 @@ class TapHostApduService : HostApduService() {
         ndef = null
         inNdefApp = false
         servedRequest = false
+        tapSelected = false
+        handing.reset()
         parted.tryEmit(Unit)
     }
 
@@ -165,6 +214,28 @@ class TapHostApduService : HostApduService() {
 
         /** Emitted once a request has actually been handed to a reader. */
         val served = MutableSharedFlow<PayRequest>(extraBufferCapacity = 8)
+
+        /**
+         * The reference of a request that stays [pending] after it is served, or null.
+         *
+         * Set by a screen that shows the request and watches the chain for it (RequestActivity),
+         * which then owns clearing both this and [pending]: on paid, on cancel, and on leaving.
+         * Any request whose reference is not this one keeps the one-serve rule.
+         */
+        @Volatile var held: String? = null
+
+        /**
+         * Emitted on every tap that reads the [held] request. Unlike [served] it does not mean
+         * the request was withdrawn: it is still on offer, and a second tap gets it again.
+         */
+        val picked = MutableSharedFlow<PayRequest>(extraBufferCapacity = 8)
+
+        /**
+         * A signed payment handed over by a reader that had no connection, whole, for the
+         * [held] request. Unchecked: whoever collects it must run [OfflineTx.check] before
+         * sending it anywhere.
+         */
+        val handed = MutableSharedFlow<ByteArray>(extraBufferCapacity = 4)
 
         /** Emitted when a reader introduced itself with HELLO. */
         val met = MutableSharedFlow<TapCard>(extraBufferCapacity = 8)

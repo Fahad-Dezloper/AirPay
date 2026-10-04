@@ -22,6 +22,8 @@ class TapReader(
     private val onRequest: (PayRequest) -> Unit,
     /** The other phone had no request, only its card: an introduction. */
     private val onCard: (TapCard) -> Unit = {},
+    /** A phone came near and nothing usable was read. One plain sentence, for the screen. */
+    private val onProblem: (String) -> Unit = {},
 ) : NfcAdapter.ReaderCallback {
 
     private val adapter: NfcAdapter? = NfcAdapter.getDefaultAdapter(activity)
@@ -66,10 +68,65 @@ class TapReader(
                     onCard(p.card)
                 }
             }
-            TapExchange.Outcome.NothingToOffer -> onLog("- that phone has no wallet connected yet")
-            is TapExchange.Outcome.Failed -> onLog("✗ ${out.why}")
+            TapExchange.Outcome.NothingToOffer -> {
+                onLog("- that phone has no wallet connected yet")
+                onProblem("That phone has no wallet connected yet.")
+            }
+            is TapExchange.Outcome.Failed -> {
+                onLog("✗ ${out.why}")
+                // A read that failed used to be a log line and nothing else: the sheet went on
+                // waiting as though no phone had ever come near.
+                onProblem(
+                    if (out.why.contains("version", true)) "That phone runs a different AirPay. Update both."
+                    else "Couldn't read that phone. Hold steady and try again."
+                )
+            }
         }
     }
 
     companion object { private const val TAG = "TapReader" }
+}
+
+/**
+ * The reader for the second tap of a payment signed with no connection.
+ *
+ * A reader of its own rather than a mode of [TapReader], so the read path cannot be changed by
+ * accident. It does one thing: every phone that comes near is offered [tx], and [onResult] is
+ * told how that went. Called on a binder thread, like every reader callback.
+ */
+class DeliverReader(
+    private val activity: Activity,
+    private val tx: ByteArray,
+    private val reference: String,
+    private val onLog: (String) -> Unit,
+    private val onResult: (TapExchange.Delivery) -> Unit,
+) : NfcAdapter.ReaderCallback {
+
+    private val adapter: NfcAdapter? = NfcAdapter.getDefaultAdapter(activity)
+
+    fun start() {
+        // The same flags as TapReader, for the same reasons.
+        val flags = NfcAdapter.FLAG_READER_NFC_A or
+            NfcAdapter.FLAG_READER_SKIP_NDEF_CHECK or
+            NfcAdapter.FLAG_READER_NO_PLATFORM_SOUNDS
+        val extras = Bundle().apply { putInt(NfcAdapter.EXTRA_READER_PRESENCE_CHECK_DELAY, 500) }
+        adapter?.enableReaderMode(activity, this, flags, extras)
+        onLog("deliver reader armed")
+    }
+
+    fun stop() {
+        adapter?.disableReaderMode(activity)
+        onLog("deliver reader off")
+    }
+
+    override fun onTagDiscovered(tag: Tag?) {
+        val t = tag ?: return
+        val out = TapExchange.deliver(t, tx, reference, onLog)
+        onLog(when (out) {
+            TapExchange.Delivery.Done -> "✓ handed over"
+            is TapExchange.Delivery.NotThem -> "- ${out.why}"
+            is TapExchange.Delivery.Failed -> "✗ ${out.why}"
+        })
+        onResult(out)
+    }
 }

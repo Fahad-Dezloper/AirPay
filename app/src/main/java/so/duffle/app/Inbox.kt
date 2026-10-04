@@ -40,7 +40,8 @@ class Inbox(context: Context) {
     fun add(request: PayRequest): Boolean {
         val all = all()
         if (all.any { it.request.reference == request.reference }) return false
-        save(listOf(Item(request, System.currentTimeMillis())) + all)
+        // Without its blockhash: that is good for a minute, and this row is kept for days.
+        save(listOf(Item(request.copy(blockhash = null), System.currentTimeMillis())) + all)
         return true
     }
 

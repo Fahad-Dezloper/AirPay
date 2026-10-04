@@ -56,6 +56,13 @@ data class PayRequest(
     val linkExpiry: Long = 0,
     /** base64, unpadded, 64 bytes of ed25519. */
     val linkSignature: String? = null,
+    /**
+     * A recent blockhash from the asking phone, or null. Only a hint, and only for a payer with
+     * no connection: it lets that phone build and sign without reaching Solana, then hand the
+     * signed payment back over NFC for the asking phone to send. A payer who is online ignores
+     * it and fetches their own, so the request itself still never expires.
+     */
+    val blockhash: String? = null,
 ) {
     val isSol get() = token == "SOL"
     /** The SPL mint, or null for SOL. */
@@ -89,6 +96,7 @@ data class PayRequest(
         if (owner != null && linkSignature != null) {
             put("o", owner); put("x", linkExpiry); put("z", linkSignature)
         }
+        blockhash?.let { put("h", it) }
     }.toString().toByteArray(Charsets.UTF_8)
 
     /**
@@ -145,6 +153,9 @@ data class PayRequest(
         // deadline; v4 drops it, because the payer fetches a fresh one only when they press Pay
         // and a request is otherwise good forever. A v3 phone would still be running timers
         // against a hash this side never sends, so it is refused rather than half-understood.
+        // The optional "h" added since is not that deadline coming back: it is used only by a
+        // payer with no connection (see [blockhash]), and a phone that does not know the key
+        // ignores it, so the version stays where it is.
         const val WIRE_VERSION = 4
 
         /** A sanity ceiling. A tap should never carry a life-changing sum by accident. */
@@ -194,6 +205,9 @@ data class PayRequest(
                 owner = if (o.has("o")) o.getString("o") else null,
                 linkExpiry = o.optLong("x"),
                 linkSignature = if (o.has("z")) o.getString("z") else null,
+                // A hint, so an unreadable one is dropped, not refused: the request is still
+                // payable by anyone with a connection.
+                blockhash = o.optString("h").takeIf { isBase58Address(it) },
             )
         } catch (e: Exception) {
             null
@@ -412,6 +426,14 @@ object Apdu {
 
     const val INS_HELLO: Byte = 0x10
 
+    /**
+     * Reader → card, after SELECT: one piece of a signed payment, for the asking phone to send.
+     * P1 is the piece's index from zero and P2 is 1 on the last piece. See [OfflineTx].
+     */
+    const val INS_HAND: Byte = 0x20
+
+    fun isHand(cmd: ByteArray) = cmd.size >= 5 && cmd[0] == 0x80.toByte() && cmd[1] == INS_HAND
+
     fun isHello(cmd: ByteArray) = cmd.size >= 5 && cmd[0] == 0x80.toByte() && cmd[1] == INS_HELLO
 
     /** The data field of a short or extended-length APDU, or null if the lengths do not add up. */
@@ -430,6 +452,7 @@ object Apdu {
     val SW_WRONG_OFFSET = byteArrayOf(0x6B, 0x00)
     val SW_UNKNOWN_CMD = byteArrayOf(0x6D, 0x00)
     val SW_NOT_READY = byteArrayOf(0x69, 0x85.toByte())
+    val SW_WRONG_LENGTH = byteArrayOf(0x67, 0x00)
 
     fun isOk(r: ByteArray) = r.size >= 2 &&
         r[r.size - 2] == 0x90.toByte() && r[r.size - 1] == 0x00.toByte()

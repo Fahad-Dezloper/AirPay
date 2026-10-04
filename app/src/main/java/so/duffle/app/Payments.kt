@@ -11,6 +11,8 @@ import kotlinx.coroutines.withContext
  *  * [PayResult.AlreadyPaid] — found paid on-chain before we sent anything.
  *  * [PayResult.Error] — nothing was sent: declined, offline, not enough SOL, already paid.
  *  * [PayResult.Failed] — a transaction was sent and the chain refused it, or it expired.
+ *  * [PayResult.SignedOffline] — signed with no connection and not sent. Nothing has moved; the
+ *    bytes still have to reach a phone that can send them.
  */
 sealed interface PayResult {
     data class Sent(val signature: String) : PayResult
@@ -18,6 +20,8 @@ sealed interface PayResult {
     data class AlreadyPaid(val signature: String) : PayResult
     data class Error(val title: String, val detail: String) : PayResult
     data class Failed(val title: String, val detail: String, val signature: String? = null) : PayResult
+    /** The signed transaction, for the caller to hand to the phone that asked. */
+    class SignedOffline(val tx: ByteArray) : PayResult
 }
 
 object Payments {
@@ -28,6 +32,13 @@ object Payments {
         req: PayRequest,
         stage: (String) -> Unit,
         log: (String) -> Unit = {},
+        /**
+         * True when the caller can carry a signed payment back to the asking phone over NFC, and
+         * the request was read moments ago. Then being offline is not the end: the payment is
+         * built on the blockhash that came with the request and returned as
+         * [PayResult.SignedOffline]. Anyone else gets "You're offline", as before.
+         */
+        handOver: Boolean = false,
     ): PayResult {
         if (req.recipient == payer)
             return PayResult.Error("That's your own wallet", "Pick a different phone to pay.")
@@ -36,12 +47,15 @@ object Payments {
         val units = req.units()
             ?: return PayResult.Error("Enter an amount", "${req.symbol} amounts can have up to ${req.decimals} decimal places.")
 
+        val offlineHash = req.blockhash.takeIf { handOver }
+
         // Requests never expire, so the same one can be paid twice — after a relaunch, or by a
         // second phone that tapped the same person. The chain is the only place both show.
         stage("Checking it hasn't been paid…")
         when (val already = withContext(Dispatchers.IO) { Chain.findPayment(req.reference, req.recipient, units, req.mint) }) {
             is Chain.Found.Yes -> return PayResult.AlreadyPaid(already.signature)
-            Chain.Found.Offline -> return PayResult.Error("You're offline", "Nothing was sent. Try again when you're connected.")
+            Chain.Found.Offline -> return if (offlineHash != null) signOffline(wallet, payer, req, units, offlineHash, stage, log)
+                else PayResult.Error("You're offline", "Nothing was sent. Try again when you're connected.")
             else -> Unit
         }
 
@@ -58,7 +72,8 @@ object Payments {
                 "You have ${built.have} ${built.symbol} and this needs ${built.need}" +
                     if (built.symbol == "SOL") " plus fees." else ".",
             )
-            is Chain.Built.Offline -> return PayResult.Error("You're offline", "Nothing was sent. Try again when you're connected.")
+            is Chain.Built.Offline -> return if (offlineHash != null) signOffline(wallet, payer, req, units, offlineHash, stage, log)
+                else PayResult.Error("You're offline", "Nothing was sent. Try again when you're connected.")
             is Chain.Built.Bad -> return PayResult.Error("Can't pay this", built.why)
         }
 
@@ -108,4 +123,49 @@ object Payments {
             )
         }
     }
+
+    /**
+     * The payer's half with no connection: build on the asking phone's blockhash, sign, and stop.
+     *
+     * Nothing is read from Solana, so nothing is checked either: not whether it was already paid,
+     * not the balance. The asking phone's node does that when it sends it, and refuses a payment
+     * that cannot be made. That is also why only SOL and USDC are paid this way: what a token
+     * transfer needs (its program, its decimals) is known for USDC and would have to be read
+     * for any other.
+     */
+    private suspend fun signOffline(
+        wallet: Wallet, payer: String, req: PayRequest, units: Long, blockhash: String,
+        stage: (String) -> Unit, log: (String) -> Unit,
+    ): PayResult {
+        val mint = req.mint
+        if (mint != null && mint != Shop.USDC_MAINNET)
+            return PayResult.Error("You're offline", "Paying this token needs a connection.")
+        if (mint != null && req.decimals != USDC_DECIMALS)
+            return PayResult.Error("Can't pay this", "That request's ${req.symbol} details don't match the token on Solana.")
+
+        log("pay: offline, building on their blockhash ${blockhash.take(8)}…")
+        val tx = when (val built = withContext(Dispatchers.Default) {
+            if (mint == null) Chain.buildTransfer(payer, req.recipient, units, req.reference, blockhashOverride = blockhash)
+            else Chain.buildTokenTransfer(
+                payer, req.recipient, mint, units, USDC_DECIMALS, req.reference, req.symbol,
+                blockhashOverride = blockhash, programOverride = Chain.TOKEN_PROGRAM, recipientAccountExists = true,
+            )
+        }) {
+            is Chain.Built.Ok -> built.tx
+            is Chain.Built.Bad -> return PayResult.Error("Can't pay this", built.why)
+            else -> return PayResult.Error("You're offline", "Nothing was sent. Try again when you're connected.")
+        }
+
+        stage("Approve in your wallet…")
+        return when (val signed = wallet.signOnly(tx)) {
+            is Wallet.SendOutcome.Signed ->
+                // A wallet that hands back the empty slot has not signed, whatever it says.
+                if (OfflineTx.accountKeys(signed.tx) == null) PayResult.Error("Payment cancelled", "Your wallet did not hand back a signed payment. Nothing was sent.")
+                else PayResult.SignedOffline(signed.tx)
+            is Wallet.SendOutcome.Failed -> PayResult.Error("Payment cancelled", signed.why)
+            Wallet.SendOutcome.NeedsReconnect -> PayResult.Error("Reconnect your wallet", "Your wallet session ended. Connect again and retry.")
+        }
+    }
+
+    private const val USDC_DECIMALS = 6
 }
