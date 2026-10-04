@@ -18,6 +18,7 @@ from nacl.signing import SigningKey
 from . import solana as sol
 from .engine import Engine, Limits
 from .server import serve
+from .sponsor import Sponsor
 
 SKR_MINT = "SKRbvo6Gf7GondiT3BbTfuRDPqLWei4j2Qy2NPGZhW3"
 
@@ -64,6 +65,24 @@ def main() -> None:
     logging.getLogger("skrpayer").info("payer %s · mint %s · token program %s · source %s",
                                        pub, engine.mint, engine.token_program, engine.source)
 
+    # The fee wallet is a SECOND key, never the SKR one: it signs transactions other people
+    # wrote, so it holds a few cents of SOL and nothing else. No key file, no sponsoring.
+    sponsor = None
+    sponsor_file = env("SPONSOR_KEYFILE", "/secrets/sponsor.json")
+    if os.path.isfile(sponsor_file) and os.path.getsize(sponsor_file) > 0:
+        skey = load_key(sponsor_file)
+        spub = sol.b58encode(bytes(skey.verify_key))
+        if spub == pub:
+            raise SystemExit("the fee wallet must not be the SKR payer wallet")
+        if env("SPONSOR_PUBKEY") and env("SPONSOR_PUBKEY") != spub:
+            raise SystemExit(f"SPONSOR_PUBKEY does not match the key file ({spub})")
+        sponsor = Sponsor(env("SPONSOR_DB", "/data/sponsor.db"), skey, rpc,
+                          fee_units=int(env("SPONSOR_FEE_USDC_UNITS", "10000")),
+                          per_user_day=int(env("SPONSOR_MAX_USER_DAY", "20")),
+                          per_day=int(env("SPONSOR_MAX_DAY", "2000")))
+        logging.getLogger("skrpayer").info("fee wallet %s · fee account %s · ready %s",
+                                           spub, sponsor.fee_account, sponsor.ready())
+
     def loop():
         while True:
             for pid in engine.pending():
@@ -74,7 +93,7 @@ def main() -> None:
             time.sleep(5)
 
     threading.Thread(target=loop, name="advance", daemon=True).start()
-    serve(engine, secret, "0.0.0.0", int(env("PORT", "8788"))).serve_forever()
+    serve(engine, secret, "0.0.0.0", int(env("PORT", "8788")), sponsor=sponsor).serve_forever()
 
 
 if __name__ == "__main__":

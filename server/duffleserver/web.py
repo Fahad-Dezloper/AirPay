@@ -14,6 +14,7 @@ from urllib.parse import parse_qs, urlparse
 
 from .chain import Rpc
 from .service import config_as_dict
+from .payer_client import PayerError
 from .plans import PlanCatalogue
 from .shop import Shop
 from .store import Conflict
@@ -346,6 +347,19 @@ def make_handler(service, helius_auth: str | None, limiter: RateLimit | None = N
                             target=service.settle_shop, args=(shop, invoice_id),
                             name="shop-webhook", daemon=True).start()
                     return self._json(200, {"ok": True})
+                # Network fees paid for a buyer who holds USDC and no SOL. The key and every rule
+                # about what it will sign live in the payer; this only says who is asking, and the
+                # buyer is the signed-in wallet, never one named in the request.
+                if path == "/v1/sponsor":
+                    try:
+                        return self._json(200, service.payer.sponsor_info())
+                    except PayerError:
+                        return self._json(200, {"enabled": False})
+                if path == "/v1/sponsor/submit":
+                    try:
+                        return self._json(200, service.payer.sponsor(str(body.get("tx") or "")[:4000], me))
+                    except PayerError as e:
+                        return self._json(503 if e.retryable else 422, {"error": e.code})
                 if path == "/v1/shop/order":
                     try:
                         return self._json(200, shop.order(str(body.get("invoice_id") or "")))

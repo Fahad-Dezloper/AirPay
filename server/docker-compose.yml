@@ -50,9 +50,15 @@ services:
       MAX_PAYOUT_SKR: ${MAX_PAYOUT_SKR:-1000}
       MAX_DAY_SKR: ${MAX_DAY_SKR:-10000}
       MAX_RECIPIENT_DAY_SKR: ${MAX_RECIPIENT_DAY_SKR:-1500}
+      # The fee wallet: a second, tiny key that pays network fees for buyers with no SOL and is
+      # paid back in USDC. An empty file (the default) leaves sponsoring off.
+      SPONSOR_KEYFILE: /secrets/sponsor.json
+      SPONSOR_PUBKEY: ${SPONSOR_PUBKEY:-}
+      SPONSOR_FEE_USDC_UNITS: ${SPONSOR_FEE_USDC_UNITS:-10000}
     volumes:
       - payer-data:/data
       - ../secrets/payer.json:/secrets/payer.json:ro
+      - ../secrets/sponsor.json:/secrets/sponsor.json:ro
       - ../secrets/payer_hmac:/secrets/hmac:ro
     read_only: true
     tmpfs: ["/tmp"]

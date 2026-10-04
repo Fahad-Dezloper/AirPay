@@ -73,3 +73,13 @@ class Payer:
 
     def health(self) -> dict:
         return self._call("GET", "/status")
+
+    # -- the fee wallet: see payer/skrpayer/sponsor.py -------------------------------------
+
+    def sponsor_info(self) -> dict:
+        """Whether network fees can be paid for a buyer, by which wallet, and what it costs."""
+        return self._call("GET", "/sponsor")
+
+    def sponsor(self, tx_b64: str, user: str) -> dict:
+        """Hands over a transaction the buyer has signed, to be co-signed and submitted."""
+        return self._call("POST", "/sponsor", {"tx": tx_b64, "user": user})

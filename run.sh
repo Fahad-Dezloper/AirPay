@@ -38,6 +38,9 @@ case "${1:-start}" in
   payer)
     [ -f ../secrets/payer.json ] || { echo "missing secrets/payer.json" >&2; exit 1; }
     grep -q '^PAYER_PUBKEY=.' .env || { echo "set PAYER_PUBKEY in server/.env" >&2; exit 1; }
+    # The fee wallet's key is optional, but the mount is not: without a file here Docker makes a
+    # DIRECTORY of that name. An empty file means "no fee wallet", which the payer understands.
+    [ -e ../secrets/sponsor.json ] || { : > ../secrets/sponsor.json; chmod 600 ../secrets/sponsor.json; }
     dc --profile payer up -d --build
     wait_healthy
     dc exec -T duffle python -m duffleserver.seed

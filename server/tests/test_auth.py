@@ -219,7 +219,8 @@ class HttpAuthTest(unittest.TestCase):
         posts = ["/v1/requests", "/v1/rpc", "/v1/rpc/mainnet", "/v1/withdrawals", "/v1/rejections",
                  "/v1/deferrals", "/v1/taps", "/v1/messages", "/v1/rewards/preview", "/v1/rewards/reveal",
                  "/v1/referrals/claim", "/v1/devices", "/v1/shop/invoice", "/v1/shop/order",
-                 "/v1/shop/operator", "/v1/offers/some-offer/claim"]
+                 "/v1/shop/operator", "/v1/offers/some-offer/claim",
+                 "/v1/sponsor", "/v1/sponsor/submit"]
         for p in posts:
             self.assertEqual(401, self.call(p, {"x": 1})[0], p)
         for g in (f"/v1/rewards/{self.me}", f"/v1/referrals/{self.me}", "/v1/messages", "/v1/events"):

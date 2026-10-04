@@ -28,7 +28,7 @@ def sign(secret: bytes, method: str, path: str, ts: str, body: bytes) -> str:
     return hmac.new(secret, msg, hashlib.sha256).hexdigest()
 
 
-def make_handler(engine: Engine, secret: bytes):
+def make_handler(engine: Engine, secret: bytes, sponsor=None):
     class H(BaseHTTPRequestHandler):
         server_version = "skrpayer/1"
 
@@ -80,6 +80,16 @@ def make_handler(engine: Engine, secret: bytes):
                                            "totals": engine.totals(),
                                            "balance": engine.rpc.token_balance(engine.source),
                                            "decimals": engine.decimals})
+                # The fee wallet. Absent unless its own key is mounted: see sponsor.py.
+                if self.path.startswith("/sponsor"):
+                    if sponsor is None:
+                        return self._out(200, {"enabled": False}) if self.command == "GET" \
+                            else self._out(422, {"error": "sponsor_disabled"})
+                    if self.command == "GET" and self.path == "/sponsor":
+                        return self._out(200, sponsor.info())
+                    if self.command == "POST" and self.path == "/sponsor":
+                        d = json.loads(body)
+                        return self._out(200, sponsor.submit(d.get("tx"), d.get("user")))
                 if self.command == "POST" and self.path in ("/pause", "/resume"):
                     engine.pause(self.path == "/pause")
                     return self._out(200, {"paused": engine.paused})
@@ -94,7 +104,7 @@ def make_handler(engine: Engine, secret: bytes):
     return H
 
 
-def serve(engine: Engine, secret: bytes, host: str = "0.0.0.0", port: int = 8788) -> ThreadingHTTPServer:
-    httpd = ThreadingHTTPServer((host, port), make_handler(engine, secret))
+def serve(engine: Engine, secret: bytes, host: str = "0.0.0.0", port: int = 8788, sponsor=None) -> ThreadingHTTPServer:
+    httpd = ThreadingHTTPServer((host, port), make_handler(engine, secret, sponsor))
     httpd.daemon_threads = True
     return httpd
