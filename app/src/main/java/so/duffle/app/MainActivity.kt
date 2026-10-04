@@ -206,6 +206,10 @@ class MainActivity : ComponentActivity() {
     private var picker by mutableStateOf<List<WalletLink.App>?>(null)
     /** Every linked wallet, re-read whenever one is added, switched or dropped. */
     private var walletList by mutableStateOf<List<Linked>>(emptyList())
+    /** Which linked wallet is in use, by [Linked.id]: two apps can hold the same address. */
+    private var activeWalletId by mutableStateOf<String?>(null)
+    private val activeWallet: Linked?
+        get() = walletList.firstOrNull { it.id == activeWalletId } ?: walletList.firstOrNull { it.address == connected }
     /** The selected wallet's balance. Null while it is being read, or unreadable. */
     private var balance by mutableStateOf<Chain.Balance?>(null)
     /** Every token this wallet holds, for the breakdown under the balance. */
@@ -304,6 +308,12 @@ class MainActivity : ComponentActivity() {
     }
     private var status by mutableStateOf<Status>(Status.Idle)
 
+    /**
+     * Why a wallet could not be linked, for the screen. It used to go only to the log, so a link
+     * that was refused looked exactly like one that had quietly done nothing.
+     */
+    private var walletNotice by mutableStateOf<String?>(null)
+
     /** A purchase from the shop, from the moment a plan is tapped to the moment it is paid. */
     private var purchase by mutableStateOf<Purchase?>(null)
 
@@ -360,7 +370,7 @@ class MainActivity : ComponentActivity() {
                         refreshWallets()
                         push("✓ wallet ${r.address.take(8)}…${r.address.takeLast(4)}")
                     }
-                    is Wallet.Outcome.Failed -> push("✗ ${r.why}")
+                    is Wallet.Outcome.Failed -> { push("✗ ${r.why}"); walletNotice = r.why }
                     Wallet.Outcome.Declined -> push("- wallet declined")
                 }
             } finally {
@@ -385,7 +395,7 @@ class MainActivity : ComponentActivity() {
                         refreshWallets()
                         push("✓ ${app.label} ${r.address.take(6)}…${r.address.takeLast(4)}")
                     }
-                    is Wallet.Outcome.Failed -> push("✗ ${r.why}")
+                    is Wallet.Outcome.Failed -> { push("✗ ${r.why}"); walletNotice = r.why }
                     Wallet.Outcome.Declined -> push("- ${app.label} declined")
                 }
             } finally {
@@ -581,6 +591,29 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * Out of every wallet, and back to the first screen.
+     *
+     * The server is told first, while there is still a session to end, so the token cannot be
+     * used again from anywhere. It is best effort: with no connection the phone still forgets
+     * everything, which is the half the person asked for. History, orders and codes stay on the
+     * phone; they are not the wallet's.
+     */
+    private fun logout() {
+        lifecycleScope.launch {
+            runCatching { ServerClient.ask("/v1/auth/logout", org.json.JSONObject(), timeoutMs = 3_000) }
+            Session.clear(this@MainActivity)
+            wallet.logoutAll()
+            connected = null
+            purchase = null
+            cards = false
+            tab = Tab.TAP
+            refreshWallets()
+            applyMode()
+            push("- logged out of all wallets")
+        }
+    }
+
     /** True when the wallet is known to hold too little SOL to pay a network fee itself. */
     private fun needsFeePaid(): Boolean =
         (balance as? Chain.Balance.Ok)?.let { it.sol * 1_000_000_000.0 < Chain.FEE_HEADROOM_LAMPORTS } == true
@@ -739,7 +772,7 @@ class MainActivity : ComponentActivity() {
 
     /** Re-reads the linked wallets and the selected one's balance. */
     private fun refreshWallets(quiet: Boolean = false) {
-        walletList = wallet.linked.all()
+        walletList = wallet.linked.all(); activeWalletId = wallet.linked.selected()?.id
         // Quiet re-reads the balance in place. Blanking it first made every refresh flash dashes,
         // which is the opposite of "instant".
         if (!quiet) { balance = null; holdings = emptyList() }
@@ -1401,10 +1434,11 @@ class MainActivity : ComponentActivity() {
                         if (cards) {
                             WalletsScreen(
                                 list = walletList,
-                                selected = connected,
+                                selected = activeWalletId,
                                 busy = busy,
                                 onUse = { w ->
                                     wallet.use(w)
+                                    activeWalletId = w.id
                                     connected = w.address
                                     myGenesis = null
                                     // The armed request carries the old address until rebuilt.
@@ -1426,7 +1460,7 @@ class MainActivity : ComponentActivity() {
                                 onVouch = { w -> vouchWallet = w },
                                 vouchTick = vouchTick,
                                 onRemove = { w ->
-                                    wallet.linked.remove(w.address)
+                                    wallet.linked.remove(w)
                                     connected = wallet.address
                                     refreshWallets()
                                     applyMode(amount)
@@ -1486,7 +1520,7 @@ class MainActivity : ComponentActivity() {
                                 // `Rewards.Row.counterparty` is an address, so the thread filters
                                 // these itself rather than being handed a pre-filtered list.
                                 rewards = rewardSummary?.rows.orEmpty(),
-                                wallet = walletList.firstOrNull { it.address == connected },
+                                wallet = activeWallet,
                                 openItem = threadItem,
                                 onOpenItem = { threadItem = it },
                                 // "Later" is not an answer. The request stays payable and the
@@ -1658,7 +1692,7 @@ class MainActivity : ComponentActivity() {
 
                         BalanceCard(
                             totalUsd = totalUsd,
-                            wallet = walletList.firstOrNull { it.address == connected },
+                            wallet = activeWallet,
                             others = walletList.filter { it.address != connected },
                             balance = balance,
                             mode = mode == Mode.REQUEST,
@@ -1669,7 +1703,7 @@ class MainActivity : ComponentActivity() {
                             },
                             onCards = { cards = true },
                             onDetails = {
-                                walletDetails = walletList.firstOrNull { it.address == connected }
+                                walletDetails = activeWallet
                             },
                             onSelectWallet = { w ->
                                 wallet.use(w)
@@ -1911,7 +1945,13 @@ class MainActivity : ComponentActivity() {
                                 // earlier — nothing said the phone was listening, or that the
                                 // next move was physical.
                                 paidSignature = null
-                                startActivity(TapPopupActivity.armed(this@MainActivity))
+                                // The sheet blurs what it covers, and has to be handed the picture.
+                                Backdrop.capture(this@MainActivity) {
+                                    startActivity(TapPopupActivity.armed(this@MainActivity))
+                                    // The sheet animates itself. A window slide under it made
+                                    // the blurred page look as if it rose from the bottom.
+                                    @Suppress("DEPRECATION") overridePendingTransition(0, 0)
+                                }
                             },
                             onScan = { startActivity(ScanActivity.intent(this@MainActivity)) },
                         )
@@ -1924,7 +1964,7 @@ class MainActivity : ComponentActivity() {
                     ProfileDrawer(
                         name = myDomain ?: myName,
                         address = connected,
-                        walletName = walletList.firstOrNull { it.address == connected }?.name,
+                        walletName = activeWallet?.name,
                         isSeeker = myGenesis != null,
                         network = Chain.NETWORK,
                         version = BuildConfig.VERSION_NAME,
@@ -1944,6 +1984,7 @@ class MainActivity : ComponentActivity() {
                         onGo = { drawerOpen = false; if (it == Tab.REWARDS) openRewards() else tab = it },
                         onRefer = { drawerOpen = false; openRefer() },
                         onDiagnostics = { drawerOpen = false; checking = true },
+                        onLogout = { drawerOpen = false; logout() },
                         onClose = { drawerOpen = false },
                     )
                 }
@@ -1992,7 +2033,7 @@ class MainActivity : ComponentActivity() {
                 authGate?.let { gate ->
                     AuthorizeSheet(
                         what = gate.what,
-                        wallet = walletList.firstOrNull { it.address == connected },
+                        wallet = activeWallet,
                         onClose = { authGate = null },
                     )
                 }
@@ -2017,6 +2058,18 @@ class MainActivity : ComponentActivity() {
                 // `HowToReferSheet` was hosted here. §2.1 removed the "How to refer" link that
                 // opened it and §2.3 replaced it with a second sheet stacked inside `ReferSheet`,
                 // so nothing could set it any more — it went with the `Tab.REFERRALS` branch.
+
+                walletNotice?.let { why ->
+                    AlertDialog(
+                        onDismissRequest = { walletNotice = null },
+                        containerColor = D.White,
+                        title = { Text("Wallet not linked", color = D.Black, style = Type.title) },
+                        text = { Text(why, color = D.Black, style = Type.body) },
+                        confirmButton = {
+                            TextButton(onClick = { walletNotice = null }) { Text("OK", color = D.BlueInk, style = Type.heading) }
+                        },
+                    )
+                }
 
                 // A purchase lives in a sheet of its own: review, progress, and how it ended.
                 purchase?.let { state ->
@@ -2066,10 +2119,10 @@ class MainActivity : ComponentActivity() {
                     WalletNameSheet(
                         w, onClose = { renamingWallet = null },
                         onSave = { name ->
-                            wallet.linked.setAlias(w.address, name)
+                            wallet.linked.setAlias(w, name)
                             // The list only: refreshWallets() also blanks the balance and tokens,
                             // which a rename has no reason to disturb.
-                            walletList = wallet.linked.all()
+                            walletList = wallet.linked.all(); activeWalletId = wallet.linked.selected()?.id
                             renamingWallet = null
                             push(if (name == null) "- ${w.short} is back to its own name" else "- renamed to $name")
                         },
@@ -2099,7 +2152,7 @@ class MainActivity : ComponentActivity() {
                         onClose = { walletDetails = null },
                         onRemove = {
                             walletDetails = null
-                            wallet.linked.remove(w.address)
+                            wallet.linked.remove(w)
                             // The selected one may have just gone; refreshWallets re-reads
                             // which wallet is current and applyMode re-arms with it.
                             connected = wallet.address
@@ -2392,6 +2445,12 @@ class MainActivity : ComponentActivity() {
             }
             is PayResult.Failed -> {
                 status = Status.Problem(result.title, "${result.detail} It's still in Requests.")
+                Haptics.failure(this)
+            }
+            // Not reachable from here: this screen never asks to hand a payment over, because
+            // it has no reader to carry one back with. Said honestly all the same.
+            is PayResult.SignedOffline -> {
+                status = Status.Problem("You're offline", "Nothing was sent. It's still in Requests.")
                 Haptics.failure(this)
             }
         }

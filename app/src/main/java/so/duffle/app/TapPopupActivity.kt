@@ -1,5 +1,6 @@
 package so.duffle.app
 
+import androidx.compose.ui.graphics.asImageBitmap
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -64,6 +65,18 @@ class TapPopupActivity : ComponentActivity() {
         data class Success(val title: String, val detail: String, val signature: String?) : Phase
         data class Error(val title: String, val detail: String) : Phase
         data class Failed(val title: String, val detail: String, val signature: String?) : Phase
+        /**
+         * Signed with no connection and still on this phone. Nothing has been sent: [tx] has to
+         * be carried to the phone that asked, by holding the two together once more. [note] is
+         * what the last try at that came to, when it did not work. [expiresAt] is when the
+         * blockhash it was signed on is taken to be dead, on this phone's clock.
+         */
+        class HandOver(val tx: ByteArray, val request: PayRequest, val expiresAt: Long, val note: String? = null) : Phase
+        /**
+         * The other phone took the signed payment. Not Success: this phone has no way to know
+         * whether it landed, so it must not say so.
+         */
+        data class HandedOver(val title: String, val detail: String) : Phase
     }
 
     private lateinit var wallet: Wallet
@@ -78,6 +91,10 @@ class TapPopupActivity : ComponentActivity() {
      */
     private var armed = false
     private var reader: TapReader? = null
+    /** The reader for the second tap of an offline payment. Only ever set during [Phase.HandOver]. */
+    private var deliverer: DeliverReader? = null
+    /** When the request on this sheet was read off the other phone. Its blockhash ages from here. */
+    private var readAt = 0L
     private var phase by mutableStateOf<Phase>(Phase.Ready)
     private var address by mutableStateOf<String?>(null)
     private var shownAt = 0L
@@ -98,11 +115,70 @@ class TapPopupActivity : ComponentActivity() {
     /** SKR this payment earned, once the server has seen it settle. Null until then, and if
      *  nothing was earned — an empty space is better than a nil. */
     private var earned by mutableStateOf<Rewards.Earned?>(null)
+    /** Every wallet linked on this phone, for the switcher on the armed sheet. */
+    private var wallets by mutableStateOf<List<Linked>>(emptyList())
+    private var activeWallet by mutableStateOf<String?>(null)
+    /** A phone came near and could not be read. Said on the armed sheet, then cleared by the next try. */
+    private var armedNote by mutableStateOf<String?>(null)
+    /** The screen this sheet covers, to be drawn blurred. Null when it was opened over another app. */
+    private var backdrop by mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null)
+    /** True when this phone can be asked to make AirPay its wallet app and has not yet. */
+    private var canBeWalletApp by mutableStateOf(false)
+    // Registered here, as a field: it has to exist before the activity starts.
+    private val askForRole = registerForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()
+    ) {
+        refreshRole()
+        // Holding the role is half of it. Which app the double-press opens is a separate
+        // setting that no app may change, so the person is told where it is.
+        if (!canBeWalletApp) armedNote = "Done. Now set double-press power to Wallet in Settings, under Gestures."
+    }
+
+    private fun refreshRole() {
+        val rm = getSystemService(android.app.role.RoleManager::class.java)
+        canBeWalletApp = android.os.Build.VERSION.SDK_INT >= 35 && rm != null &&
+            rm.isRoleAvailable(android.app.role.RoleManager.ROLE_WALLET) &&
+            !rm.isRoleHeld(android.app.role.RoleManager.ROLE_WALLET)
+    }
+
+    /** Asks the system to make AirPay the wallet app, which is what double-press power opens. */
+    private fun becomeWalletApp() {
+        val rm = getSystemService(android.app.role.RoleManager::class.java) ?: return
+        runCatching { askForRole.launch(rm.createRequestRoleIntent(android.app.role.RoleManager.ROLE_WALLET)) }
+            .onFailure {
+                // No dialog on this build: the list of default apps is where it is set by hand.
+                runCatching { startActivity(Intent(android.provider.Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS)) }
+            }
+    }
+
+    /** Pays with another wallet from here on. The sheet's card, balance and signer all follow. */
+    private fun switchWallet(w: Linked) {
+        if (w.id == activeWallet || phase is Phase.Working) return
+        wallet.use(w)
+        activeWallet = w.id
+        address = w.address
+        holdings = null
+        wallets = wallet.linked.all()
+        Haptics.tick(this)
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         wallet = Wallet(this)
         address = wallet.address
+        wallets = wallet.linked.all()
+        activeWallet = wallet.linked.selected()?.id
+        refreshRole()
+        // Whatever is behind the sheet goes soft, so the card held out above it is the only
+        // sharp thing on the screen. A phone that can blur across windows does it here; the
+        // Seeker cannot, and gets the blurred copy of the screen below instead (see Backdrop).
+        window.addFlags(android.view.WindowManager.LayoutParams.FLAG_BLUR_BEHIND)
+        window.attributes = window.attributes.also { it.blurBehindRadius = 48 }
+        // Coming back from the request sheet, the page behind is the one already being shown.
+        Backdrop.showing = Backdrop.recent() ?: Backdrop.showing.takeIf { intent.getBooleanExtra(EXTRA_BACK, false) }
+        backdrop = Backdrop.showing?.asImageBitmap()
+        // No slide of the whole window: the sheet does its own rising, in its own order.
+        if (android.os.Build.VERSION.SDK_INT >= 34) overrideActivityTransition(OVERRIDE_TRANSITION_OPEN, 0, 0)
         if (!handle(intent)) {
             finish()
             return
@@ -128,8 +204,21 @@ class TapPopupActivity : ComponentActivity() {
                     onDecline = ::decline,
                     onLater = ::later,
                     onVerified = { held -> p?.let { Contacts(this).verify(it.address, held) } },
-                    onRequestInstead = { startActivity(RequestActivity.intent(this)); finish() },
+                    onRequestInstead = {
+                        // The request is a sheet too, over the same blurred page, so this reads as
+                        // the sheet changing what it holds and not as another screen opening.
+                        startActivity(RequestActivity.intent(this))
+                        finish()
+                        @Suppress("DEPRECATION") overridePendingTransition(0, 0)
+                    },
+                    wallets = wallets,
+                    activeWallet = activeWallet,
+                    onWallet = ::switchWallet,
+                    armedNote = armedNote,
+                    backdrop = backdrop,
+                    onWalletApp = if (canBeWalletApp) ::becomeWalletApp else null,
                     onRetry = { phase = Phase.Ready },
+                    onAbandon = ::abandon,
                     onExplorer = { sig -> runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(Chain.explorerUrl(sig)))) } },
                     previewAmount = previewAmount,
                     waitingNote = waitingNote,
@@ -149,6 +238,16 @@ class TapPopupActivity : ComponentActivity() {
                     when (val ph = phase) {
                         is Phase.Waiting -> watchForPayment(ph)
                         Phase.Ready -> watchForWithdrawal()
+                        is Phase.HandOver -> {
+                            // The blockhash it was signed on does not last. Past this the other
+                            // phone could only refuse it, so stop asking for a tap that cannot work.
+                            delay((ph.expiresAt - System.currentTimeMillis()).coerceAtLeast(0))
+                            if (phase === ph) {
+                                disarmDeliver()
+                                Haptics.failure(this@TapPopupActivity)
+                                phase = Phase.Error("Nothing was sent", "That took too long and expired. Tap again when you are ready.")
+                            }
+                        }
                         else -> Unit
                     }
                 }
@@ -177,17 +276,37 @@ class TapPopupActivity : ComponentActivity() {
                     Contacts(this).record(req.recipient, req.label, false, brand = req.brand)
                     Haptics.contact(this)
                     disarm()
+                    armedNote = null
+                    // Somebody asking this very wallet for money is this phone reading itself.
+                    if (req.recipient == address) {
+                        armedNote = "That request is for the wallet you are paying with."
+                        return@runOnUiThread
+                    }
                     peer = TapPayload.Request(req)
                     phase = Phase.Ready
                     shownAt = System.currentTimeMillis()
+                    readAt = shownAt
+                    lifecycleScope.launch {
+                        // As payer, so a withdrawal by the other phone can reach this one.
+                        ServerClient.register(req.reference, req.recipient, req.amount, req.label,
+                            payer = address, origin = "tap", deliver = false)
+                    }
+                    // Opening this sheet and holding the phone to theirs IS the decision to pay,
+                    // the way a double-click and a tap are on a card terminal. The amount is
+                    // theirs, so there is nothing to type: it goes straight to the wallet, and
+                    // the wallet's own approval is the last word. With no wallet connected the
+                    // sheet stops on the request and asks for one first.
+                    if (address != null) pay(req.amount, null)
                 }
             },
+            onProblem = { why -> runOnUiThread { if (peer == null) armedNote = why } },
             onCard = { card ->
                 runOnUiThread {
                     if (peer != null) return@runOnUiThread
                     Contacts(this).record(card.address, card.label, false, brand = card.brand)
                     Haptics.contact(this)
                     disarm()
+                    armedNote = null
                     peer = TapPayload.Card(card)
                     phase = Phase.Ready
                     shownAt = System.currentTimeMillis()
@@ -201,22 +320,68 @@ class TapPopupActivity : ComponentActivity() {
         reader = null
     }
 
+    /**
+     * Listens for the other phone a second time, to hand it the payment signed with no connection.
+     *
+     * Its own reader, because [arm] is for a sheet with nobody on it and this one has somebody.
+     * A tap that does not work leaves the sheet as it is with a line saying why, and the radio
+     * still listening: the payment is still here and still unsent.
+     */
+    private fun armDeliver() {
+        val ph = phase as? Phase.HandOver ?: return
+        if (deliverer != null) return
+        deliverer = DeliverReader(this, ph.tx, ph.request.reference, onLog = { Log.i(TAG, it) }) { out ->
+            runOnUiThread {
+                // Only if this is still the payment being held: the wait may have run out, or
+                // the person may have given up, while the radio was mid-exchange.
+                val now = phase as? Phase.HandOver ?: return@runOnUiThread
+                if (now.tx !== ph.tx) return@runOnUiThread
+                when (out) {
+                    TapExchange.Delivery.Done -> {
+                        disarmDeliver()
+                        // The buzz of two phones meeting, not of money arriving: it has not, yet.
+                        Haptics.contact(this)
+                        phase = Phase.HandedOver("Handed over", "Their phone is sending it. It shows in your history once you are back online.")
+                    }
+                    is TapExchange.Delivery.NotThem ->
+                        phase = Phase.HandOver(now.tx, now.request, now.expiresAt, "That phone is not asking for this payment. Hold near ${now.request.label.ifBlank { "their phone" }}.")
+                    is TapExchange.Delivery.Failed ->
+                        phase = Phase.HandOver(now.tx, now.request, now.expiresAt, "It did not go across. Hold steady and try again.")
+                }
+            }
+        }.also { it.start() }
+    }
+
+    private fun disarmDeliver() {
+        deliverer?.stop()
+        deliverer = null
+    }
+
+    /** Gives up on a signed payment that was never handed over. It is dropped, so it cannot be sent. */
+    private fun abandon() {
+        if (phase !is Phase.HandOver) return
+        disarmDeliver()
+        phase = Phase.Error("Nothing was sent", "The payment stayed on this phone. Tap again to pay.")
+    }
+
     override fun onResume() {
         super.onResume()
         // Reader mode only exists while a screen is in front, so it is armed here rather than
         // once in onCreate — the same reason MainActivity re-arms on every resume.
         arm()
+        armDeliver()
     }
 
     override fun onPause() {
         super.onPause()
         disarm()
+        disarmDeliver()
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         // Never swap the person under a payment in progress.
-        if (phase is Phase.Working || phase is Phase.Waiting) return
+        if (phase is Phase.Working || phase is Phase.Waiting || phase is Phase.HandOver) return
         handle(intent)
     }
 
@@ -234,10 +399,21 @@ class TapPopupActivity : ComponentActivity() {
         }
         if (payload == null) {
             // Armed: no payload yet, and the sheet is the thing that waits for one.
-            if (!intent.getBooleanExtra(EXTRA_ARMED, false)) return false
+            // The double-press of the power button arrives as VIEW_WALLET with nothing else in it.
+            val wantsArmed = intent.getBooleanExtra(EXTRA_ARMED, false) ||
+                intent.action == android.service.quickaccesswallet.QuickAccessWalletService.ACTION_VIEW_WALLET
+            if (!wantsArmed) return false
             armed = true
+            // A sheet left behind with somebody still on it (Home was pressed mid-way) used to
+            // come back showing that person and never listen again. Armed means nobody yet.
+            peer = null
+            armedNote = null
+            earned = null
+            waitingNote = null
             phase = Phase.Ready
-            cameFrom = intent.getStringExtra(EXTRA_FROM)
+            if (::wallet.isInitialized) { address = wallet.address; wallets = wallet.linked.all(); activeWallet = wallet.linked.selected()?.id }
+            if (lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED)) arm()
+            cameFrom = intent.getStringExtra(EXTRA_FROM) ?: "tap-button"
             return true
         }
 
@@ -284,6 +460,9 @@ class TapPopupActivity : ComponentActivity() {
         Contacts(this).record(payload.address, payload.label, false, brand = payload.brand)
 
         if (payload is TapPayload.Request) {
+            // Read off their phone a moment ago when Android's own tag read opened this sheet;
+            // any other route here is a request that has been sitting somewhere.
+            readAt = if (intent.action == NfcAdapter.ACTION_NDEF_DISCOVERED) System.currentTimeMillis() else 0L
             Push.cancel(this, payload.request.reference)
             // Saved before anything else, so "Later" — or closing the popup — never loses it.
             Inbox(this).add(payload.request)
@@ -364,7 +543,13 @@ class TapPopupActivity : ComponentActivity() {
                     symbol = req.symbol, origin = "tap", deliver = false)
             }
             val result = try {
-                Payments.pay(wallet, payer, req, stage = { phase = Phase.Working(it) }, log = { Log.i(TAG, it) })
+                Payments.pay(
+                    wallet, payer, req, stage = { phase = Phase.Working(it) }, log = { Log.i(TAG, it) },
+                    // Only for a request just read off their phone. Its blockhash is good for
+                    // about a minute, and some of that is needed for the wallet and the second
+                    // tap; an older one would be signed only to be refused.
+                    handOver = p is TapPayload.Request && System.currentTimeMillis() - readAt < FRESH_MS,
+                )
             } catch (e: Exception) {
                 // The exception goes to the log, not onto the screen: `e.message` is the
                 // machinery talking, and ui/PORT.md §7 asks for what happened to the money.
@@ -403,7 +588,20 @@ class TapPopupActivity : ComponentActivity() {
                 }
                 is PayResult.Error -> { Haptics.failure(this@TapPopupActivity); Phase.Error(result.title, result.detail) }
                 is PayResult.Failed -> { Haptics.failure(this@TapPopupActivity); Phase.Failed(result.title, result.detail, result.signature) }
+                is PayResult.SignedOffline -> {
+                    // Not filed as paid: it has not been sent, and this phone cannot find out
+                    // whether it lands. The request stays in the inbox as unpaid, where the main
+                    // screen's check of the chain marks it once the phone is back online.
+                    if (Inbox(this@TapPopupActivity).get(req.reference) == null) Inbox(this@TapPopupActivity).add(req)
+                    Haptics.tick(this@TapPopupActivity)
+                    // Counted from the tap, not from the signature: the blockhash was already
+                    // that old when the wallet opened, however long the wallet then took.
+                    Phase.HandOver(result.tx, req, expiresAt = readAt + HASH_LIFE_MS)
+                }
             }
+            // The wallet may hand control back before or after this sheet resumes, so the
+            // reader is armed from both places.
+            if (lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED)) armDeliver()
         }
     }
 
@@ -527,6 +725,18 @@ class TapPopupActivity : ComponentActivity() {
         private const val EXTRA_FROM = "from"
         private const val EXTRA_PREVIEW = "preview"
         private const val EXTRA_ARMED = "armed"
+        private const val EXTRA_BACK = "back"
+
+        /** The armed sheet again, from the request sheet: same page behind, no new snapshot. */
+        fun back(context: Context): Intent = armed(context).putExtra(EXTRA_BACK, true)
+        /** How old a request's blockhash may be when the wallet is asked to sign on it. */
+        private const val FRESH_MS = 30_000L
+        /**
+         * How long after the first tap a payment signed on that tap's blockhash is still worth
+         * handing over. A blockhash lasts 150 blocks, a minute or a little more, and the one in
+         * the request was already a few seconds old when it was read.
+         */
+        private const val HASH_LIFE_MS = 75_000L
 
         /** The sheet, open and waiting for a tap, with nobody on the other side yet. */
         fun armed(context: Context): Intent =

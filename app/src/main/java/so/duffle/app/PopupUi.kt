@@ -1,5 +1,6 @@
 package so.duffle.app
 
+import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.activity.compose.BackHandler
 import androidx.annotation.DrawableRes
 import androidx.compose.animation.AnimatedContent
@@ -46,6 +47,7 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -160,6 +162,8 @@ internal fun PopupScreen(
     onLater: () -> Unit,
     onRetry: () -> Unit,
     onExplorer: (String) -> Unit,
+    /** Gives up on a payment that was signed with no connection and never handed over. */
+    onAbandon: () -> Unit = {},
     previewAmount: String? = null,
     /** Shown on the waiting screen when the payer has answered without paying yet. */
     waitingNote: String? = null,
@@ -172,6 +176,17 @@ internal fun PopupScreen(
     onVerified: (Boolean) -> Unit = {},
     /** From the armed sheet: this phone wants to be paid, so open the request screen. */
     onRequestInstead: () -> Unit = {},
+    /** Every linked wallet, for the armed sheet's card and switcher. */
+    wallets: List<Linked> = emptyList(),
+    /** Which of [wallets] pays, by [Linked.id]: two apps can hold the same address. */
+    activeWallet: String? = null,
+    onWallet: (Linked) -> Unit = {},
+    /** A phone came near and nothing usable was read. */
+    armedNote: String? = null,
+    /** A copy of the screen underneath, drawn blurred. Null means only the dim. */
+    backdrop: androidx.compose.ui.graphics.ImageBitmap? = null,
+    /** Set when AirPay can be made the phone's wallet app, so double-press power opens this. */
+    onWalletApp: (() -> Unit)? = null,
 ) {
     // Hoisted so the amount survives the switch from typing to paying: the same number stays on
     // screen while the button below it reports progress.
@@ -210,6 +225,8 @@ internal fun PopupScreen(
     var sheetHeight by remember { mutableFloatStateOf(0f) }
     var shown by remember { mutableStateOf(false) }
     var leaving by remember { mutableStateOf(false) }
+    // True once the sheet has finished rising. The card above it waits for this.
+    var settled by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
         // Wait for the first measurement, then rise. Written so that a restart simply carries on
         // from wherever the sheet is — an earlier version gave up on restart and left the sheet
@@ -219,8 +236,12 @@ internal fun PopupScreen(
             offset.snapTo(h)
             shown = true
         }
-        launch { scrim.animateTo(1f, tween(220)) }
+        // One thing at a time, in the order the eye should take them: the page behind goes
+        // soft where it stands, then the sheet comes up from the bottom, then the card appears
+        // above it. All three at once read as the whole screen sliding up.
+        scrim.animateTo(1f, tween(170))
         offset.animateTo(0f, SheetRise)
+        settled = true
     }
     // Nothing leaves while money is in flight: the payment would carry on with no screen to report it.
     val canLeave = phase !is Phase.Working
@@ -268,10 +289,54 @@ internal fun PopupScreen(
         LocalMe provides myAddress) {
     Box(
         Modifier.fillMaxSize()
-            .drawBehind { drawRect(Color.Black.copy(alpha = .28f * scrim.value * (1f - dismissFraction()))) }
+            .drawBehind { drawRect(Color.Black.copy(alpha = (if (backdrop != null) .28f else .5f) * scrim.value * (1f - dismissFraction()))) }
             .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = close),
         contentAlignment = Alignment.BottomCenter,
     ) {
+        // The screen underneath, out of focus. It fades with the dim, so it arrives and leaves
+        // with the sheet. With no copy to blur (opened over another app, or from the power
+        // button) the dim is simply deeper.
+        if (backdrop != null) {
+            Image(
+                backdrop, contentDescription = null, contentScale = ContentScale.FillBounds,
+                modifier = Modifier.fillMaxSize().blur(14.dp)
+                    .graphicsLayer { alpha = scrim.value * (1f - dismissFraction()) }
+                    // Dimmed as well as blurred: on a white page the white sheet had no edge.
+                    .drawWithContent { drawContent(); drawRect(Color.Black.copy(alpha = .3f)) },
+            )
+        }
+        val payWith = wallets.firstOrNull { it.id == activeWallet } ?: wallets.firstOrNull { it.address == myAddress }
+        Column(Modifier.fillMaxWidth()) {
+        // The wallet that will pay, held out above the sheet like a card over a terminal. It
+        // rides with the sheet (same travel, same fade) and steps aside when somebody arrives.
+        AnimatedVisibility(
+            visible = peer == null && payWith != null && settled,
+            // It appears in place, growing a little, rather than travelling up with the sheet.
+            enter = fadeIn(tween(200)) + scaleIn(spring(0.7f, 320f), initialScale = 0.9f),
+            exit = fadeOut(tween(140)) + scaleOut(tween(160), targetScale = 0.94f),
+        ) {
+            Box(
+                Modifier.fillMaxWidth().padding(horizontal = Tray.PAD).padding(bottom = 18.dp)
+                    .graphicsLayer {
+                        // Follows the sheet when it is dragged or sent away, which is the only
+                        // time the sheet is anywhere but at rest once the card is showing.
+                        translationY = offset.value.coerceAtLeast(0f)
+                        alpha = 1f - dismissFraction()
+                    }
+                    // A touch on the card is not a touch on the dim behind it.
+                    .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {},
+            ) {
+                AnimatedContent(
+                    targetState = payWith,
+                    transitionSpec = {
+                        (slideInVertically(spring(0.82f, 320f)) { it / 3 } + fadeIn(tween(180))) togetherWith
+                            (slideOutVertically(tween(140)) { -it / 4 } + fadeOut(tween(110)))
+                    },
+                    contentKey = { it?.id },
+                    label = "pay-card",
+                ) { w -> if (w != null) PayCard(w) }
+            }
+        }
         Column(
             Modifier.fillMaxWidth()
                 .onSizeChanged { sheetHeight = it.height.toFloat() }
@@ -319,6 +384,8 @@ internal fun PopupScreen(
                 is Phase.Success -> "success"
                 is Phase.Error -> "error"
                 is Phase.Failed -> "failed"
+                is Phase.HandOver -> "handover"
+                is Phase.HandedOver -> "handed"
             }
             AnimatedContent(
                 targetState = key,
@@ -333,7 +400,7 @@ internal fun PopupScreen(
                         // Waiting for the other phone. Shares the AnimatedContent with every
                         // other state, so when the tap lands the sheet grows into the keypad
                         // on the same spring rather than closing and reopening as a new one.
-                        "armed" -> ArmedBody(onRequestInstead)
+                        "armed" -> ArmedBody(wallets, (wallets.firstOrNull { it.id == activeWallet } ?: wallets.firstOrNull { it.address == myAddress })?.id, armedNote, onWallet, onConnect, onRequestInstead, onWalletApp)
                         // The keypad and the device page both stay built; switching only fades one
                         // out and the other in. Rebuilding the keypad form on the way back — amount,
                         // chip, twelve keys, shared-element setup — cost 85-150ms frames.
@@ -350,6 +417,15 @@ internal fun PopupScreen(
                         // not a note pasted over one.
                         "waiting" -> (phase as? Phase.Waiting)?.let {
                             WaitingBody(peer?.label.orEmpty(), it.amount, it.symbol, deferred = waitingNote != null, onClose = close)
+                        }
+                        // Signed, and going nowhere until the phones touch again.
+                        "handover" -> (phase as? Phase.HandOver)?.let {
+                            HandOverBody(it.request.label, it.request.amount, it.request.symbol, it.note, onAbandon)
+                        }
+                        // Pending, not Paid: their phone has it, and nobody here knows yet
+                        // whether it landed. A green tick would be a claim this phone cannot make.
+                        "handed" -> (phase as? Phase.HandedOver)?.let {
+                            ResultBody(Tone.Pending, it.title, it.detail) { PrimaryButton("Done", close, Modifier.fillMaxWidth()) }
                         }
                         "success" -> (phase as? Phase.Success)?.let {
                             ResultBody(Tone.Paid, it.title, it.detail, earned) {
@@ -373,6 +449,7 @@ internal fun PopupScreen(
                     }
                 }
             }
+        }
         }
         // Over the sheet, not under it: the light ends along the bottom edge, which is the
         // sheet. Armed, it waits along the top; when the other phone arrives it parts, runs
@@ -411,19 +488,185 @@ private val InPerson = setOf("nfc", "hce", "app", "tap-button")
  * is live) and does it by showing what to do with it.
  */
 @Composable
-private fun ArmedBody(onRequestInstead: () -> Unit) {
+private fun ArmedBody(
+    wallets: List<Linked>,
+    active: String?,
+    note: String?,
+    onWallet: (Linked) -> Unit,
+    onConnect: () -> Unit,
+    onRequestInstead: () -> Unit,
+    onWalletApp: (() -> Unit)?,
+) {
+    val mine = wallets.firstOrNull { it.id == active }
+    val others = wallets.filter { it.id != active }
     Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-        TapHero(Modifier.fillMaxWidth())
-        Spacer(Modifier.height(Space.row))
-        // Broken where the sandbox breaks it — a hard break, not a width limit, because the break
-        // is the design: the phrase reads as the two halves of the gesture.
-        Text("Hold your phones\ntogether", color = D.Black, style = Type.title, textAlign = TextAlign.Center)
-        Spacer(Modifier.height(24.dp))
-        NfcTip()
-        // The other half of the same moment: this phone is the one being paid. It needs nobody
-        // on the other side yet, so it is offered here, before any tap.
-        Spacer(Modifier.height(Space.row))
-        TextLink("Request instead", onRequestInstead)
+        if (mine != null) {
+            // The instruction leads. The card that pays is above the sheet, already held out.
+            Text("Hold near to pay", color = D.Black, style = Type.title, textAlign = TextAlign.Center)
+        } else {
+            // No wallet, so nothing can pay. The one thing to do is said as the one button.
+            Text("Connect a wallet to pay", color = D.Black, style = Type.title, textAlign = TextAlign.Center)
+            Spacer(Modifier.height(Space.row))
+            PrimaryButton("Connect wallet", onConnect, Modifier.fillMaxWidth())
+        }
+        // A phone came near and could not be read. Said here, where the eyes already are.
+        AnimatedVisibility(visible = note != null) {
+            Text(
+                note.orEmpty(), color = NOTICE_INK, style = Type.caption.copy(fontWeight = FontWeight.SemiBold),
+                textAlign = TextAlign.Center,
+                modifier = Modifier.padding(top = Space.inline).background(NOTICE_MARK, RoundedCornerShape(8.dp))
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
+            )
+        }
+
+        if (others.isNotEmpty()) {
+            // Every other wallet, stacked the way cards sit in a wallet: each one full width,
+            // showing only its top edge, the next laid over it. One touch brings it to the top.
+            // Adding a wallet adds one more edge, not one more full card.
+            Spacer(Modifier.height(Space.row))
+            Box(
+                Modifier.fillMaxWidth().height(STACK_PEEK * others.size + STACK_FOOT)
+                    .clip(RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)),
+            ) {
+                others.forEachIndexed { i, w ->
+                    Box(Modifier.offset(y = STACK_PEEK * i)) { OtherCard(w) { onWallet(w) } }
+                }
+                // The last card fades into the sheet instead of being cut off by it, so the
+                // stack reads as going on underneath and the button below has clear ground.
+                // A long, even fade over the whole of the last card's strip. A short one that
+                // reached full white early read as a hard shadow lying across the card.
+                Box(
+                    Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(STACK_FOOT)
+                        .background(Brush.verticalGradient(
+                            0f to D.White.copy(alpha = 0f), 0.35f to D.White.copy(alpha = .18f),
+                            0.7f to D.White.copy(alpha = .62f), 1f to D.White,
+                        )),
+                )
+            }
+        } else {
+            Spacer(Modifier.height(Space.row))
+        }
+
+        // The other half of the same moment: this phone is the one being paid. A real button
+        // now, on clear ground, where it was a line of text pressed against the cards.
+        // A blue pill as wide as its words, like "Scan any QR" on Home. It sits just inside the
+        // end of the fade, so the card seems to run on under it rather than stop above it.
+        val pill = remember { MutableInteractionSource() }
+        Box(
+            Modifier.offset(y = if (others.isNotEmpty()) (-10).dp else 0.dp).then(PressScale(pill))
+                .clip(CircleShape).background(D.Blue)
+                .clickable(pill, indication = null, onClick = onRequestInstead)
+                .heightIn(min = 52.dp).padding(horizontal = 28.dp),
+            contentAlignment = Alignment.Center,
+        ) { Text("Request instead", color = D.White, style = Type.heading) }
+        if (onWalletApp != null) {
+            // A setting, not a way to pay, so it is the quietest thing on the sheet.
+            Text(
+                "Open this with a double-press of power", color = D.BlueInk, style = Type.caption,
+                textDecoration = androidx.compose.ui.text.style.TextDecoration.Underline,
+                modifier = Modifier.clickable(onClick = onWalletApp).padding(vertical = 10.dp, horizontal = 8.dp),
+            )
+        }
+        Spacer(Modifier.height(Space.tight))
+    }
+}
+
+/** What a wallet holds, in dollars: the figure when it lands, and whether it is still on its way. */
+@Composable
+private fun worthOf(address: String): Pair<Double?, Boolean> {
+    val context = LocalContext.current
+    val state by produceState<Pair<Double?, Boolean>>(initialValue = null to true, address) {
+        value = runCatching { loadWorth(context, address)?.usd }.getOrNull() to false
+    }
+    return state
+}
+
+/**
+ * The wallet in use, as the card being held out: the same card it is on the Wallets screen, so
+ * Seeker looks like Seeker and Phantom like Phantom. The corner the Wallets screen gives to the
+ * "Active" pill carries the contactless sign here, pulsing, which is what says the radio is live.
+ */
+@Composable
+private fun PayCard(w: Linked) {
+    val (usd, loading) = worthOf(w.address)
+    val clipboard = LocalClipboardManager.current
+    val context = LocalContext.current
+    val lum = 0.2126f * w.colour.red + 0.7152f * w.colour.green + 0.0722f * w.colour.blue
+    // The foot of Seeker's card is mint, so its ink is black whatever the top of the card is.
+    val ink = if (w.isSeeker || lum > 0.5f) D.Black else D.White
+    // Touch the card and it turns over: the back is this wallet's own code, for somebody to
+    // scan. Paying and being paid are then the two sides of the one card.
+    var turned by remember(w.id) { mutableStateOf(false) }
+    val turn by animateFloatAsState(if (turned) 180f else 0f, spring(dampingRatio = 0.72f, stiffness = 180f), label = "turn")
+    Box(
+        Modifier.fillMaxWidth().height(196.dp)
+            .graphicsLayer { rotationY = turn; cameraDistance = 14f * density }
+            .clip(RoundedCornerShape(24.dp))
+            .clickable(remember { MutableInteractionSource() }, indication = null) { turned = !turned; Haptics.tick(context) },
+    ) {
+        if (turn <= 90f) {
+            WalletFace(
+                w, active = false, usd = { usd }, loading = { loading }, lift = { 1f },
+                onCopy = { clipboard.setText(androidx.compose.ui.text.AnnotatedString(w.address)) },
+                modifier = Modifier.fillMaxSize(),
+                corner = { ContactlessPulse(ink) },
+            )
+        } else {
+            // Turned back the right way round, or the code would be a mirror image no camera reads.
+            Column(
+                Modifier.fillMaxSize().graphicsLayer { rotationY = 180f }
+                    .background(D.White).border(1.5.dp, D.Line, RoundedCornerShape(24.dp)).padding(vertical = 12.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center,
+            ) {
+                // The code alone in the middle, as large as the card allows: it is the only
+                // thing a camera needs, and the line under it only says whose it is.
+                QrCode("solana:${w.address}", Modifier.size(146.dp))
+                Spacer(Modifier.height(6.dp))
+                Text(w.short, color = D.Quiet, style = Type.mono, maxLines = 1, textAlign = TextAlign.Center)
+            }
+        }
+    }
+}
+
+/** How much of each waiting card shows above the one laid over it, and under the last one. */
+private val STACK_PEEK = 64.dp
+private val STACK_FOOT = 84.dp
+
+/**
+ * Another linked wallet, in its own colours and at full size, though only its top edge is seen.
+ * Touching it makes it the one that pays.
+ */
+@Composable
+private fun OtherCard(w: Linked, onUse: () -> Unit) {
+    val (usd, loading) = worthOf(w.address)
+    // Unbounded and top-aligned, so the card keeps its real height and the stack cuts it off, instead of
+    // the card squeezing itself into the strip it is given.
+    WalletFace(
+        w, active = false, usd = { usd }, loading = { loading }, lift = { 0f }, onCopy = onUse,
+        modifier = Modifier.fillMaxWidth().wrapContentHeight(Alignment.Top, unbounded = true).height(196.dp).clip(RoundedCornerShape(24.dp)).clickable(onClick = onUse),
+    )
+}
+
+/**
+ * The contactless sign in the card's corner, with one soft ring leaving it on a slow beat.
+ *
+ * The sign is the app's own NFC mark at full strength, so it always reads as the familiar
+ * symbol. Three hand-drawn arcs blinking in turn did not: on the card they looked like a
+ * loading spinner. Only the ring moves, which says "live" without redrawing the symbol.
+ */
+@Composable
+private fun ContactlessPulse(ink: Color) {
+    val beat by rememberInfiniteTransition(label = "nfc").animateFloat(
+        0f, 1f, infiniteRepeatable(tween(1800, easing = LinearEasing), RepeatMode.Restart), label = "ring",
+    )
+    Box(Modifier.size(44.dp), contentAlignment = Alignment.Center) {
+        Canvas(Modifier.fillMaxSize()) {
+            // Grows from the sign's own size to the edge of its box, fading as it goes.
+            val r = size.minDimension / 2f
+            drawCircle(ink, radius = r * (0.55f + 0.45f * beat), alpha = 0.22f * (1f - beat))
+        }
+        HiIcon(Hi.Nfc, ink, 26.dp)
     }
 }
 
@@ -463,8 +706,8 @@ private fun NfcTip() {
             Text("Tip", color = D.Black, style = TipHead)
             Spacer(Modifier.height(Space.tight))
             Text(
-                "The NFC chip is near the center of the back of Seeker phones. " +
-                    "Keep the backs close and steady.",
+                "The NFC chip is near the centre of the back of Seeker phones. " +
+                    "Hold it close and steady for a moment.",
                 color = D.Black, style = Type.caption,
             )
         }
@@ -1707,6 +1950,34 @@ private fun WaitingBody(label: String, amount: String, symbol: String, deferred:
         )
         Spacer(Modifier.height(24.dp))
         SecondaryButton("Close", onClose, Modifier.fillMaxWidth())
+    }
+}
+
+/**
+ * A payment signed with no connection, waiting to be carried to the phone that asked.
+ *
+ * The orange disc, because this is the one state on the sheet where the person has something
+ * left to do and a limited time to do it. The amount stays on screen so it is plain what is
+ * being held. [note] is why the last try did not work; it replaces the line under the amount so
+ * the instruction and the reason are never both competing to be read.
+ */
+@Composable
+private fun HandOverBody(label: String, amount: String, symbol: String, note: String?, onCancel: () -> Unit) {
+    val them = label.ifBlank { "their phone" }
+    Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+        StatusDisc(Tone.Act, size = 72.dp)
+        Spacer(Modifier.height(Space.row))
+        Text("Hold near again to send it", color = Tone.Act.ink, style = Type.title, textAlign = TextAlign.Center)
+        Spacer(Modifier.height(8.dp))
+        Text(moneyOr(amount, symbol), color = D.Black, style = Type.amount)
+        Spacer(Modifier.height(Space.tight))
+        Text(
+            note ?: "You are offline, so $them will send it for you. It is signed and ready. Nothing is sent until the phones touch.",
+            color = D.Quiet, style = Type.caption, textAlign = TextAlign.Center,
+            modifier = Modifier.widthIn(max = 320.dp),
+        )
+        Spacer(Modifier.height(24.dp))
+        SecondaryButton("Cancel", onCancel, Modifier.fillMaxWidth())
     }
 }
 
