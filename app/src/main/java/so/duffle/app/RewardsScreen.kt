@@ -1,5 +1,6 @@
 package so.duffle.app
 
+import androidx.compose.ui.draw.drawBehind
 import androidx.annotation.DrawableRes
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
@@ -219,8 +220,23 @@ internal fun RewardsTab(
         // OVERRIDES that** — there are only ever a handful of cards, and the one screen the
         // button could have opened would have shown the same boxes again further down. It is
         // removed outright, not hidden on an empty list, so do not restore it from the brief.
-        Text("Scratch & reveal", color = D.Black, style = Type.heading)
-        if (s.rows.isEmpty()) {
+        // Cards still to scratch come first, so the ones that want attention lead the grid.
+        val rows = remember(s.rows) { (MOCK_CARDS + s.rows).sortedBy { it.revealed } }
+        val waiting = rows.count { !it.revealed }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Scratch & reveal", color = D.Black, style = Type.heading)
+            if (waiting > 0) {
+                // How many are waiting, on the highlight: the one mark on this page that means
+                // "something here is yours".
+                Spacer(Modifier.width(Space.inline))
+                Text(
+                    if (waiting == 1) "1 to scratch" else "$waiting to scratch",
+                    color = D.Black, style = Type.caption.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold),
+                    modifier = Modifier.background(D.Highlight, RoundedCornerShape(6.dp)).padding(horizontal = 8.dp, vertical = 3.dp),
+                )
+            }
+        }
+        if (rows.isEmpty()) {
             // No box: two lines on the page, the headline in body and the reason in caption.
             // It takes no Space.lead — its own row padding is the gap, which is why an empty
             // section is not a shorter version of a full one with a hole where the grid was.
@@ -238,7 +254,7 @@ internal fun RewardsTab(
             // Two columns, laid out by hand rather than with a lazy grid: this list is capped
             // at twenty by the server and sits inside a scrolling column, where nesting a
             // second scrollable would take the gesture away from the page.
-            val pairs = s.rows.chunked(2)
+            val pairs = rows.chunked(2)
             pairs.forEachIndexed { i, pair ->
                 // The 12dp is a grid GAP, so the last row does not carry one: a trailing
                 // padding here would silently add 12 to every section gap below the grid.
@@ -558,8 +574,92 @@ private fun RewardCard(row: Rewards.Row, hidden: Boolean, onOpen: (androidx.comp
             .clickable(press, indication = null) { onOpen(bounds) },
     ) {
         CardBody(row, cover = if (row.revealed) 0f else 1f)
+        if (!row.revealed) ScratchCue(row)
     }
 }
+
+/**
+ * What makes a covered card read as a scratch card rather than as a picture.
+ *
+ * User feedback, 2026-10-05: between the hero above and the streak card below, the covered card
+ * was one more illustration, and nothing on it said it could be scratched. Two plain things say
+ * it now, the way the big payment apps do:
+ *
+ *  - **"Tap to scratch"** at the top of the card, which is the instruction;
+ *  - **a band along the foot**, part of the card, carrying the one fact with a clock on it: the
+ *    day it expires, in the card's own colour, or "Expiring today!" in red when that day is today.
+ *
+ * Nothing on it moves. A first version had a foil strip, a coin rubbing across it and a glint
+ * crossing the card; it was three animations on a page that already has plenty to look at.
+ */
+@Composable
+private fun androidx.compose.foundation.layout.BoxScope.ScratchCue(row: Rewards.Row) {
+    val now = System.currentTimeMillis()
+    val today = row.expiresAt > 0L && row.expiresAt - now in 0..86_400_000L
+    val gone = row.expiresAt in 1..now
+    // The instruction, as a white label with ink words: the strongest contrast there is, on the
+    // blue card and the gold one alike, and it reads as a sticker on the card rather than as a
+    // shadow over the picture, which is what the dark pill looked like.
+    Text(
+        if (gone) "Expired" else "Tap to scratch",
+        color = D.Black, style = Type.body.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold),
+        modifier = Modifier.align(Alignment.TopCenter).padding(top = 10.dp)
+            .background(Color.White, CircleShape).padding(horizontal = 12.dp, vertical = 4.dp),
+    )
+    // The band. It belongs to the card: full width, flush with the foot, cut by the card's corners.
+    Box(
+        Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(36.dp)
+            .clip(RoundedCornerShape(bottomStart = CARD_R, bottomEnd = CARD_R))
+            // A solid colour that says what kind of news the band carries. The card's own
+            // deeper shade when there is time, so it reads as part of the card and stays calm;
+            // red on the last day, the one colour that means "now"; grey once it is over.
+            .background(when {
+                gone -> BAND_OVER
+                today -> BAND_URGENT
+                row.isSpecial -> BAND_GOLD
+                else -> BAND_BLUE
+            }),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            when {
+                gone -> "Not scratched in time"
+                today -> "Expiring today!"
+                row.expiresAt > 0L -> "Expires on ${EXPIRY_DAY.format(java.util.Date(row.expiresAt))}"
+                else -> "Scratch now"
+            },
+            color = Color.White, style = Type.caption.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold),
+            maxLines = 1,
+        )
+    }
+}
+
+// White words on each of these is at least 4.5:1.
+private val BAND_BLUE = Color(0xFF0B6FD6)
+private val BAND_GOLD = Color(0xFFB85C00)
+private val BAND_URGENT = Color(0xFFD81F2A)
+private val BAND_OVER = Color(0xFF5F6368)
+
+/** "16 Sep": the day and the month, which is all an expiry needs. */
+private val EXPIRY_DAY = java.text.SimpleDateFormat("d MMM", java.util.Locale.getDefault())
+
+/**
+ * Practice cards, for trying the scratch itself. **Take these out before release.**
+ *
+ * They are not rewards. Their ids are below zero, which [Rewards.reveal] refuses to send to the
+ * server, so scratching one pays nothing and records nothing; and because nothing is recorded,
+ * each comes back covered the next time the page is read. That is the point: the scratch can be
+ * shown to somebody and tried again and again without a real card being used up.
+ */
+private val MOCK_CARDS: List<Rewards.Row> = listOf(
+    // One with a week left and one that runs out today, so both states of the band can be seen.
+    Rewards.Row(id = -1, kind = "per_payment", skr = 40, counterparty = "", at = 0L, unlockAt = 0L,
+        state = "paid", reason = null, revealed = false,
+        expiresAt = System.currentTimeMillis() + 7 * 86_400_000L),
+    Rewards.Row(id = -2, kind = "first_payment", skr = 250, counterparty = "", at = 0L, unlockAt = 0L,
+        state = "paid", reason = null, revealed = false,
+        expiresAt = System.currentTimeMillis() + 6 * 3_600_000L),
+)
 
 /**
  * The card itself: the opened face, with the cover artwork over it by [cover] (1 = covered,
