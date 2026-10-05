@@ -71,6 +71,7 @@
         <activity
             android:name=".TapPopupActivity"
             android:exported="true"
+            android:screenOrientation="portrait"
             android:theme="@style/Theme.Duffle.Popup"
             android:taskAffinity="so.duffle.app.popup"
             android:launchMode="singleTask"

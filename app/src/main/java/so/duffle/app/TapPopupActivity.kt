@@ -76,7 +76,7 @@ class TapPopupActivity : ComponentActivity() {
          * The other phone took the signed payment. Not Success: this phone has no way to know
          * whether it landed, so it must not say so.
          */
-        data class HandedOver(val title: String, val detail: String) : Phase
+        data class HandedOver(val title: String, val detail: String, val signature: String? = null) : Phase
     }
 
     private lateinit var wallet: Wallet
@@ -124,6 +124,8 @@ class TapPopupActivity : ComponentActivity() {
     private var backdrop by mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null)
     /** True when this phone can be asked to make AirPay its wallet app and has not yet. */
     private var canBeWalletApp by mutableStateOf(false)
+    /** True from onStop until the next resume: the sheet is off screen, and what it covered may have changed. */
+    private var hidden = false
     // Registered here, as a field: it has to exist before the activity starts.
     private val askForRole = registerForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()
@@ -207,9 +209,12 @@ class TapPopupActivity : ComponentActivity() {
                     onRequestInstead = {
                         // The request is a sheet too, over the same blurred page, so this reads as
                         // the sheet changing what it holds and not as another screen opening.
-                        startActivity(RequestActivity.intent(this))
-                        finish()
-                        @Suppress("DEPRECATION") overridePendingTransition(0, 0)
+                        // Not while a wallet is being connected: closing the sheet would cut that off.
+                        if (phase !is Phase.Working) {
+                            startActivity(RequestActivity.intent(this))
+                            finish()
+                            @Suppress("DEPRECATION") overridePendingTransition(0, 0)
+                        }
                     },
                     wallets = wallets,
                     activeWallet = activeWallet,
@@ -229,12 +234,26 @@ class TapPopupActivity : ComponentActivity() {
                 // Balances are read every time the sheet opens: they change with every payment.
                 LaunchedEffect(address) {
                     val me = address ?: return@LaunchedEffect
-                    holdings = withContext(Dispatchers.IO) { Tokens.holdings(this@TapPopupActivity, me) }
-                    Log.i(TAG, "holdings: ${holdings?.let { Tokens.describe(it) } ?: "unreachable"}")
+                    // Asked again until it answers. One failed read used to leave the sheet with
+                    // no balance for as long as it stayed open, and the review step then refused
+                    // every amount.
+                    var wait = 3_000L
+                    while (true) {
+                        val got = withContext(Dispatchers.IO) { Tokens.holdings(this@TapPopupActivity, me) }
+                        Log.i(TAG, "holdings: ${got?.let { Tokens.describe(it) } ?: "unreachable"}")
+                        if (got != null) {
+                            holdings = got
+                            break
+                        }
+                        delay(wait)
+                        wait = (wait * 2).coerceAtMost(12_000L)
+                    }
                 }
                 // A request ends three ways, and the popup has to notice all of them: they pay,
                 // they decline, or — when we are the one being asked — they take it back.
-                LaunchedEffect(phase) {
+                // Keyed on the person as well: a request read by the armed sheet arrives with the
+                // phase already Ready, and its withdrawal still has to be watched for.
+                LaunchedEffect(phase, peer) {
                     when (val ph = phase) {
                         is Phase.Waiting -> watchForPayment(ph)
                         Phase.Ready -> watchForWithdrawal()
@@ -270,6 +289,15 @@ class TapPopupActivity : ComponentActivity() {
             onRequest = { req ->
                 runOnUiThread {
                     if (peer != null) return@runOnUiThread
+                    // Somebody asking this very wallet for money is this phone reading itself.
+                    // Checked before anything is saved, and the radio is left listening: this
+                    // used to file the request in the inbox, record this wallet as a contact and
+                    // switch the reader off, so the sheet never read another phone.
+                    if (req.recipient == address) {
+                        Haptics.failure(this)
+                        armedNote = "That request is for the wallet you are paying with."
+                        return@runOnUiThread
+                    }
                     // Saved first, exactly as MainActivity does: from here it survives a closed
                     // sheet and can still be paid from Activity.
                     Inbox(this).add(req)
@@ -277,11 +305,6 @@ class TapPopupActivity : ComponentActivity() {
                     Haptics.contact(this)
                     disarm()
                     armedNote = null
-                    // Somebody asking this very wallet for money is this phone reading itself.
-                    if (req.recipient == address) {
-                        armedNote = "That request is for the wallet you are paying with."
-                        return@runOnUiThread
-                    }
                     peer = TapPayload.Request(req)
                     phase = Phase.Ready
                     shownAt = System.currentTimeMillis()
@@ -303,6 +326,12 @@ class TapPopupActivity : ComponentActivity() {
             onCard = { card ->
                 runOnUiThread {
                     if (peer != null) return@runOnUiThread
+                    // The same wallet on two phones. Paying it would be paying yourself.
+                    if (card.address == address) {
+                        Haptics.failure(this)
+                        armedNote = "That phone uses the wallet you are paying with."
+                        return@runOnUiThread
+                    }
                     Contacts(this).record(card.address, card.label, false, brand = card.brand)
                     Haptics.contact(this)
                     disarm()
@@ -312,7 +341,18 @@ class TapPopupActivity : ComponentActivity() {
                     shownAt = System.currentTimeMillis()
                 }
             },
-        ).also { it.start() }
+        ).also {
+            it.start()
+            // A radio that is off reads nothing, and the sheet used to wait for it in silence.
+            val radio = when {
+                !it.available -> NO_NFC
+                !it.enabled -> NFC_OFF
+                else -> null
+            }
+            if (radio != null) armedNote = radio
+            // Switched on since the last look: the line saying it is off has to go.
+            else if (armedNote == NO_NFC || armedNote == NFC_OFF) armedNote = null
+        }
     }
 
     private fun disarm() {
@@ -366,10 +406,18 @@ class TapPopupActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        hidden = false
+        // The role may have been given in Settings while the sheet was behind it.
+        refreshRole()
         // Reader mode only exists while a screen is in front, so it is armed here rather than
         // once in onCreate — the same reason MainActivity re-arms on every resume.
         arm()
         armDeliver()
+    }
+
+    override fun onStop() {
+        super.onStop()
+        hidden = true
     }
 
     override fun onPause() {
@@ -380,6 +428,14 @@ class TapPopupActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        // A sheet left open behind another app still holds the picture of the page it first
+        // covered. Brought back from somewhere else (the power button, a notification) it drew
+        // that old page, blurred, over the lock screen or another app. So a sheet that was off
+        // screen takes the picture again: a fresh one if Home just took it, none otherwise.
+        if (hidden) {
+            Backdrop.showing = Backdrop.recent()
+            backdrop = Backdrop.showing?.asImageBitmap()
+        }
         // Never swap the person under a payment in progress.
         if (phase is Phase.Working || phase is Phase.Waiting || phase is Phase.HandOver) return
         handle(intent)
@@ -430,6 +486,24 @@ class TapPopupActivity : ComponentActivity() {
         shownAt = System.currentTimeMillis()
         cameFrom = if (intent.action == NfcAdapter.ACTION_NDEF_DISCOVERED) "nfc" else intent.getStringExtra(EXTRA_FROM)
 
+        // A name somebody typed in Pay anyone. A card may not carry a name shaped like a domain
+        // (see TapCard.validate: it would be a phone claiming a name it never proved), so the
+        // card arrives with no label and the name beside it. The name is only shown once this
+        // phone has resolved it to the same address itself. This activity can be started by
+        // other apps, and a name taken on trust from an intent is exactly the false tick that
+        // rule exists to stop.
+        val claimed = intent.getStringExtra(EXTRA_NAME)?.trim().orEmpty()
+        if (claimed.isNotEmpty() && claimed.length <= 64 && payload is TapPayload.Card) {
+            lifecycleScope.launch {
+                val really = runCatching { Names.addressOf(claimed) }.getOrNull()
+                if (really is Names.Resolved.Found && really.address == payload.address &&
+                    peer?.address == payload.address
+                ) {
+                    peer = TapPayload.Card(payload.card.copy(label = really.name))
+                }
+            }
+        }
+
         // Debug builds only: jump straight to a state, so every screen can be looked at on a real
         // phone without paying anyone. No side effects — nothing is recorded or registered.
         intent.getStringExtra(EXTRA_PREVIEW)?.takeIf { BuildConfig.PREVIEWS }?.let { state ->
@@ -448,6 +522,8 @@ class TapPopupActivity : ComponentActivity() {
                 "error" -> Phase.Error("Nothing was sent", "The approval window closed. Tap again.")
                 // The §7 wording, so the preview shows what ships rather than its own phrasing.
                 "failed" -> Phase.Failed("The chain refused it", "It went out and didn't land. Nothing left your wallet.", "67WKe2RHq4Z8vY1pXbT5mN3cJdedqWM5")
+                "handed" -> Phase.HandedOver("Handed over", "Their phone is sending it. It shows in your history once you are back online.")
+                "unsure" -> Phase.HandedOver("Sent, still confirming", "Sent, we couldn't confirm it yet. Check the explorer before paying again.", "67WKe2RHq4Z8vY1pXbT5mN3cJdedqWM5")
                 "connect" -> { address = null; Phase.Ready }
                 else -> Phase.Ready
             }
@@ -504,18 +580,32 @@ class TapPopupActivity : ComponentActivity() {
     }
 
     private fun connect() {
+        // One wallet session at a time. The armed sheet's button stays live while it works.
+        if (phase is Phase.Working) return
         lifecycleScope.launch {
             phase = Phase.Working("Opening your wallet…")
             when (val r = wallet.connect()) {
                 is Wallet.Outcome.Ok -> {
                     address = r.address
+                    // The armed sheet draws its card from this list. Left as it was, a wallet
+                    // connected from here still showed "Connect a wallet to pay".
+                    wallets = wallet.linked.all()
+                    activeWallet = wallet.linked.selected()?.id
                     phase = Phase.Ready
                     launch(Dispatchers.IO) {
                         Identity.rememberGenesis(this@TapPopupActivity, r.address,
                             runCatching { Genesis.mintFor(r.address) }.getOrNull())
                     }
                 }
-                is Wallet.Outcome.Failed -> phase = Phase.Error("Couldn't connect", r.why)
+                // With nobody on the sheet there is no result screen to show it on, so the
+                // reason goes where the armed sheet says everything else.
+                is Wallet.Outcome.Failed ->
+                    if (peer == null) {
+                        armedNote = "Couldn't connect. ${r.why}"
+                        phase = Phase.Ready
+                    } else {
+                        phase = Phase.Error("Couldn't connect", r.why)
+                    }
                 Wallet.Outcome.Declined -> phase = Phase.Ready
             }
         }
@@ -523,13 +613,18 @@ class TapPopupActivity : ComponentActivity() {
 
     private fun pay(amount: String, token: Tokens.Holding?) {
         val p = peer ?: return
+        // Never two payments at once, whatever called this twice.
+        if (phase is Phase.Working) return
         val payer = address ?: return connect()
         val t = token ?: SOL
         val req = when (p) {
             is TapPayload.Request -> p.request
-            is TapPayload.Card -> PayRequest(p.card.address, amount.trim(), t.token, p.card.label, PayRequest.newReference(),
+            // "5." is a valid amount to the keypad and reads badly everywhere after it.
+            is TapPayload.Card -> PayRequest(p.card.address, amount.trim().removeSuffix("."), t.token, p.card.label, PayRequest.newReference(),
                 p.card.genesis, decimals = t.decimals, symbol = t.symbol)
         }
+        // What the last payment on this sheet earned is not what this one earns.
+        earned = null
         lifecycleScope.launch {
             phase = Phase.Working("Getting ready…")
             // Registered before paying so the server is already watching and can tell the other
@@ -580,14 +675,26 @@ class TapPopupActivity : ComponentActivity() {
                     // the chain, which is after this screen appears. It slides in when it
                     // lands, rather than holding up the ✓.
                     launch { earned = Rewards.awaitEarned(payer, req.reference) }
-                    Phase.Success("Sent", "${req.amount} ${req.symbol} to ${req.label}", result.signature)
+                    Phase.Success("Sent", "${req.amount} ${req.symbol} to ${req.label.ifBlank { "them" }}", result.signature)
                 }
                 is PayResult.AlreadyPaid -> {
                     if (p is TapPayload.Request) Inbox(this@TapPopupActivity).markPaid(req.reference, result.signature)
                     Phase.Success("Already paid", "This request was paid before, nothing new was sent.", result.signature)
                 }
                 is PayResult.Error -> { Haptics.failure(this@TapPopupActivity); Phase.Error(result.title, result.detail) }
-                is PayResult.Failed -> { Haptics.failure(this@TapPopupActivity); Phase.Failed(result.title, result.detail, result.signature) }
+                is PayResult.Failed ->
+                    if (result.unsure) {
+                        // Sent, and no answer yet. Not the red "refused" screen: that one offers
+                        // "Try again", and a second payment to a card goes out under a new
+                        // reference, so the same money could be sent twice. Kept in the inbox as
+                        // unpaid, where the main screen's check of the chain marks it.
+                        if (Inbox(this@TapPopupActivity).get(req.reference) == null) Inbox(this@TapPopupActivity).add(req)
+                        Haptics.tick(this@TapPopupActivity)
+                        Phase.HandedOver(result.title, result.detail, result.signature)
+                    } else {
+                        Haptics.failure(this@TapPopupActivity)
+                        Phase.Failed(result.title, result.detail, result.signature)
+                    }
                 is PayResult.SignedOffline -> {
                     // Not filed as paid: it has not been sent, and this phone cannot find out
                     // whether it lands. The request stays in the inbox as unpaid, where the main
@@ -633,16 +740,17 @@ class TapPopupActivity : ComponentActivity() {
 
     private fun request(amount: String, token: Tokens.Holding?) {
         val p = peer ?: return
+        if (phase is Phase.Working) return
         val me = address ?: return connect()
         val t = token ?: SOL
-        val value = amount.trim()
+        val value = amount.trim().removeSuffix(".")
         if (PayRequest.baseUnits(value, t.decimals) == null) {
             phase = Phase.Error("Enter an amount", "${t.symbol} amounts can have up to ${t.decimals} decimal places.")
             return
         }
         if (!ServerClient.enabled) {
             // The phones have parted by now, so the request has no radio to travel over.
-            phase = Phase.Error("Requests need the AirPay server", "Paying works without it. To request after a tap. Run the server, see server/README.md.")
+            phase = Phase.Error("Requests are not available", "This build of AirPay cannot send a request. Paying still works.")
             return
         }
         lifecycleScope.launch {
@@ -714,7 +822,11 @@ class TapPopupActivity : ComponentActivity() {
 
     private fun refreshHoldings() {
         val me = address ?: return
-        lifecycleScope.launch { holdings = withContext(Dispatchers.IO) { Tokens.holdings(this@TapPopupActivity, me) } ?: holdings }
+        lifecycleScope.launch {
+            val got = withContext(Dispatchers.IO) { Tokens.holdings(this@TapPopupActivity, me) }
+            // Only if it is still the wallet in use: the answer for one wallet must not land on another's card.
+            if (got != null && address == me) holdings = got
+        }
     }
 
     companion object {
@@ -726,6 +838,8 @@ class TapPopupActivity : ComponentActivity() {
         private const val EXTRA_PREVIEW = "preview"
         private const val EXTRA_ARMED = "armed"
         private const val EXTRA_BACK = "back"
+        private const val NO_NFC = "This phone has no NFC, so it cannot pay by tap."
+        private const val NFC_OFF = "NFC is off. Turn it on in Settings to pay by tap."
 
         /** The armed sheet again, from the request sheet: same page behind, no new snapshot. */
         fun back(context: Context): Intent = armed(context).putExtra(EXTRA_BACK, true)
@@ -743,6 +857,16 @@ class TapPopupActivity : ComponentActivity() {
             Intent(context, TapPopupActivity::class.java)
                 .putExtra(EXTRA_ARMED, true)
                 .putExtra(EXTRA_FROM, "tap-button")
+
+        private const val EXTRA_NAME = "name"
+
+        /**
+         * Paying somebody by a name typed in Pay anyone. The name travels beside the card, not
+         * inside it, and is shown only after this activity has resolved it itself: see [handle].
+         */
+        fun named(context: Context, address: String, name: String): Intent =
+            intent(context, TapPayload.Card(TapCard(address, "", null, null)), cameFrom = "name")
+                .putExtra(EXTRA_NAME, name)
 
         fun intent(context: Context, payload: TapPayload, cameFrom: String): Intent =
             Intent(context, TapPopupActivity::class.java)

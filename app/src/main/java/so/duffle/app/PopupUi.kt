@@ -190,13 +190,19 @@ internal fun PopupScreen(
 ) {
     // Hoisted so the amount survives the switch from typing to paying: the same number stays on
     // screen while the button below it reports progress.
-    var amount by rememberSaveable { mutableStateOf(previewAmount ?: "") }
-    var token by rememberSaveable { mutableStateOf("SOL") }
+    //
+    // All four belong to the person on the sheet, so they start again when that person changes.
+    // The sheet outlives one payment (a second tap, a scan, the power button all land on the
+    // same one), and the next person used to open straight on the review step with the last
+    // person's amount already filled in.
+    val sheetFor = peer?.address
+    var amount by rememberSaveable(sheetFor) { mutableStateOf(previewAmount ?: "") }
+    var token by rememberSaveable(sheetFor) { mutableStateOf("SOL") }
     // Pay opens a review of the payment; only "Confirm and pay" starts it. Hoisted so "Try again"
     // after a failure comes back to the review, not the keypad.
-    var confirming by rememberSaveable { mutableStateOf(false) }
+    var confirming by rememberSaveable(sheetFor) { mutableStateOf(false) }
     // The page about the other phone, opened by tapping the header.
-    var aboutThem by rememberSaveable { mutableStateOf(false) }
+    var aboutThem by rememberSaveable(sheetFor) { mutableStateOf(false) }
     // A Genesis token is a claim until the chain says otherwise. Checked for every phone, on
     // mainnet (where Genesis lives), and the "Verified Seeker" badge waits for the answer.
     val genesis by produceState<Genesis.Check?>(initialValue = null, peer?.address) {
@@ -424,8 +430,12 @@ internal fun PopupScreen(
                         }
                         // Pending, not Paid: their phone has it, and nobody here knows yet
                         // whether it landed. A green tick would be a claim this phone cannot make.
+                        // Also where a payment that was sent and not yet confirmed lands: that one
+                        // has a signature, so it gets the way to look it up.
                         "handed" -> (phase as? Phase.HandedOver)?.let {
-                            ResultBody(Tone.Pending, it.title, it.detail) { PrimaryButton("Done", close, Modifier.fillMaxWidth()) }
+                            ResultBody(Tone.Pending, it.title, it.detail) {
+                                ExplorerUnder(it.signature, onExplorer) { PrimaryButton("Done", close, Modifier.fillMaxWidth()) }
+                            }
                         }
                         "success" -> (phase as? Phase.Success)?.let {
                             ResultBody(Tone.Paid, it.title, it.detail, earned) {
@@ -564,7 +574,8 @@ private fun ArmedBody(
             Text(
                 "Open this with a double-press of power", color = D.BlueInk, style = Type.caption,
                 textDecoration = androidx.compose.ui.text.style.TextDecoration.Underline,
-                modifier = Modifier.clickable(onClick = onWalletApp).padding(vertical = 10.dp, horizontal = 8.dp),
+                // 16 above and below an 18 line: the 48dp a touch needs.
+                modifier = Modifier.clickable(onClick = onWalletApp).padding(vertical = 16.dp, horizontal = 8.dp),
             )
         }
         Spacer(Modifier.height(Space.tight))
@@ -656,7 +667,7 @@ private fun OtherCard(w: Linked, onUse: () -> Unit) {
  * loading spinner. Only the ring moves, which says "live" without redrawing the symbol.
  */
 @Composable
-private fun ContactlessPulse(ink: Color) {
+internal fun ContactlessPulse(ink: Color) {
     val beat by rememberInfiniteTransition(label = "nfc").animateFloat(
         0f, 1f, infiniteRepeatable(tween(1800, easing = LinearEasing), RepeatMode.Restart), label = "ring",
     )
@@ -1146,6 +1157,7 @@ private fun Form(
                 val shown = held ?: req?.let { Tokens.Holding(it.mint, it.symbol, it.symbol, it.decimals, 0, null) }
                     ?: holdings?.firstOrNull() ?: SolPlaceholder
                 ConfirmBody(peer, payAmount, shown, known = holdings != null && held != null, working = working,
+                    loading = holdings == null,
                     reward = reward,
                     onConfirm = { sending -> onPay(sending, if (req == null) shown else null) }, onBack = { onConfirming(false) })
             } else {
@@ -1343,6 +1355,8 @@ private fun ConfirmBody(
     /** False when the wallet's balance of this token isn't known (or it holds none). */
     known: Boolean,
     working: String?,
+    /** True while the wallet's balances have not been read yet. Not the same as holding none. */
+    loading: Boolean = false,
     /** What this payment would earn. Asked by the caller, long before this screen opened. */
     reward: Rewards.Preview?,
     /** Called with the amount that is really sent, which is less than typed when the fee comes out of it. */
@@ -1451,7 +1465,7 @@ private fun ConfirmBody(
         RewardLine(reward)
 
         Spacer(Modifier.height(20.dp))
-        PrimaryButton(working ?: if (enough || stuck) "Confirm and pay" else if (known) "Not enough ${token.symbol}" else "No ${token.symbol} in your wallet",
+        PrimaryButton(working ?: if (enough || stuck) "Confirm and pay" else if (loading) "Checking your balance…" else if (known) "Not enough ${token.symbol}" else "No ${token.symbol} in your wallet",
             { onConfirm(if (fromAmount) Chain.fmtUnits(units, 9) else amount) }, Modifier.fillMaxWidth().shared("primary", bounds = true),
             enabled = enough, loading = working != null)
         AnimatedVisibility(visible = working == null) { TextLink("Back", onBack, modifier = Modifier.shared("secondary", bounds = true)) }

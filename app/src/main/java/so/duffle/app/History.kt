@@ -37,8 +37,12 @@ object History {
      * `Orders.failed` says the order did not arrive, not that it was refunded. Saying
      * "Refunded to your wallet" off `failed` would be inventing a payment. See
      * ui/PORT-2026-10-01-2.md §5, which lists this as undesigned.
+     *
+     * **FAILED is a shop order that did not arrive.** It is not REFUNDED, for the reason above.
+     * It used to keep SETTLED with the outcome left in `note`, and no row draws `note`, so an
+     * order that failed read "You paid" like one that worked.
      */
-    enum class State { SETTLED, CONFIRMING, PREPARING, DELIVERED, REFUNDED }
+    enum class State { SETTLED, CONFIRMING, PREPARING, DELIVERED, REFUNDED, FAILED }
 
     /** The three shop brands that ship an icon. Anything else falls back to its category. */
     private val BRANDS = mapOf(
@@ -171,14 +175,14 @@ object History {
                 },
                 code = o.code,
                 who = Who.SHOP,
-                // PREPARING while it is still owed to us, DELIVERED once it arrives. A FAILED
+                // PREPARING while it is still owed to us, DELIVERED once it arrives. A failed
                 // order is neither: it is not on its way and it did not arrive, and calling it
-                // REFUNDED would claim money came back that nothing here has seen. It keeps
-                // SETTLED, and `note` already says what happened.
+                // REFUNDED would claim money came back that nothing here has seen. It is
+                // FAILED, so the row can say so; `note` carries the detail.
                 state = when {
                     o.delivered -> State.DELIVERED
                     o.waiting -> State.PREPARING
-                    else -> State.SETTLED
+                    else -> State.FAILED
                 },
                 brand = brandFor(o.name),
                 spend = spendFor(o.category),

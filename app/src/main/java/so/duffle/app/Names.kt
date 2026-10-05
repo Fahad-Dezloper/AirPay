@@ -18,11 +18,21 @@ import java.util.Base64
  */
 internal const val SCANNED_PLACEHOLDER = "Scanned code"
 
+/**
+ * The label "Pay anyone" passes on for a pasted wallet address, which has no name either.
+ *
+ * It is right on the payment sheet, where it says what was typed. Stored as a contact's name it
+ * made every pasted address a person called "Wallet address" with a "W" for a face, all of them
+ * alike, so it is read back as a placeholder exactly as [SCANNED_PLACEHOLDER] is.
+ */
+internal const val ADDRESS_PLACEHOLDER = "Wallet address"
+
 /** How many leading characters of an address stand in for a name nobody gave. */
 private const val ADDRESS_START = 6
 
 /** True when [label] is the app's own placeholder rather than a name — see [SCANNED_PLACEHOLDER]. */
-internal fun isPlaceholderName(label: String): Boolean = label.trim() == SCANNED_PLACEHOLDER
+internal fun isPlaceholderName(label: String): Boolean =
+    label.trim().let { it == SCANNED_PLACEHOLDER || it == ADDRESS_PLACEHOLDER }
 
 /** The start of an address, with no ellipsis: short enough to recognise, too short to pretend to be a name. */
 internal fun addressStart(address: String): String = address.trim().take(ADDRESS_START)
@@ -176,23 +186,82 @@ object Names {
      * name, so only a full name resolves. `.air` is AirPay's own directory and also answers a
      * half-typed name. A pasted wallet address is its own single candidate.
      */
-    suspend fun candidates(raw: String): List<Candidate> = coroutineScope {
-        val text = raw.trim().lowercase()
-        if (text.length < 2) return@coroutineScope emptyList()
-        if (PayRequest.isBase58Address(raw.trim())) return@coroutineScope listOf(Candidate(raw.trim(), raw.trim()))
+    suspend fun candidates(raw: String): List<Candidate> = lookup(raw).people
+
+    /**
+     * What a "Pay anyone" lookup came to: who it could be, and when that is nobody, why.
+     *
+     * The two reasons are kept because an empty list alone put "No one found. Check the
+     * spelling." under a name that was spelled perfectly: one that could not be asked about on
+     * a bad connection ([unreachable]), or one that resolved to something that must not be paid
+     * ([unsafe]).
+     */
+    data class Lookup(
+        val people: List<Candidate>,
+        val unreachable: Boolean = false,
+        val unsafe: Boolean = false,
+    )
+
+    /** [candidates], with the reason kept when the answer is nobody. */
+    suspend fun lookup(raw: String): Lookup = coroutineScope {
+        val typed = raw.trim()
+        val text = typed.lowercase()
+        if (text.length < 2) return@coroutineScope Lookup(emptyList())
+        if (PayRequest.isBase58Address(typed)) {
+            // A pasted address is held to the rule a name's owner is held to. It used to be
+            // offered as it came, and the address people most often paste by mistake is a
+            // token account or a mint: money sent there is not coming back.
+            return@coroutineScope when (withContext(Dispatchers.IO) { ordinaryWallet(typed) }) {
+                true -> Lookup(listOf(Candidate(typed, typed)))
+                false -> Lookup(emptyList(), unsafe = true)
+                null -> Lookup(emptyList(), unreachable = true)
+            }
+        }
         val base = text.substringBefore('.')
         val suffix = if ('.' in text) text.substringAfter('.') else ""
-        if (base.length < 2) return@coroutineScope emptyList()
+        if (base.length < 2) return@coroutineScope Lookup(emptyList())
         val chain = listOf("skr", "sol").filter { it.startsWith(suffix) }.map { tld ->
-            async {
-                (addressOf("$base.$tld") as? Resolved.Found)?.let { Candidate(it.name, it.address) }
-            }
+            async { addressOf("$base.$tld") }
         }
         val air = if ("air".startsWith(suffix)) async {
             ServerClient.airNames(base).map { Candidate(it.first, it.second) }
         } else null
-        (chain.awaitAll().filterNotNull() + (air?.await() ?: emptyList())).distinctBy { it.name }
+        val answers = chain.awaitAll()
+        val people = answers.filterIsInstance<Resolved.Found>().map { Candidate(it.name, it.address) } +
+            (air?.await() ?: emptyList())
+        Lookup(
+            people = people.distinctBy { it.name },
+            unreachable = answers.any { it is Resolved.Unreachable },
+            unsafe = answers.any { it is Resolved.Unsafe },
+        )
     }
+
+    /**
+     * Whether [address] is somewhere money can safely go: an account the System Program owns,
+     * or one that does not exist yet and that a person could hold the key to. Null when the
+     * chain could not be asked, which is never a yes.
+     *
+     * Asked through [Chain.rpc], so it has the server's provider behind it and is not at the
+     * mercy of the public endpoint's rate limit the way the name lookups are.
+     */
+    private fun ordinaryWallet(address: String): Boolean? {
+        val info = Chain.rpc(
+            """{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["$address",{"encoding":"base64","dataSlice":{"offset":0,"length":0}}]}"""
+        ) ?: return null
+        val value = try { JSONObject(info).getJSONObject("result").opt("value") } catch (e: Exception) { return null }
+        if (value is JSONObject) return value.optString("owner") == SYSTEM_PROGRAM
+        // Nothing there yet, which is what a new wallet looks like. An address off the curve
+        // has no private key, so it is not a wallet waiting for its first payment: it is a
+        // program's address, most often a token account nobody has opened.
+        return try {
+            val bytes = Base58.decode(address)
+            bytes.size == 32 && Pda.onCurve(bytes)
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    private const val SYSTEM_PROGRAM = "11111111111111111111111111111111"
 
     /** "dezloper.skr", or null when there is no name or no answer. For places that show one line. */
     suspend fun label(address: String): String? = (of(address) as? Name.Domain)?.text

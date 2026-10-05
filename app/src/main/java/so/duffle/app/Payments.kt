@@ -19,7 +19,14 @@ sealed interface PayResult {
     /** Paid before — by this phone after a relaunch, or by someone else. Not an error, not new. */
     data class AlreadyPaid(val signature: String) : PayResult
     data class Error(val title: String, val detail: String) : PayResult
-    data class Failed(val title: String, val detail: String, val signature: String? = null) : PayResult
+    data class Failed(
+        val title: String, val detail: String, val signature: String? = null,
+        /**
+         * True when it was sent and no answer came back in time. Not a refusal: the money may
+         * still arrive, so a screen showing this must not offer to pay again as if it had not.
+         */
+        val unsure: Boolean = false,
+    ) : PayResult
     /** The signed transaction, for the caller to hand to the phone that asked. */
     class SignedOffline(val tx: ByteArray) : PayResult
 }
@@ -104,7 +111,12 @@ object Payments {
                 } else {
                     PayResult.Failed("The chain refused it", "It went out and didn't land. Nothing left your wallet.")
                 }
-            Chain.Submitted.Offline -> return PayResult.Error("You're offline", "It was signed but never sent. Try again.")
+            // No answer is not "not sent": the connection can drop after the node took it. The
+            // old line said "never sent, try again", which invites a second payment.
+            Chain.Submitted.Offline -> return PayResult.Error(
+                "You're offline",
+                "It was signed, and we got no answer when sending it. Check your wallet's history before paying again.",
+            )
         }
         log("✓ SENT, $signature")
 
@@ -120,6 +132,7 @@ object Payments {
                 if (Chain.rateLimited) "Sent, we just can't get an answer right now. It is very likely fine; check the explorer."
                 else "Sent, we couldn't confirm it yet. Check the explorer before paying again.",
                 signature,
+                unsure = true,
             )
         }
     }

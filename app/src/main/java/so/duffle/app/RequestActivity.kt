@@ -248,14 +248,22 @@ class RequestActivity : ComponentActivity() {
     }
 
     private fun ask(me: String) {
-        val units = PayRequest.baseUnits(amount.trim(), token.decimals)
+        // "5." is what the keypad holds after the point is pressed. It is 5, and is asked for as 5.
+        val value = amount.trim().removeSuffix(".")
+        val units = PayRequest.baseUnits(value, token.decimals)
         if (units == null || units <= 0) {
             problem = "Enter an amount"
             return
         }
+        // The ceiling every paying phone applies ([PayRequest.validate]). Asked for anyway, the
+        // code went up and the payer's AirPay refused to read it, by tap or by scan.
+        if ((value.toDoubleOrNull() ?: 0.0) > PayRequest.MAX_AMOUNT) {
+            problem = "The most you can request is 1,000 ${token.symbol}"
+            return
+        }
         val request = PayRequest(
             recipient = me,
-            amount = amount.trim(),
+            amount = value,
             token = token.mint ?: "SOL",
             label = Identity.label(this),
             reference = PayRequest.newReference(),
@@ -382,6 +390,19 @@ class RequestActivity : ComponentActivity() {
         finish()
     }
 
+    /**
+     * Home, or anything else that takes the person away. The sheet goes with them.
+     *
+     * It is hidden from recents, so a sheet left behind could not be found again, and it went on
+     * offering its request on the radio and asking the chain about it for as long as the app
+     * lived. The screen switching off is not this: the sheet stays for that, and shows again over
+     * the lock screen. The request itself stays on the watch list, exactly as with Back.
+     */
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        finish()
+    }
+
     override fun onPause() {
         super.onPause()
         // Leaving for good. Done here as well as in onDestroy because Android may hold that back
@@ -420,14 +441,22 @@ class RequestActivity : ComponentActivity() {
                         modifier = Modifier.clip(shape).background(if (on) D.Black else D.White)
                             .border(1.5.dp, if (on) D.Black else D.Line, shape)
                             .clickable { token = t; amount = ""; problem = null }
-                            .padding(horizontal = 20.dp, vertical = 10.dp),
+                            // 14 above and below a 20 line: the 48dp a touch needs.
+                            .padding(horizontal = 20.dp, vertical = 14.dp),
                     )
                 }
             }
             Spacer(Modifier.height(Space.row))
             Text(
                 amount.ifEmpty { "0" }, color = if (amount.isEmpty()) D.Quiet else D.Black,
-                fontSize = 64.sp, style = Type.title.figure(), maxLines = 1,
+                // Steps down as the number grows. At one size, anything past nine or so
+                // characters ran off the sheet and the last digits typed could not be seen.
+                fontSize = when {
+                    amount.length > 9 -> 36.sp
+                    amount.length > 6 -> 48.sp
+                    else -> 64.sp
+                },
+                style = Type.title.figure(), maxLines = 1,
             )
             Text(token.symbol, color = D.Quiet, style = Type.body)
             problem?.let {

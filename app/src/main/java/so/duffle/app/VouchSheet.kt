@@ -248,7 +248,7 @@ internal fun VouchSheet(
                 Text(
                     "None of your wallets owns a .skr or .sol yet, so there is no name to carry. " +
                         "Every Seeker comes with a .skr, and any wallet that has one can lend it to " +
-                        "the rest, link that wallet here and this will offer to.",
+                        "the rest. Link that wallet here and this will offer to.",
                     color = D.Quiet, style = Type.caption,
                 )
                 Spacer(Modifier.height(Space.lead))

@@ -818,7 +818,12 @@ private fun ItemCard(
             Text(titleOf(row, them), color = D.Quiet, style = Type.caption, maxLines = 1,
                 overflow = TextOverflow.Ellipsis)
             Spacer(Modifier.height(Space.tight))
-            Text(money(row.amount, row.symbol), color = D.Black, style = Type.title.figure(), maxLines = 1)
+            // An ellipsis when it cannot fit, so a long amount is visibly cut short rather than
+            // clipped at a digit and read as a smaller number.
+            Text(
+                money(row.amount, row.symbol), color = D.Black, style = Type.title.figure(),
+                maxLines = 1, overflow = TextOverflow.Ellipsis,
+            )
             Spacer(Modifier.height(8.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 StatusDot(row.stage, 20.dp)
@@ -972,8 +977,10 @@ private fun MessageBar(
             if (draft.isEmpty()) Text("Message…", color = D.Quiet, style = Type.body, maxLines = 1)
             BasicTextField(
                 value = draft,
-                // Capped where the server caps it, so nothing is typed that cannot be sent.
-                onValueChange = { if (it.length <= Messages.MAX_BODY) draft = it },
+                // Capped where the server caps it, so nothing is typed that cannot be sent. Cut
+                // rather than refused: refusing the whole change made a long paste do nothing
+                // at all, with no word about why.
+                onValueChange = { draft = it.take(Messages.MAX_BODY) },
                 textStyle = Type.body.copy(color = D.Black),
                 cursorBrush = SolidColor(D.Blue),
                 maxLines = 4,

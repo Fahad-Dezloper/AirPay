@@ -121,6 +121,12 @@ object Chain {
                     val emptying = lamports + NETWORK_FEE_LAMPORTS == held
                     if (!emptying && held < lamports + FEE_HEADROOM_LAMPORTS)
                         return Built.NotEnough(fmt(b.sol), fmt(lamports / LAMPORTS_PER_SOL), "SOL")
+                    // The same rule [sendable] holds the keypad to, for a request whose amount
+                    // is fixed: what is left must be nothing or at least the rent minimum. Past
+                    // this point the chain refuses it ("insufficient funds for rent"), but only
+                    // after the person has approved it in their wallet.
+                    if (!emptying && held - lamports - NETWORK_FEE_LAMPORTS < RENT_MIN_LAMPORTS)
+                        return Built.Bad("That would leave your wallet with less SOL than Solana lets it hold (about 0.0009). Add a little SOL and try again.")
                 }
                 is Balance.Offline -> return Built.Offline(b.detail)
             }
@@ -590,7 +596,28 @@ object Chain {
             ?.let { return Submitted.Ok(it.groupValues[1]) }
 
         val why = Regex("\"message\"\\s*:\\s*\"([^\"]+)\"").find(res)?.groupValues?.get(1)
+        // "Already processed" is not a refusal: the cluster has this exact transaction. It
+        // happens when our server forwarded it and then timed out answering, so [post] sent it
+        // a second time to the public node. Calling that Rejected told the payer "nothing left
+        // your wallet" about money that had gone, and dropped a shop order that was paid for.
+        // The signature is in the transaction itself, so it is handed on as submitted and
+        // [confirm] decides what became of it.
+        if (why != null && "already been processed" in why.lowercase()) {
+            signatureOf(signedTx)?.let { return Submitted.Ok(it) }
+        }
         return Submitted.Rejected(why ?: "the network refused the transaction")
+    }
+
+    /**
+     * A signed transaction's own signature: the first 64 bytes after the one-byte count, which
+     * is the fee payer's and is what the chain files the transaction under. Null when the slot
+     * is missing or still zero-filled, which means it was never signed.
+     */
+    private fun signatureOf(signedTx: ByteArray): String? {
+        if (signedTx.size < 65 || signedTx[0].toInt() !in 1..127) return null
+        val first = signedTx.copyOfRange(1, 65)
+        if (first.all { it.toInt() == 0 }) return null
+        return Names.Base58.encode(first)
     }
 
     sealed interface Confirmation {

@@ -92,7 +92,17 @@ class ScanActivity : ComponentActivity() {
 
     private val ask = registerForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
         granted = ok
-        if (!ok) problem = "AirPay needs the camera to read a code. You can allow it in Settings."
+        if (!ok) problem = NO_CAMERA
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Back from Settings with the camera allowed. Nothing else tells this screen, and it
+        // used to sit black with the refusal still on it until it was closed and opened again.
+        if (!granted && checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+            granted = true
+            if (problem == NO_CAMERA) problem = null
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -151,6 +161,28 @@ class ScanActivity : ComponentActivity() {
                                 .padding(horizontal = 22.dp, vertical = 26.dp),
                             horizontalAlignment = Alignment.CenterHorizontally,
                         ) {
+                            if (!granted) {
+                                // Refused for good, Android will not ask again, so the only way
+                                // on is the app's own page in Settings. The sentence above said
+                                // so and gave no way to get there.
+                                Text(
+                                    "Open Settings", color = D.Black, style = Type.heading,
+                                    modifier = Modifier.clip(RoundedCornerShape(14.dp))
+                                        .background(D.White)
+                                        .clickable {
+                                            runCatching {
+                                                startActivity(
+                                                    Intent(
+                                                        android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                                        android.net.Uri.fromParts("package", packageName, null),
+                                                    ),
+                                                )
+                                            }
+                                        }
+                                        .padding(horizontal = 30.dp, vertical = 13.dp),
+                                )
+                                Spacer(Modifier.height(Space.inline))
+                            }
                             Text(
                                 // Every button label is `Type.heading` (§3).
                                 "Cancel", color = Color.White, style = Type.heading,
@@ -247,6 +279,8 @@ class ScanActivity : ComponentActivity() {
         val raw = hit.first
         if (raw == held) return
         held = raw
+        // A new code is a new try: what was wrong with the last one is no longer the news.
+        problem = null
         Haptics.select(this)
         lifecycleScope.launch {
             delay(HOLD_MS)
@@ -329,7 +363,12 @@ class ScanActivity : ComponentActivity() {
                         // nothing — one extra read-only account — and claims nothing for them.
                         reference = got.reference ?: PayRequest.newReference(),
                         decimals = decimals,
-                        symbol = if (got.token == "SOL") "SOL" else got.token.take(4),
+                        // USDC by name. It was shown as "EPjF", the start of its address.
+                        symbol = when (got.token) {
+                            "SOL" -> "SOL"
+                            Shop.USDC_MAINNET -> "USDC"
+                            else -> got.token.take(4)
+                        },
                     )
                     if (req.validate() != null || req.units() == null) {
                         handled = false
@@ -360,6 +399,7 @@ class ScanActivity : ComponentActivity() {
 
     companion object {
         private const val TAG = "AirPayScan"
+        private const val NO_CAMERA = "AirPay needs the camera to read a code. You can allow it in Settings."
 
         /** Telegram's number: more than four empty frames in a row before the frame lets go. */
         private const val MISSES_TO_LET_GO = 4

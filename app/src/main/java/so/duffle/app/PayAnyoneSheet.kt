@@ -15,10 +15,12 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.SheetValue
@@ -36,9 +38,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
 
@@ -58,26 +62,41 @@ internal fun PayAnyoneSheet(onClose: () -> Unit, onFound: (address: String, labe
     var picked by remember { mutableStateOf<Names.Candidate?>(null) }
     var found by remember { mutableStateOf<List<Names.Candidate>>(emptyList()) }
     var looking by remember { mutableStateOf(false) }
+    // Why the list is empty, when it is not simply that nobody has that name.
+    var unreachable by remember { mutableStateOf(false) }
+    var unsafe by remember { mutableStateOf(false) }
+    // Bumped by "Try again", so a lookup that failed can be asked again without retyping.
+    var attempt by remember { mutableStateOf(0) }
+    // Which address is ours. Paying it is refused further on by the payment sheet closing
+    // itself, which from here looked like Pay had done nothing at all.
+    val context = LocalContext.current
+    val me = remember { Wallet.addressOf(context) }
     val focus = remember { FocusRequester() }
     val keyboard = LocalSoftwareKeyboardController.current
     val sheet = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
     // Keyed on the text: a new keystroke cancels the pause and the lookup in flight.
-    LaunchedEffect(text) {
+    LaunchedEffect(text, attempt) {
         if (picked != null && picked!!.name == text) return@LaunchedEffect
         picked = null
+        unreachable = false; unsafe = false
         if (text.trim().length < 2) { found = emptyList(); looking = false; return@LaunchedEffect }
         looking = true
         delay(350)
-        found = Names.candidates(text)
+        val answer = Names.lookup(text)
+        found = answer.people
+        unreachable = answer.unreachable
+        unsafe = answer.unsafe
         looking = false
     }
     // The sheet has to be on screen before it can take focus.
     LaunchedEffect(Unit) { delay(250); focus.requestFocus(); keyboard?.show() }
 
     // What Pay would pay: a pick, or an exact match for what is typed.
-    val target = picked ?: found.firstOrNull { it.name.equals(text.trim(), ignoreCase = true) }
-    val go = { target?.let { t -> onFound(t.address, if (t.name == t.address) "Wallet address" else t.name) }; Unit }
+    // Never our own wallet: see [me].
+    val target = (picked ?: found.firstOrNull { it.name.equals(text.trim(), ignoreCase = true) })
+        ?.takeIf { it.address != me }
+    val go = { target?.let { t -> onFound(t.address, if (t.name == t.address) ADDRESS_PLACEHOLDER else t.name) }; Unit }
 
     ModalBottomSheet(onDismissRequest = onClose, sheetState = sheet, containerColor = D.White, dragHandle = null) {
         Column(
@@ -121,16 +140,21 @@ internal fun PayAnyoneSheet(onClose: () -> Unit, onFound: (address: String, labe
             }
 
             Spacer(Modifier.height(Space.lead))
+            // Takes what room the keyboard leaves and scrolls inside it. `.air` answers a
+            // half-typed name with everybody it could be, and a list taller than the space
+            // above the keyboard used to run off the sheet with no way to reach its end.
+            Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState())) {
             when {
                 found.isNotEmpty() -> found.forEach { c ->
                     val on = picked?.address == c.address && picked?.name == c.name
+                    val mine = c.address == me
                     Row(
                         Modifier.fillMaxWidth().heightIn(min = 56.dp)
                             // Choosing somebody IS the decision to pay them: the row opens the
                             // payment itself. It used to only tick the row and wait for Pay.
-                            .clickable {
+                            .clickable(enabled = !mine) {
                                 picked = c; keyboard?.hide()
-                                onFound(c.address, if (c.name == c.address) "Wallet address" else c.name)
+                                onFound(c.address, if (c.name == c.address) ADDRESS_PLACEHOLDER else c.name)
                             }
                             .padding(vertical = 6.dp),
                         verticalAlignment = Alignment.CenterVertically,
@@ -138,14 +162,33 @@ internal fun PayAnyoneSheet(onClose: () -> Unit, onFound: (address: String, labe
                         RegistryMark(c.name)
                         Spacer(Modifier.width(12.dp))
                         Column(Modifier.weight(1f)) {
-                            Text(if (c.name == c.address) "Wallet address" else c.name, color = D.Black, style = Type.body, maxLines = 1)
-                            Text("…${c.address.takeLast(4)}", color = D.Quiet, style = Type.mono)
+                            Text(
+                                if (c.name == c.address) ADDRESS_PLACEHOLDER else c.name, color = D.Black,
+                                style = Type.body, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                            )
+                            if (mine) Text("Your own wallet. Pick someone else to pay.", color = D.Quiet, style = Type.caption)
+                            else Text("…${c.address.takeLast(4)}", color = D.Quiet, style = Type.mono)
                         }
                         if (on) HiIcon(Hi.Tick, D.BlueInk, 22.dp)
                     }
                 }
                 looking -> Text("Looking…", color = D.Quiet, style = Type.caption)
+                // Said apart from "no one found": the name may be spelled perfectly, and this
+                // is money that must not go there.
+                unsafe -> Text(
+                    "That belongs to a program or a token account, not a person's wallet, so it can't be paid here.",
+                    // Ink, not red: red is kept for the three places the palette names.
+                    color = D.Black, style = Type.caption,
+                )
+                // A failed lookup is not an answer, and must not read as "nobody has that name".
+                unreachable -> {
+                    Text("Couldn't look that up. Check your connection.", color = D.Quiet, style = Type.caption)
+                    TextLink("Try again", onClick = { attempt++ })
+                }
+                text.startsWith("solana:", ignoreCase = true) ->
+                    Text("That's a payment link. Paste only the wallet address.", color = D.Quiet, style = Type.caption)
                 text.trim().length >= 2 -> Text("No one found. Check the spelling.", color = D.Quiet, style = Type.caption)
+            }
             }
             Spacer(Modifier.height(Space.lead))
         }
