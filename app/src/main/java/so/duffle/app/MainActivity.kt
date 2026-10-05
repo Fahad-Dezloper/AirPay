@@ -324,10 +324,89 @@ class MainActivity : ComponentActivity() {
     private val askNotify = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         push(if (granted) "✓ notifications on" else "- notifications declined")
         notifOff = !Push.canNotify(this)
+        // Android stops showing its dialog once it has been refused twice, and answers "denied"
+        // at once instead. From the button that looked like a button that does nothing. An
+        // answer that fast was not a person, so the only place left that can change it is
+        // opened. Only for the button: the quiet ask at launch must never open Settings.
+        val asked = notifyAskedAt
+        notifyAskedAt = 0L
+        if (!granted && asked != 0L && android.os.SystemClock.elapsedRealtime() - asked < 600 &&
+            !shouldShowRequestPermissionRationale(Manifest.permission.POST_NOTIFICATIONS)) {
+            openNotificationSettings()
+        }
     }
 
-    /** True while the phone would swallow our notifications — the banner on Home reads it. */
+    /**
+     * True while the phone would swallow our notifications. The notifications page reads it to
+     * show its "Allow notifications" block, and the bell on Home to show a dot.
+     */
     private var notifOff by mutableStateOf(false)
+
+    /** When the "Allow notifications" button last asked the system, or 0 if it has not. */
+    private var notifyAskedAt = 0L
+
+    /**
+     * What the "Allow notifications" button on the notifications page does.
+     *
+     * Two different things can be switching notifications off, and each has one cure. On
+     * Android 13 and later it may be the permission, which only the system's own dialog can
+     * grant. Otherwise (an older phone, or the permission is held and the app's notifications
+     * were switched off in Settings) there is no dialog to show, and Settings is the answer.
+     */
+    private fun allowNotifications() {
+        val needsPermission = android.os.Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) !=
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        if (needsPermission) {
+            notifyAskedAt = android.os.SystemClock.elapsedRealtime()
+            askNotify.launch(Manifest.permission.POST_NOTIFICATIONS)
+        } else {
+            openNotificationSettings()
+        }
+    }
+
+    private fun openNotificationSettings() {
+        runCatching {
+            startActivity(
+                Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                    .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, packageName),
+            )
+        }
+    }
+
+    /**
+     * Opens the notifications page and counts everything on it as read.
+     *
+     * Marked on open, not on scroll: the list is short and opening it IS reading it. The badge
+     * clears immediately; the rows keep their dots against where the count stood a moment ago.
+     */
+    private fun openAlerts() {
+        tab = Tab.ALERTS
+        alertsWere = alertsSeen
+        Alerts.markSeen(this)
+        alertsSeen = Alerts.seenAt(this)
+        catchUpOrders()
+    }
+
+    /**
+     * A notification that is about a line on the notifications page opens that page.
+     *
+     * The extra is removed once acted on, so turning the phone (which hands the same intent to
+     * a new activity) does not drag the person back here from wherever they went next.
+     */
+    private fun openFromNotification(i: Intent?) {
+        if (i == null || i.getStringExtra(Push.EXTRA_OPEN) != Push.OPEN_ALERTS) return
+        i.removeExtra(Push.EXTRA_OPEN)
+        if (connected == null) return
+        thread = null; threadItem = null; drawerOpen = false
+        openAlerts()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        openFromNotification(intent)
+    }
 
     /**
      * Links a wallet, or resumes the one already selected.
@@ -427,7 +506,10 @@ class MainActivity : ComponentActivity() {
             findingOperator = true
             operatorNote = null
             try {
-                when (val r = Shop.operatorFor(phone)) {
+                val r = Shop.operatorFor(phone)
+                // The number was edited while this was out: the answer belongs to the old one.
+                if (Sims.e164(rechargeNumber) != phone) return@launch
+                when (r) {
                     is Shop.Operator.Found -> {
                         val ours = section.products.firstOrNull { it.id == r.product.id }
                             ?: section.products.filter { it.isMobileRecharge }
@@ -444,6 +526,8 @@ class MainActivity : ComponentActivity() {
                 }
             } finally {
                 findingOperator = false
+                // An edit made during the lookup was ignored then, so it is looked up now.
+                Sims.e164(rechargeNumber)?.takeIf { it != phone }?.let { findOperator(it, section) }
             }
         }
     }
@@ -467,7 +551,9 @@ class MainActivity : ComponentActivity() {
         extra: Plans.Extra? = null, payWith: Shop.PayWith = Shop.PayWith.USDC,
         /** The price the sheet already showed. Used as it is while it is still fresh. */
         quoted: Shop.Invoice? = null,
-    ) {
+    ) {        // One purchase at a time. Two taps in one frame used to start two.
+        if (purchase is Purchase.Working) return
+
         // Everything this purchase says goes to its own sheet, not to a line of text at the top of
         // the page: what is being bought, what the wallet is being asked for, and how it ended.
         val item = Purchase.Item(product, value, category, phone, extra)
@@ -475,7 +561,7 @@ class MainActivity : ComponentActivity() {
         // first, then carry on with the same purchase.
         if (ServerClient.enabled && connected != null && !Session.valid(connected)) {
             purchase = null   // the authorization sheet takes over; the purchase resumes after it
-            gated("complete this purchase") { buy(product, value, category, phone, extra, payWith) }
+            gated("complete this purchase") { buy(product, value, category, phone, extra, payWith, quoted) }
             return
         }
         val payer = connected
@@ -554,11 +640,10 @@ class MainActivity : ComponentActivity() {
                                     else withContext(Dispatchers.IO) { Chain.submit(signed.tx) }
                                 when (val sent = outcome) {
                                     is Chain.Submitted.Ok -> {
-                                        push("✓ shop: paid ${inv.shown}, ${sent.signature.take(12)}…")
-                                        purchase = Purchase.Done(item, inv.shown, sent.signature, inv.id)
-                                        // Written down before it is watched. The watcher below
-                                        // dies with the screen; this is what survives it, and
-                                        // what the next launch asks about.
+                                        push("shop: sent ${inv.shown}, ${sent.signature.take(12)}…")
+                                        // Written down before it is confirmed or watched. Both
+                                        // of those die with the screen; this is what survives
+                                        // it, and what the next launch asks about.
                                         orders.add(Orders.Order(
                                             invoiceId = inv.id, name = product.name, value = value,
                                             paid = inv.shown, signature = sent.signature,
@@ -567,8 +652,34 @@ class MainActivity : ComponentActivity() {
                                             status = "paid", at = System.currentTimeMillis(),
                                         ))
                                         refreshLists()
-                                        // Delivery trails the payment by seconds.
-                                        launch { watchOrder(inv) }
+                                        // "Submitted" is not "paid": a node took it, and it can
+                                        // still fail or never land. The tick waits for Solana to
+                                        // say so, as a payment to a person always has.
+                                        purchase = Purchase.Working(item, "Confirming on Solana…", payWith, inv.shown)
+                                        when (val c = Chain.confirm(sent.signature)) {
+                                            Chain.Confirmation.Confirmed -> {
+                                                push("✓ shop: paid ${inv.shown}")
+                                                purchase = Purchase.Done(item, inv.shown, sent.signature, inv.id)
+                                                // Delivery trails the payment by seconds.
+                                                launch { watchOrder(inv) }
+                                            }
+                                            is Chain.Confirmation.Failed -> {
+                                                push("✗ shop: the chain refused it, ${c.why}")
+                                                orders.setStatus(inv.id, "failed")
+                                                refreshLists()
+                                                purchase = Purchase.Problem(item, "Payment refused",
+                                                    "Solana refused it: ${c.why}. The payment did not go through, so nothing was bought.")
+                                            }
+                                            // No answer is not a refusal. It may still land, so
+                                            // this must not offer "Try again" as if it had not.
+                                            Chain.Confirmation.Unknown -> {
+                                                push("shop: sent, no confirmation yet")
+                                                purchase = Purchase.Problem(item, "Sent, still confirming",
+                                                    "Solana has not confirmed it yet. If it lands, your order is delivered and shows in History. Check the explorer before paying again.",
+                                                    unsure = sent.signature)
+                                                launch { watchOrder(inv) }
+                                            }
+                                        }
                                     }
                                     is Chain.Submitted.Rejected -> purchase = Purchase.Problem(item, 
                                         "Payment refused",
@@ -576,7 +687,8 @@ class MainActivity : ComponentActivity() {
                                             "It took too long and expired. Nothing was sent. Try again."
                                         else sent.why)
                                     Chain.Submitted.Offline -> purchase = Purchase.Problem(item, 
-                                        "You're offline", "It was signed but never sent.")
+                                        "Couldn't confirm it was sent",
+                                        "Check your wallet's recent activity before trying again, so you don't pay twice.")
                                 }
                             }
                             is Wallet.SendOutcome.Failed -> purchase = Purchase.Problem(item, "Not bought", signed.why)
@@ -778,7 +890,8 @@ class MainActivity : ComponentActivity() {
         if (!quiet) { balance = null; holdings = emptyList() }
         // Cleared only when the wallet changed: a live event re-reads the same wallet, and
         // blanking its rewards for the round trip made history rows blink out and back.
-        if (rewardFor != connected) rewardSummary = null
+        // A different wallet: its predecessor's figures must not stand under its name.
+        if (rewardFor != connected) { rewardSummary = null; totalUsd = null }
         rewardFor = connected
         val addr = connected ?: run { myDomain = null; return }
 
@@ -818,7 +931,8 @@ class MainActivity : ComponentActivity() {
             val b = withContext(Dispatchers.IO) { Chain.balance(addr) }
             // Only report a balance for the wallet still selected — switching twice quickly
             // would otherwise show one wallet's money under another's name.
-            if (connected == addr) balance = b
+            // One failed background read must not replace a good balance with a dash.
+            if (connected == addr && (b is Chain.Balance.Ok || !quiet || balance !is Chain.Balance.Ok)) balance = b
         }
         lifecycleScope.launch {
             val r = Rewards.summary(addr)
@@ -845,7 +959,8 @@ class MainActivity : ComponentActivity() {
                         java.math.BigDecimal.valueOf(t.units, t.decimals).toDouble() * u
                     }
                 }
-                totalUsd = if (priced.isEmpty()) null else priced.sum()
+                // A failed price read keeps the last good total rather than dropping it.
+                if (priced.isNotEmpty()) totalUsd = priced.sum() else if (info.isNotEmpty()) totalUsd = null
                 holdings = h.filter { t ->
                     // SOL always. Everything else has to be a token Jupiter both recognises
                     // AND has a logo for — which is what keeps airdropped rubbish out of a
@@ -942,6 +1057,10 @@ class MainActivity : ComponentActivity() {
         refreshLists()
         refreshWallets()
         Push.init(this)
+        // Made now, not at the first notification, so they are already listed in the phone's
+        // settings when "Allow notifications" sends somebody there.
+        Push.ensureChannels(this)
+        openFromNotification(intent)
 
         // The screen is white now, so the system bars have to draw themselves dark. On a phone
         // in dark mode the clock and battery are white, and they vanished into our background
@@ -998,8 +1117,35 @@ class MainActivity : ComponentActivity() {
 
                 // No wallet linked (a fresh install, or cleared data): the landing page, and
                 // nothing else. Everything below assumes an address.
-                if (connected == null) {
-                    Landing(busy) { startConnect() }
+                // Preview builds can open the landing page with a wallet still linked, on a
+                // given page, so it can be looked at without logging out.
+                val landingPreview = remember {
+                    intent.getIntExtra("preview_landing", -1).takeIf { BuildConfig.PREVIEWS && it >= 0 }
+                }
+                // The way from the landing page into Home. The page used to be swapped for Home in
+                // one frame the instant a wallet answered: a blue page, then a white one full of
+                // things, with nothing between. Now the landing page stays for a moment after the
+                // wallet is linked and thins out, and Home then comes up into its place.
+                var onLanding by remember { mutableStateOf(connected == null) }
+                val landingFade = remember { Animatable(1f) }
+                val arrival = remember { Animatable(1f) }
+                LaunchedEffect(connected) {
+                    if (connected == null) { onLanding = true; landingFade.snapTo(1f) }
+                    else if (onLanding) {
+                        landingFade.animateTo(0f, tween(360, easing = FastOutSlowInEasing))
+                        arrival.snapTo(0f)
+                        onLanding = false
+                        arrival.animateTo(1f, tween(620, easing = FastOutSlowInEasing))
+                    }
+                }
+                if (connected == null || onLanding || landingPreview != null) {
+                    Box(Modifier.fillMaxSize().graphicsLayer {
+                        alpha = landingFade.value
+                        val grow = 1f + 0.04f * (1f - landingFade.value)
+                        scaleX = grow; scaleY = grow
+                    }) {
+                        Landing(busy, startAt = landingPreview ?: 0) { if (landingPreview == null && connected == null) startConnect() }
+                    }
                     // The wallet list is a sheet over the landing page too.
                     picker?.let { apps ->
                         Tray(onClose = { picker = null }) {
@@ -1167,6 +1313,9 @@ class MainActivity : ComponentActivity() {
                                 is ServerClient.Activity -> {
                                     refreshWallets(quiet = true)
                                     push("wallet: ${ev.direction} ${ev.amount} ${ev.symbol}")
+                                    // Onto the notifications page. The same transfer also comes
+                                    // as a push; AlertLog makes one line of the two.
+                                    AlertLog.wallet(this@MainActivity, ev.direction, ev.amount, ev.symbol, null)
                                 }
                                 is ServerClient.Paid -> {
                                     val e = owed.firstOrNull { it.reference == ev.reference && it.live }
@@ -1213,6 +1362,7 @@ class MainActivity : ComponentActivity() {
                                     // Say it, then re-read everything it could have changed: the
                                     // balance, the offer list, the referral sheet, the history.
                                     ev.progress.words()?.let { (title, text) -> push("$title, $text") }
+                                    AlertLog.progress(this@MainActivity, ev.progress)
                                     when (ev.progress.state) {
                                         "confirmed", "paid", "settled" -> Haptics.success(this@MainActivity)
                                         "reversed" -> Haptics.failure(this@MainActivity)
@@ -1222,6 +1372,7 @@ class MainActivity : ComponentActivity() {
                                 }
                                 is ServerClient.Tapped -> {
                                     push("server: ${ev.card.label} tapped you")
+                                    AlertLog.tapped(this@MainActivity, ev.card)
                                     startActivity(TapPopupActivity.intent(this@MainActivity, TapPayload.Card(ev.card), cameFrom = "server"))
                                 }
                             }
@@ -1289,7 +1440,14 @@ class MainActivity : ComponentActivity() {
                 val atHome = tab == Tab.TAP && thread == null && !cards
                 LaunchedEffect(atHome) { if (atHome) ScrollHold.keepOnly("home") }
 
-                Surface(Modifier.fillMaxSize(), color = D.White) {
+                // Arriving from the landing page (see `arrival` above): the whole of Home, bar and
+                // all, rises a little and comes into focus. At rest this is 1 and does nothing.
+                Surface(Modifier.fillMaxSize().graphicsLayer {
+                    alpha = arrival.value
+                    translationY = (1f - arrival.value) * 28.dp.toPx()
+                    val settle = 0.97f + 0.03f * arrival.value
+                    scaleX = settle; scaleY = settle
+                }, color = D.White) {
                     // statusBarsPadding, not a guessed top margin: the pill sits at the very
                     // top of the app and was drawing straight through the clock and battery.
                     Column(
@@ -1319,10 +1477,14 @@ class MainActivity : ComponentActivity() {
                     // count in the header and the panel itself. Derived from the same lists
                     // the rest of the screen draws, so it cannot drift from them.
                     val known0 = contacts.all()
+                    // Keyed on the log's own counter, so a push that lands while the app is open
+                    // puts its line on the page (and its count on the bell) without a reload.
+                    val logged = remember(AlertLog.version) { AlertLog.all(this@MainActivity) }
                     val alerts = Alerts.build(
                         toPay = toPay, owed = owed, notes = notes, orders = bought,
                         offers = liveOffers,
                         name = { addr -> known0.firstOrNull { it.address == addr }?.let { displayName(it.label, addr) } ?: "Someone" },
+                        logged = logged,
                     )
                     val unread = Alerts.unread(alerts, alertsSeen)
                     // `spends` is read here, inside the composition that rebuilds the list, so
@@ -1393,16 +1555,8 @@ class MainActivity : ComponentActivity() {
                             // about yourself this app stores, and it is what other phones see.
                             onProfile = { drawerOpen = true },
                             onCheck = { checking = !checking },
-                            onAlerts = {
-                                tab = Tab.ALERTS
-                                // Marked on open, not on scroll: the list is short and opening
-                                // it IS reading it. The badge clears immediately; the rows keep
-                                // their dots against where the count stood a moment ago.
-                                alertsWere = alertsSeen
-                                Alerts.markSeen(this@MainActivity)
-                                alertsSeen = Alerts.seenAt(this@MainActivity)
-                                catchUpOrders()
-                            },
+                            onAlerts = { openAlerts() },
+                            notifOff = notifOff,
                         )
                         // The header is chrome rather than a section, so the balance sits
                         // directly under it: 16, not the 40 between sections. Only drawn with
@@ -1461,6 +1615,7 @@ class MainActivity : ComponentActivity() {
                                 vouchTick = vouchTick,
                                 onRemove = { w ->
                                     wallet.linked.remove(w)
+                                    afterWalletRemoved()
                                     connected = wallet.address
                                     refreshWallets()
                                     applyMode(amount)
@@ -1578,7 +1733,12 @@ class MainActivity : ComponentActivity() {
                                     RechargeSection(
                                         section = sec,
                                         number = rechargeNumber,
-                                        onNumber = { rechargeNumber = it },
+                                        onNumber = {
+                                            // A different number is a different network until
+                                            // looked up: the old one's plans must not stay tappable.
+                                            if (Sims.e164(it) != Sims.e164(rechargeNumber)) { rechargeOperator = null; operatorNote = null }
+                                            rechargeNumber = it
+                                        },
                                         operator = rechargeOperator,
                                         onOperator = { rechargeOperator = it },
                                         finding = findingOperator,
@@ -1627,7 +1787,10 @@ class MainActivity : ComponentActivity() {
                         }
 
                         if (tab == Tab.ALERTS) {
-                            AlertsTab(alerts, alertsWere) { a ->
+                            AlertsTab(
+                                alerts, alertsWere,
+                                notifOff = notifOff, onAllow = { allowNotifications() },
+                            ) { a ->
                                 when {
                                     // Anything with a person behind it belongs in their thread,
                                     // which is where the state it refers to actually lives.
@@ -1636,6 +1799,10 @@ class MainActivity : ComponentActivity() {
                                             thread = it; threadItem = null; tab = Tab.TAP
                                         }
                                     a.kind == Alerts.Kind.OFFER -> openRewards()
+                                    // A friend joining or paying is on the referral sheet; every
+                                    // other reward line is on the rewards page.
+                                    a.kind == Alerts.Kind.REWARD ->
+                                        if (a.topic == "referral") openRefer() else openRewards()
                                     else -> tab = Tab.TAP
                                 }
                             }
@@ -1814,31 +1981,10 @@ class MainActivity : ComponentActivity() {
                             }
                         }
 
-                        if (notifOff) {
-                            Spacer(Modifier.height(Space.lead))
-                            val bannerShape = RoundedCornerShape(16.dp)
-                            Row(
-                                Modifier.fillMaxWidth().clip(bannerShape).border(1.5.dp, D.Line, bannerShape)
-                                    .clickable {
-                                        runCatching {
-                                            startActivity(
-                                                Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
-                                                    .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, packageName),
-                                            )
-                                        }
-                                    }
-                                    .padding(horizontal = 16.dp, vertical = 12.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                HiIcon(Hi.Bell, D.Black, 22.dp)
-                                Spacer(Modifier.width(12.dp))
-                                Column(Modifier.weight(1f)) {
-                                    Text("Notifications are off", color = D.Black, style = Type.body)
-                                    Text("You won't hear about payments or rewards.", color = D.Quiet, style = Type.caption)
-                                }
-                                Text("Turn on", color = D.BlueInk, style = Type.heading)
-                            }
-                        }
+                        // The "Notifications are off" banner that sat here is gone. Home is where
+                        // the balance is read, and a standing complaint under it read as something
+                        // wrong with the money. The question now lives on the notifications page
+                        // (AlertsScreen.kt, AllowNotifications), and the bell carries a dot.
 
                         // The four things done most, one tap each, under what you hold.
                         Spacer(Modifier.height(Space.lead))
@@ -1922,11 +2068,18 @@ class MainActivity : ComponentActivity() {
                             onClose = { payAnyone = false },
                             onFound = { address, label ->
                                 payAnyone = false
-                                startActivity(TapPopupActivity.intent(
-                                    this@MainActivity,
-                                    TapPayload.Card(TapCard(address, label, null, null)),
-                                    cameFrom = "name",
-                                ))
+                                // A name with a dot cannot ride inside the card (the sheet
+                                // refuses it, and used to close without a word, so paying any
+                                // .skr or .sol name from here did nothing). It goes beside the
+                                // card and the sheet checks it against the chain itself.
+                                startActivity(
+                                    if (Username.looksLikeDomain(label)) TapPopupActivity.named(this@MainActivity, address, label)
+                                    else TapPopupActivity.intent(
+                                        this@MainActivity,
+                                        TapPayload.Card(TapCard(address, label, null, null)),
+                                        cameFrom = "name",
+                                    )
+                                )
                             },
                         )
                     }
@@ -1978,6 +2131,7 @@ class MainActivity : ComponentActivity() {
                         claiming = offerClaiming,
                         problem = offerProblem,
                         onClaim = {
+                            if (offerClaiming) return@OfferSheet
                             val me = connected ?: return@OfferSheet
                             offerClaiming = true
                             offerProblem = null
@@ -2001,6 +2155,8 @@ class MainActivity : ComponentActivity() {
                                     if (fresh != null && offerDetail?.id == o.id) offerDetail = fresh
                                 } else {
                                     offerProblem = Rewards.offerWhy(why)
+                                    // A refusal often means the list is out of date (ended, fully claimed).
+                                    offersReload++
                                 }
                             }
                         },
@@ -2014,10 +2170,20 @@ class MainActivity : ComponentActivity() {
                     ScratchStage(
                         target = tgt, t = scratchT,
                         onClose = { scratching = null },
-                        onRevealed = { row ->
+                        onRevealed = { Live.bump() },
+                        // The win is shown only once the server has taken the scratch, so nobody
+                        // is shown a prize that was not paid. A practice card (an id below one)
+                        // is never sent, and always "wins".
+                        onReveal = { row, done ->
                             lifecycleScope.launch {
-                                connected?.let { Rewards.reveal(it, row.id) }
+                                val me = connected
+                                val why = when {
+                                    row.id <= 0 -> null
+                                    me == null -> Rewards.REVEAL_OFFLINE
+                                    else -> Rewards.revealWhy(me, row.id)
+                                }
                                 Live.bump()
+                                done(why)
                             }
                         },
                     )
@@ -2078,7 +2244,7 @@ class MainActivity : ComponentActivity() {
                         have = { payWith ->
                             when (payWith) {
                                 Shop.PayWith.SOL -> (balance as? Chain.Balance.Ok)?.let { (it.sol * 1_000_000_000.0).toLong() }
-                                Shop.PayWith.USDC -> if (balance !is Chain.Balance.Ok) null
+                                Shop.PayWith.USDC -> if (balance !is Chain.Balance.Ok || holdings.isEmpty()) null
                                     else holdings.firstOrNull { it.mint == Shop.USDC_MAINNET }?.units ?: 0L
                             }
                         },
@@ -2148,6 +2314,7 @@ class MainActivity : ComponentActivity() {
                         onRemove = {
                             walletDetails = null
                             wallet.linked.remove(w)
+                            afterWalletRemoved()
                             // The selected one may have just gone; refreshWallets re-reads
                             // which wallet is current and applyMode re-arms with it.
                             connected = wallet.address
@@ -2630,8 +2797,24 @@ class MainActivity : ComponentActivity() {
     }
 
 
+    /**
+     * What has to follow a wallet being removed, whichever screen removed it. The badge and the
+     * server session belonged to the wallet that left: kept, the next wallet would wear its
+     * "Verified Seeker" and be signed into its account. With none left, the Wallets screen has
+     * nothing to show and the first screen takes over.
+     */
+    private fun afterWalletRemoved() {
+        myGenesis = null
+        if (wallet.address == null) {
+            cards = false
+            Session.clear(this)
+        }
+    }
+
     override fun onResume() {
         super.onResume()
+        // The tap sheet is another activity with its own wallet, and can switch which one is in use.
+        wallet.address.let { if (it != connected) { connected = it; myGenesis = null; refreshWallets() } }
         resumeTick++
         // Back from the wallet, or back after hours away: anything could have been paid.
         checkAllNow = true
@@ -2695,6 +2878,9 @@ class MainActivity : ComponentActivity() {
         const val SEEKER_WALLET = "com.solanamobile.wallet"
     }
 }
+
+/** Whether Home's balance is hidden. Hidden at launch; a choice to show it lasts until the app is closed. */
+private val BalanceHidden = mutableStateOf(true)
 
 enum class Tab { TAP, REQUESTS, REWARDS, REFERRALS, OFFERS, SHOP, ALERTS, HISTORY }
 
@@ -2773,7 +2959,7 @@ private fun Banner(
 private const val SIGN_LIFT = 0.381f
 
 @Composable
-private fun BalanceCard(
+internal fun BalanceCard(
     /** Everything held, priced and summed. Null when nothing could be priced. */
     totalUsd: Double?,
     wallet: Linked?,
@@ -2785,6 +2971,11 @@ private fun BalanceCard(
     onCards: () -> Unit,
     onSelectWallet: (Linked) -> Unit = {},
     onDetails: () -> Unit = {},
+    /**
+     * True on the landing page, where this is a picture of Home and not Home: the figure is
+     * shown, since it is an example and nobody's to hide, and no price is asked for.
+     */
+    sample: Boolean = false,
 ) {
     val context = LocalContext.current
     val stack = others.take(3)
@@ -2860,7 +3051,7 @@ private fun BalanceCard(
             // When nothing can be priced the SOL figure is shown instead, rather than a dollar
             // sign in front of a number nobody checked.
             val sol = (balance as? Chain.Balance.Ok)?.sol
-            val rate by produceState<Double?>(initialValue = null) { value = Prices.solUsd() }
+            val rate by produceState<Double?>(initialValue = null) { if (!sample) value = Prices.solUsd() }
             // Three runs now, not one, because each rolls on its own: the sign holds still
             // while the whole number and the decimals animate their own digits.
             //
@@ -2888,7 +3079,9 @@ private fun BalanceCard(
             // `$ ₹ €`. Both were Bricolage-the-display-face, which is the wordmark's font.
             // Still waiting for the first answer (no balance, no total, not a failure): the figure's
             // own shape, not a dash. A failed lookup is `Offline`, not null, and keeps its "—".
-            var hidden by rememberSaveable { mutableStateOf(true) }
+            // Held outside the composition: leaving Home and coming back kept re-hiding a
+            // balance the person had chosen to show. It still starts hidden on every launch.
+            var hidden by if (sample) remember { mutableStateOf(false) } else BalanceHidden
             // The reveal animates only when it means something: the first time, and again after
             // the person has been away long enough to have forgotten it. Flipping the eye over and
             // over just changes the figure, so the motion keeps its value instead of becoming noise.
@@ -3373,6 +3566,8 @@ private fun Header(
     onCheck: () -> Unit,
     onAlerts: () -> Unit,
     onProfile: () -> Unit,
+    /** The phone would swallow our notifications: the bell says so with a dot. */
+    notifOff: Boolean = false,
 ) {
     Column {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -3411,8 +3606,11 @@ private fun Header(
                     Modifier.then(PressScale(interaction)).size(48.dp).clip(CircleShape)
                         .clickable(interaction, indication = null, onClick = onAlerts)
                         .semantics {
-                            contentDescription =
-                                if (unread > 0) "Notifications, $unread unread" else "Notifications"
+                            contentDescription = when {
+                                unread > 0 -> "Notifications, $unread unread"
+                                notifOff -> "Notifications, turned off"
+                                else -> "Notifications"
+                            }
                         },
                     contentAlignment = Alignment.Center,
                 ) { HiIcon(Hi.Bell, D.Black, 24.dp) }
@@ -3431,6 +3629,16 @@ private fun Header(
                     ) {
                         Text(if (unread > 9) "9+" else "$unread", color = D.White, style = CountStyle)
                     }
+                } else if (notifOff) {
+                    // Nothing unread, but the phone is not allowed to tell them when there is.
+                    // A dot and not a count: there is nothing to count, only somewhere to go.
+                    // The count wins when there is one, because it leads to the same page and
+                    // the page asks the question at its top either way.
+                    Box(
+                        Modifier.padding(top = 8.dp, end = 8.dp).size(12.dp)
+                            .clip(CircleShape).background(D.White).padding(2.dp)
+                            .clip(CircleShape).background(D.Black),
+                    )
                 }
             }
         }
@@ -3801,7 +4009,7 @@ private fun RechargeSection(
                 Column(Modifier.weight(1f)) {
                     // The number is the half that cannot be checked afterwards, so it is set to
                     // be read character by character.
-                    Text("+91 $number", color = D.Black, style = Type.mono)
+                    Text("+91 ${e164?.removePrefix("+91") ?: number}", color = D.Black, style = Type.mono)
                     Spacer(Modifier.height(Space.tight))
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text("$mark Prepaid", color = D.Quiet, style = Type.caption)
@@ -4433,7 +4641,7 @@ internal fun MarkCanvas(mark: Mark, side: Dp, notch: Color = D.White, tint: Colo
  * about the product that is not true.
  */
 @Composable
-private fun PayBar(modifier: Modifier, onTap: () -> Unit, onScan: () -> Unit) {
+internal fun PayBar(modifier: Modifier, onTap: () -> Unit, onScan: () -> Unit) {
     Column(modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
         // No floor and no backdrop: the capsule floats and the page runs under it. It used to
         // sit on a white strip with a gradient above it, which stopped content showing through
@@ -4720,6 +4928,9 @@ private fun StateLine(t: History.Txn, fileable: Boolean, onFile: () -> Unit) {
             Text(if (t.state == History.State.CONFIRMING) "Sending" else "Sent", color = D.Quiet, style = quiet, maxLines = 1)
         t.kind == History.Kind.REWARD ->
             Text("Earned", color = D.Quiet, style = quiet, maxLines = 1)
+        // An order that did not arrive must not read "You paid" like one that did.
+        t.state == History.State.FAILED ->
+            Text("Didn't go through", color = D.DangerInk, style = quiet, maxLines = 1)
         t.state == History.State.CONFIRMING ->
             Text("Confirming on Solana", color = D.BlueInk, style = quiet, maxLines = 1)
         t.state == History.State.PREPARING ->
@@ -4928,11 +5139,18 @@ private fun HistoryTab(
         }
 
         if (rows.isEmpty()) {
-            Spacer(Modifier.height(Space.section))
-            Text("Nothing in ${month.format(MONTH)}", color = D.Black, style = Type.body)
-            Spacer(Modifier.height(Space.tight))
-            Text("Payments, requests you were paid, and anything you bought will show up here.",
-                color = D.Quiet, style = Type.caption)
+            // In the middle of what is left of the screen, like the notifications page's empty
+            // state. It sat at the top left under the month, where it read as a stray line.
+            Column(
+                Modifier.fillMaxWidth().weight(1f).padding(horizontal = Space.section),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center,
+            ) {
+                Text("Nothing in ${month.format(MONTH)}", color = D.Black, style = Type.body, textAlign = TextAlign.Center)
+                Spacer(Modifier.height(Space.tight))
+                Text("Payments, requests you were paid, and anything you bought will show up here.",
+                    color = D.Quiet, style = Type.caption, textAlign = TextAlign.Center)
+            }
         } else {
             // Counted, not summed: the rows carry several tokens and a single figure adding
             // SOL to USDC to rupees would be a number that means nothing.
@@ -5394,7 +5612,7 @@ private fun NameDialog(
  * white icon for the first three, the pay bar's black for the last.
  */
 @Composable
-private fun HomeActions(
+internal fun HomeActions(
     isSeeker: Boolean,
     onBuy: (String) -> Unit,
     onScan: () -> Unit,
@@ -5483,7 +5701,13 @@ internal sealed interface Purchase {
         override val item: Item, val paid: String, val signature: String, val invoiceId: String,
         val delivered: Boolean = false,
     ) : Purchase
-    data class Problem(override val item: Item, val title: String, val detail: String) : Purchase
+    /**
+     * [unsure] is the signature of a payment that was sent and not yet confirmed. Then this is
+     * not a refusal, and the sheet must not offer to pay again.
+     */
+    data class Problem(
+        override val item: Item, val title: String, val detail: String, val unsure: String? = null,
+    ) : Purchase
 }
 
 @Composable
@@ -5635,10 +5859,17 @@ private fun PurchaseSheet(
             // figure on this sheet is the figure that is paid and not a guess at it.
             val quotes = remember { mutableStateMapOf<Shop.PayWith, Shop.Invoice>() }
             var asking by remember { mutableStateOf(false) }
-            LaunchedEffect(payWith, working == null) {
+            LaunchedEffect(payWith, working == null, quotes[payWith] == null) {
                 if (working != null || quotes[payWith]?.expired == false) return@LaunchedEffect
                 asking = true
                 try { quote(payWith)?.let { quotes[payWith] = it } } finally { asking = false }
+            }
+            // A quote is dropped the moment it expires, which asks for a new one above. Nothing
+            // used to recompose at expiry, so an old figure stayed on screen as the price.
+            LaunchedEffect(quotes[payWith]) {
+                val q = quotes[payWith] ?: return@LaunchedEffect
+                delay((Shop.QUOTE_LIFE_MS - (System.currentTimeMillis() - q.quotedAt)).coerceAtLeast(0L) + 250L)
+                quotes.remove(payWith)
             }
             val quoted = quotes[payWith]?.takeIf { !it.expired }
             val solRate by produceState<Double?>(initialValue = null) { value = Prices.solUsd() }
@@ -5810,12 +6041,17 @@ private fun PurchaseSheet(
             }
             is Purchase.Problem -> {
                 Spacer(Modifier.height(Space.lead))
-                Text(state.title, color = D.DangerInk, style = Type.heading)
+                Text(state.title, color = if (state.unsure != null) D.Black else D.DangerInk, style = Type.heading)
                 Spacer(Modifier.height(Space.tight))
                 Text(state.detail, color = D.Black, style = Type.body)
                 Spacer(Modifier.height(Space.section))
-                PrimaryButton("Try again", onRetry, Modifier.fillMaxWidth())
-                TextLink("Close", onClose, modifier = Modifier.fillMaxWidth())
+                if (state.unsure != null) {
+                    PrimaryButton("Done", onClose, Modifier.fillMaxWidth())
+                    TextLink("View on explorer", { onExplorer(state.unsure) }, modifier = Modifier.fillMaxWidth())
+                } else {
+                    PrimaryButton("Try again", onRetry, Modifier.fillMaxWidth())
+                    TextLink("Close", onClose, modifier = Modifier.fillMaxWidth())
+                }
             }
         }
         Spacer(Modifier.height(Space.lead))
