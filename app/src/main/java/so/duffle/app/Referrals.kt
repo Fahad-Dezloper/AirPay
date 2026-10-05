@@ -35,6 +35,12 @@ object Referrals {
         val code: String, val reward: Int, val theirReward: Int,
         val invited: Int, val paid: Int, val earned: Int,
         val people: List<Person>,
+        /**
+         * Whether this wallet may still enter somebody's code: not once it has, and not after
+         * its first rewarded payment. True when the server does not say, so an older server
+         * never hides the way in.
+         */
+        val canClaim: Boolean = true,
     )
 
     suspend fun summary(address: String): Summary? {
@@ -53,6 +59,7 @@ object Referrals {
             reward = o.optInt("reward"), theirReward = o.optInt("their_reward"),
             invited = o.optInt("invited"), paid = o.optInt("paid"), earned = o.optInt("earned"),
             people = people,
+            canClaim = o.optBoolean("can_claim", true),
         )
     }
 

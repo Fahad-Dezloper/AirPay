@@ -1,5 +1,8 @@
 package so.duffle.app
 
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.foundation.layout.imePadding
 import android.content.Context
 import android.content.Intent
 import androidx.activity.compose.BackHandler
@@ -259,6 +262,11 @@ private fun ReferStack(
     var shown by remember { mutableStateOf(false) }
     var leaving by remember { mutableStateOf(false) }
     var how by remember { mutableStateOf(false) }
+    // What the second sheet holds: how it works, or the place to enter a friend's code.
+    var second by remember { mutableStateOf("how") }
+    // A code can be entered until one has been, or until the first rewarded payment. The server
+    // says which (`can_claim`); a code accepted in this sitting closes the door at once.
+    var codeUsed by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         val h = snapshotFlow { height }.first { it > 0f }
@@ -368,7 +376,8 @@ private fun ReferStack(
                     )
                     else -> ReferBody(
                         s = s,
-                        onHow = { how = true },
+                        onHow = { second = "how"; how = true },
+                        onCode = if (s.canClaim && !codeUsed) ({ second = "code"; how = true }) else null,
                         onCopyCode = { clipboard.setText(AnnotatedString(s.code)) },
                         onCopyInvite = {
                             clipboard.setText(AnnotatedString(
@@ -418,12 +427,23 @@ private fun ReferStack(
                 )
                 .topEdgeShadow(Tray.OUTER),
         ) {
-            SheetPanel(swallowTaps = how || parked < 1f) {
-                HowItWorksBody(
-                    theirReward = s?.theirReward ?: 0,
-                    reward = s?.reward ?: 0,
-                    onClose = { how = false },
-                )
+            // Lifted clear of the keyboard, so the field being typed in is never under it.
+            SheetPanel(modifier = Modifier.imePadding(), swallowTaps = how || parked < 1f) {
+                if (second == "code") {
+                    FriendCodeBody(
+                        address = connected,
+                        theirReward = s?.theirReward ?: 0,
+                        open = how,
+                        onDone = { codeUsed = true },
+                        onClose = { how = false },
+                    )
+                } else {
+                    HowItWorksBody(
+                        theirReward = s?.theirReward ?: 0,
+                        reward = s?.reward ?: 0,
+                        onClose = { how = false },
+                    )
+                }
             }
         }
     }
@@ -516,6 +536,8 @@ private fun Blank(title: String, detail: String?) {
 private fun ReferBody(
     s: Referrals.Summary,
     onHow: () -> Unit,
+    /** Opens the sheet for a friend's code. Null once one cannot be entered any more. */
+    onCode: (() -> Unit)?,
     onCopyCode: () -> Unit,
     onCopyInvite: () -> Unit,
     /** A package name to send to, or null for the system chooser. */
@@ -563,10 +585,22 @@ private fun ReferBody(
         ShareAction("Share", Modifier.weight(1f), onClick = { onShare(null) }) {
             HIcon(R.drawable.hi_share, D.Black, 20.dp)
         }
+        // The other direction: somebody invited YOU. It sits with the three ways of sending a
+        // code because it is the fourth thing to do with one, and it goes away once it cannot
+        // be used (a code already entered, or a first rewarded tap already made).
+        if (onCode != null) {
+            ShareAction("Friend's code", Modifier.weight(1f), onClick = onCode) {
+                HiIcon(Hi.Gift, D.Black, 20.dp)
+            }
+        }
     }
 
-    Spacer(Modifier.height(Space.section))
-    InvitedList(s)
+    // Only once somebody has joined. Before that it was a heading over "Nobody yet", which is a
+    // section about nothing.
+    if (s.people.isNotEmpty()) {
+        Spacer(Modifier.height(Space.section))
+        InvitedList(s)
+    }
 }
 
 /**
@@ -1476,3 +1510,129 @@ private fun StepArt(n: Int) {
         }
     }
 }
+
+
+/**
+ * The sheet for a friend's code: one field, one button, and what happened.
+ *
+ * It was a field at the foot of the first sheet, where the keyboard covered it. A sheet of its
+ * own rides above the keyboard, and takes the focus as it opens so there is nothing to tap first.
+ */
+@Composable
+private fun FriendCodeBody(
+    address: String?,
+    theirReward: Int,
+    open: Boolean,
+    onDone: () -> Unit,
+    onClose: () -> Unit,
+) {
+    val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+    val focus = androidx.compose.ui.platform.LocalFocusManager.current
+    val field = remember { androidx.compose.ui.focus.FocusRequester() }
+    var code by rememberSaveable { mutableStateOf("") }
+    var busy by remember { mutableStateOf(false) }
+    // Null until tried. An empty string is success.
+    var outcome by remember { mutableStateOf<String?>(null) }
+    // Focus when it opens, let go when it closes, so the keyboard comes and goes with the sheet.
+    LaunchedEffect(open) {
+        if (open && outcome != "") { kotlinx.coroutines.delay(220); runCatching { field.requestFocus() } }
+        else focus.clearFocus()
+    }
+
+    val done = outcome == ""
+    val refused = outcome?.takeIf { it.isNotEmpty() }
+
+    fun apply(entered: String) {
+        val me = address ?: return
+        if (busy) return
+        busy = true
+        scope.launch {
+            val no = Referrals.claim(entered, me)
+            busy = false
+            outcome = no ?: ""
+            if (no == null) { focus.clearFocus(); Haptics.success(context); onDone() }
+            // These two mean the door is shut for good, whatever was typed.
+            if (no == "already_referred" || no == "referral_too_late") onDone()
+        }
+    }
+
+    Spacer(Modifier.height(Space.row))
+    Text("Enter a friend's code", color = D.Black, style = Type.heading)
+    Spacer(Modifier.height(Space.tight))
+    Text(
+        if (theirReward > 0) "Your first rewarded tap then earns you $theirReward SKR, and your friend earns too."
+        else "Your first rewarded tap then earns for both of you.",
+        color = D.Quiet, style = Type.caption,
+    )
+    Spacer(Modifier.height(Space.row))
+
+    // One box per character, the way a one-time code is entered: a code has a known length,
+    // and eight boxes say so before a single key is pressed. The field itself is invisible;
+    // the boxes are its decoration, so the keyboard, paste and the cursor all still work.
+    // The eighth character sends it. All eight turn green when it is accepted, red when not.
+    val edge by animateColorAsState(
+        when { done -> D.Success; refused != null -> D.DangerInk; else -> D.Line }, label = "code-edge",
+    )
+    androidx.compose.foundation.text.BasicTextField(
+        value = code,
+        onValueChange = { v ->
+            if (done || busy) return@BasicTextField
+            val next = v.filter { it.isLetterOrDigit() }.take(CODE_LENGTH).uppercase()
+            if (next != code) { outcome = null; code = next; if (next.length == CODE_LENGTH) apply(next) }
+        },
+        singleLine = true,
+        enabled = !done,
+        cursorBrush = androidx.compose.ui.graphics.SolidColor(Color.Transparent),
+        textStyle = Type.mono.copy(color = Color.Transparent),
+        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+            capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.Characters,
+            autoCorrectEnabled = false,
+            imeAction = androidx.compose.ui.text.input.ImeAction.Done,
+        ),
+        keyboardActions = androidx.compose.foundation.text.KeyboardActions(onDone = { focus.clearFocus() }),
+        modifier = Modifier.fillMaxWidth().focusRequester(field),
+        decorationBox = { _ ->
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                repeat(CODE_LENGTH) { i ->
+                    val ch = code.getOrNull(i)
+                    // The box being typed into is the one outlined in blue.
+                    val here = !done && refused == null && i == code.length
+                    val shape = RoundedCornerShape(12.dp)
+                    Box(
+                        Modifier.weight(1f).height(52.dp).clip(shape)
+                            .background(if (done) D.Success.copy(alpha = .10f) else Color.Transparent)
+                            .border(if (here) 2.dp else 1.5.dp, if (here) D.Blue else edge, shape),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            ch?.toString().orEmpty(),
+                            color = if (done) D.SuccessInk else D.Black,
+                            style = Type.heading.copy(fontFamily = Type.mono.fontFamily),
+                        )
+                    }
+                }
+            }
+        },
+    )
+    Spacer(Modifier.height(Space.inline))
+    // One line under the boxes says where things stand, so nothing has to be pressed to find out.
+    Text(
+        when {
+            done -> "Code added. Your first rewarded tap now earns for both of you."
+            refused != null -> Referrals.why(refused) ?: "That code could not be added"
+            busy -> "Checking the code…"
+            else -> "It is checked as soon as the last character is in."
+        },
+        color = when { done -> D.SuccessInk; refused != null -> D.DangerInk; else -> D.Quiet },
+        style = Type.caption,
+    )
+    if (done) {
+        Spacer(Modifier.height(Space.row))
+        PrimaryButton("Done", onClose, Modifier.fillMaxWidth())
+    }
+    Spacer(Modifier.height(Space.row))
+}
+
+/** A referral code is eight letters and digits. */
+private const val CODE_LENGTH = 8
