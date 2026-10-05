@@ -42,7 +42,11 @@ class EventTest(unittest.TestCase):
         self.svc._pay_referrer(OTHER, "ref-first", time.time(), self.svc.reward_config())
         paid = self.of(ADDR, "referral", "paid")
         self.assertEqual((OTHER, 300), (paid[0]["invitee"], paid[0]["skr"]))
-        self.assertTrue(self.of(ADDR, "reward"))
+        # One thing happened, so one notice: it used to be followed by a "reward" event for the
+        # same SKR, which the phone showed as a second notification beside the first.
+        self.assertEqual(1, len(paid))
+        self.assertEqual([], self.of(ADDR, "reward"))
+        self.assertEqual("ref-first", paid[0]["reference"])
 
     def test_rewards_that_become_claimable_say_so(self):
         now = time.time()

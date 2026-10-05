@@ -82,6 +82,7 @@ class Service:
         self._inflight_lock = threading.Lock()
         self._seen_sigs: OrderedDict[str, None] = OrderedDict()
         self._seen_lock = threading.Lock()
+        self._told: OrderedDict[tuple[str, str], None] = OrderedDict()
 
     # -- inputs -----------------------------------------------------------------------------
 
@@ -149,6 +150,9 @@ class Service:
             raise KeyError("unknown reference")
         if not row["payer"] or row["status"] != "open":
             return 0
+        # A retried or double-tapped withdrawal must not ring the payer's phone again.
+        if not self._first("withdrawn", reference):
+            return 0
         return self._deliver(row["payer"], {"type": "withdrawn", "reference": reference,
                                             "label": row["label"] or ""})
 
@@ -160,6 +164,10 @@ class Service:
         if row is None:
             raise KeyError("unknown reference")
         if row["status"] != "open":
+            return 0
+        # Said once. The phone retries a POST it got no answer to, and each retry used to be
+        # another "Payment declined" on the asker's lock screen.
+        if not self._first("rejected", reference):
             return 0
         return self._deliver(row["recipient"], {"type": "rejected", "reference": reference,
                                                 "label": str(label or "")[:64]})
@@ -178,6 +186,10 @@ class Service:
         if row is None:
             raise KeyError("unknown reference")
         if row["status"] != "open":
+            return 0
+        # Said once: tapping "Later" three times is still one answer. And never after a decline,
+        # which is the stronger answer and has already been delivered.
+        if row.get("rejected") or not self._first("deferred", reference):
             return 0
         return self._deliver(row["recipient"], {"type": "deferred", "reference": reference,
                                                 "label": str(label or "")[:64],
@@ -230,6 +242,22 @@ class Service:
         if not verify.is_address(recipient):
             raise ValueError("invalid recipient")
         return self.store.messages_for(recipient, since)
+
+    def _first(self, what: str, reference: str) -> bool:
+        """True the first time an answer about a request is delivered, False on a repeat.
+
+        Kept apart from the request's own flags on purpose. A request can be withdrawn before
+        anybody is known to be paying it, which sets the flag and tells nobody; the flag would
+        then swallow the withdrawal that finally has somebody to reach. This remembers what was
+        DELIVERED. In memory, because what it guards against is a retry seconds later.
+        """
+        with self._seen_lock:
+            if (what, reference) in self._told:
+                return False
+            self._told[(what, reference)] = None
+            while len(self._told) > 5000:
+                self._told.popitem(last=False)
+        return True
 
     def _deliver(self, to: str, event: dict) -> int:
         """Live stream first, push for a closed app. Returns how many listeners heard it."""
@@ -462,10 +490,12 @@ class Service:
             self.store.mark_referral_paid(invitee, now)
             log.info("referral %s SKR to %s… for inviting %s…",
                      decision.total, inviter[:8], invitee[:8])
+            # ONE event. This used to be followed by a separate "reward" event for the same
+            # SKR, so the inviter's phone showed "Your friend paid" and "You earned 300 SKR"
+            # side by side for one thing that happened. What the second one carried is here.
             self._deliver(inviter, {"type": "referral", "state": "paid", "invitee": invitee,
-                                    "skr": decision.total})
-            self._deliver(inviter, {"type": "reward", "reference": reference,
-                                    "skr": decision.total, "kinds": rewards.REFERRAL,
+                                    "skr": decision.total, "reference": reference,
+                                    "kinds": rewards.REFERRAL,
                                     "unlock_at": decision.unlock_at or now})
 
     # -- referrals --------------------------------------------------------------------------
@@ -1221,6 +1251,10 @@ class Service:
         tx = self.rpc.transaction(signature)
         if tx is None:
             return []
+        return self._settle_from(tx, signature)
+
+    def _settle_from(self, tx: dict, signature: str) -> list[str]:
+        """Settle every open request this already-fetched transaction pays."""
         settled = []
         for req in self.store.open_among(verify.account_keys(tx)):
             v = verify.verify_transfer(tx, req["reference"], req["recipient"], req["lamports"], mint_of(req))
@@ -1345,6 +1379,9 @@ class Service:
     ACTIVITY_REMEMBER = 500
     #: Allowance for this machine's clock and the chain's disagreeing, in seconds.
     ACTIVITY_SKEW = 30.0
+    #: How long an announced transfer is remembered on disk. Only a transfer newer than the
+    #: moment watching began can be announced at all, so anything this old is long past asking.
+    ACTIVITY_KEEP = 7 * 24 * 3600.0
 
     def watch_wallets(self) -> int:
         """Tell each registered wallet about money that moved in it. Returns how many were told.
@@ -1361,7 +1398,18 @@ class Service:
         every few seconds, for ever. A set of seen signatures cannot move backwards.
 
         A transfer that settled an AirPay request already has its own "paid" notice and is
-        skipped here, so the recipient is told once.
+        skipped here, so the recipient is told once. So is one of our own SKR payouts, which has
+        "SKR arrived".
+
+        The seen-set lives in memory, so three more things are decided on disk instead
+        (`claim_wallet_notice`), where a restart cannot undo them:
+
+        - A restart starts watching again from "now" less the clock allowance. A transfer from
+          those last seconds, announced before the restart and missing from a lagging node's
+          first answer after it, used to qualify a second time.
+        - A move between two of one person's own wallets was announced to the same phone twice,
+          once as "Sent" and once as "Received".
+        - Two copies of the server looking at the same wallet each announced it.
         """
         told = 0
         for addr in self.store.device_recipients():
@@ -1392,13 +1440,25 @@ class Service:
                     seen[sig] = None          # old, or undated: remembered, never announced
             for sig in reversed(new):            # oldest first, as they happened
                 seen[sig] = None
-                if self.store.signature_settled(sig):
+                if self.store.signature_settled(sig) or self.store.signature_paid_out(sig):
                     continue
                 try:
                     tx = self.rpc.transaction(sig)
                 except Exception:                                # noqa: BLE001
                     continue
-                for change in activity.describe(tx, addr) if tx else []:
+                if not tx:
+                    continue
+                # This look can get to a transfer before the payment sweep does. If it pays an
+                # open request, settle it here and now: the "paid" notice goes out, and this
+                # one would only be the same money said a second time.
+                if self._safe(self._settle_from, tx, sig) or self.store.signature_settled(sig):
+                    continue
+                changes = activity.describe(tx, addr)
+                if not changes:
+                    continue
+                if not self.store.claim_wallet_notice(self.store.account_key(addr), sig, time.time()):
+                    continue
+                for change in changes:
                     self._deliver(addr, {"type": "wallet", "signature": sig, **change})
                     told += 1
             while len(seen) > self.ACTIVITY_REMEMBER:
@@ -1440,6 +1500,7 @@ class Service:
             if time.time() - self._patrolled > self.PATROL_EVERY:
                 self._patrolled = time.time()
                 self._safe(self.patrol)
+                self._safe(self.store.prune_wallet_notices, time.time() - self.ACTIVITY_KEEP)
             if time.time() - self._paid_at > 5.0:
                 self._paid_at = time.time()
                 self._safe(self.pay_revealed)

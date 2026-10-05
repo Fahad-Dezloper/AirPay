@@ -219,6 +219,16 @@ class Store:
                     name  TEXT PRIMARY KEY,
                     value TEXT NOT NULL
                 );
+                -- Wallet movements already told to a person. `watch_wallets` keeps what it has seen
+                -- in memory, which a restart forgets; this is the part that must not be forgotten,
+                -- because forgetting it is how one transfer gets announced twice. Keyed by the
+                -- account, so a move between two of a person's own wallets is one notice, not two.
+                CREATE TABLE IF NOT EXISTS wallet_notices (
+                    account_key TEXT NOT NULL,
+                    signature   TEXT NOT NULL,
+                    sent_at     REAL NOT NULL,
+                    PRIMARY KEY (account_key, signature)
+                );
                 CREATE TABLE IF NOT EXISTS devices (
                     recipient  TEXT NOT NULL,
                     token      TEXT NOT NULL,
@@ -1114,6 +1124,26 @@ class Store:
         """Whether this transaction already settled an AirPay request, which has its own notice."""
         with self._lock:
             return self._db.execute("SELECT 1 FROM requests WHERE signature=?", (signature,)).fetchone() is not None
+
+    def signature_paid_out(self, signature: str) -> bool:
+        """Whether this transaction is one of our own SKR payouts, which has its own notice."""
+        with self._lock:
+            return self._db.execute("SELECT 1 FROM payouts WHERE signature=?", (signature,)).fetchone() is not None
+
+    def claim_wallet_notice(self, key: str, signature: str, now: float) -> bool:
+        """True the first time this transaction is announced to this account, and never again.
+
+        The insert is the decision: two watcher passes, two server processes or a restart all
+        ask the same row, and only one of them is told yes.
+        """
+        with self._lock, self._db:
+            return self._db.execute(
+                "INSERT OR IGNORE INTO wallet_notices(account_key,signature,sent_at) VALUES(?,?,?)",
+                (key, signature, now)).rowcount == 1
+
+    def prune_wallet_notices(self, older_than: float) -> int:
+        with self._lock, self._db:
+            return self._db.execute("DELETE FROM wallet_notices WHERE sent_at < ?", (older_than,)).rowcount
 
     def drop_device(self, token: str) -> None:
         with self._lock, self._db:
