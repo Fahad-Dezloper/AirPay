@@ -226,8 +226,10 @@ class Wallets(ctx: Context) {
 
     fun all(): List<Linked> = try {
         val arr = JSONArray(prefs.getString(KEY_LIST, "[]"))
-        // One per address, the first linked: a list written while two apps could hold the same
-        // key reads back as one card.
+        // One per address: a list written while two apps could hold the same key reads back as
+        // one card. Of two entries for a key, the one that still has a session is kept, and the
+        // first linked only when neither or both do. Keeping the first regardless could drop the
+        // entry holding the working session and leave a card that had to be linked again.
         (0 until arr.length()).mapNotNull<Int, Linked> { i ->
             val o = arr.optJSONObject(i) ?: return@mapNotNull null
             val address = o.optString("a")
@@ -241,7 +243,7 @@ class Wallets(ctx: Context) {
                 pkg = o.optString("p").ifBlank { null },
                 alias = o.optString("l").ifBlank { null },
             )
-        }.distinctBy { it.address }
+        }.groupBy { it.address }.values.map { same -> same.firstOrNull { it.token != null } ?: same.first() }
     } catch (e: Exception) {
         emptyList()
     }

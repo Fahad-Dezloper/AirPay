@@ -206,6 +206,10 @@ internal fun WalletsScreen(
                         wait = 3_000L
                     } else if (loads[w.address] == null) {
                         wait = (wait * 2).coerceAtMost(8_000L)
+                        // Three misses in, it stops being "loading". The card showed its bar for
+                        // as long as Solana stayed out of reach and never said so. The retries
+                        // go on underneath, and the first good read replaces this.
+                        if (wait >= 8_000L) loads[w.address] = Loaded(null)
                     }
                     kotlinx.coroutines.delay(wait)
                 }
@@ -229,7 +233,12 @@ internal fun WalletsScreen(
     // the first was still travelling back left two cards in flight at once.
     var settling by remember { mutableStateOf(false) }
     LaunchedEffect(open) {
-        if (open == null) { settling = true; delay(480); dragY.snapTo(0f); settling = false } else dragY.snapTo(0f)
+        if (open == null) {
+            // Only when a card is on its way back. On the screen's first frame nothing is, and
+            // waiting anyway made every card ignore a press for its first half second.
+            if (last != null) { settling = true; delay(480) }
+            dragY.snapTo(0f); settling = false
+        } else dragY.snapTo(0f)
     }
     val dragState = rememberDraggableState { d -> scope.launch { dragY.snapTo((dragY.value + d).coerceAtLeast(0f)) } }
     val handle = Modifier.draggable(dragState, Orientation.Vertical, onDragStopped = { v ->
@@ -541,7 +550,15 @@ private fun WalletSheet(
             RowLine()
             SheetRow(Hi.Edit, "Rename", "A name of your own for it", onClick = onRename)
             RowLine()
-            SheetRow(Hi.Refresh, "Reconnect", "If the wallet has stopped answering", onClick = onReconnect)
+            // A wallet whose session is gone says so here, in the warning ink: it is still listed
+            // and still shows a balance, so nothing else on the card or the sheet gave it away.
+            SheetRow(
+                Hi.Refresh, "Reconnect",
+                if (w.token == null) "Not connected. Tap to link this wallet again"
+                else "If the wallet has stopped answering",
+                detailTint = if (w.token == null) D.OrangeInk else D.Quiet,
+                onClick = onReconnect,
+            )
             RowLine()
             val v = standing.row()
             SheetRow(
@@ -681,10 +698,13 @@ internal fun WalletPicker(apps: List<WalletLink.App>, onPick: (WalletLink.App) -
     Column(Modifier.fillMaxWidth()) {
         Text("Add a wallet", color = D.Black, style = Type.title)
         Spacer(Modifier.height(Space.tight))
-        Text("AirPay never sees your keys, the wallet signs.", color = D.Quiet, style = Type.caption)
+        Text("AirPay never sees your keys. The wallet signs.", color = D.Quiet, style = Type.caption)
         Spacer(Modifier.height(Space.lead))
         if (apps.isEmpty()) {
-            Text("No wallet apps found on this phone.", color = D.Quiet, style = Type.body)
+            Text(
+                "No wallet apps found on this phone. Install one, such as Phantom or Solflare, then try again.",
+                color = D.Quiet, style = Type.body,
+            )
         }
         apps.forEachIndexed { i, app ->
             Row(
@@ -730,7 +750,7 @@ internal fun AddWalletFlow(apps: List<WalletLink.App>, onPick: (WalletLink.App) 
             AddStep.Choose -> {
                 Text("Add a wallet", color = D.Black, style = Type.title)
                 Spacer(Modifier.height(Space.tight))
-                Text("AirPay never sees your keys, the wallet signs.", color = D.Quiet, style = Type.caption)
+                Text("AirPay never sees your keys. The wallet signs.", color = D.Quiet, style = Type.caption)
                 Spacer(Modifier.height(Space.lead))
                 SheetRow(Hi.Wallet, "Connect a wallet app", "Phantom, Solflare and other wallets on this phone") {
                     step = AddStep.External
@@ -773,7 +793,7 @@ internal fun AddWalletFlow(apps: List<WalletLink.App>, onPick: (WalletLink.App) 
 private fun BackLink(onBack: () -> Unit) {
     Row(
         Modifier.clip(RoundedCornerShape(10.dp)).clickable(onClick = onBack)
-            .heightIn(min = 44.dp).padding(end = 12.dp),
+            .heightIn(min = 48.dp).padding(end = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         HiIcon(Hi.ArrowLeft, D.Quiet, 20.dp)
@@ -850,7 +870,7 @@ internal fun WalletNameSheet(w: Linked, onClose: () -> Unit, onSave: (String?) -
             onValueChange = { if (it.length <= 24) text = it },
             singleLine = true,
             placeholder = { Text(w.name, color = D.Quiet, style = Type.body) },
-            supportingText = { Text("${text.trim().length}/24", color = D.Quiet) },
+            supportingText = { Text("${text.trim().length}/24", color = D.Quiet, style = Type.caption) },
             modifier = Modifier.fillMaxWidth(),
         )
         Spacer(Modifier.height(Space.lead))

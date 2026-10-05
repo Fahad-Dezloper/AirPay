@@ -56,6 +56,7 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
@@ -254,6 +255,9 @@ internal fun ProfileDrawer(
     // already hoisted as `address`. Only the count and the logo come from here.
     val linked = remember { runCatching { Wallets(context).all() }.getOrDefault(emptyList()) }
     val wallet = remember(linked, address) { linked.firstOrNull { it.address == address } }
+    // The person's own name for the wallet comes first, as it does on its card. Renaming a wallet
+    // changed the card and left this panel calling it what the wallet app does.
+    val walletLabel = wallet?.alias ?: walletName ?: wallet?.name
     SideSheet(onClose) {
         Column(
             // The page's own edges: the gutter on both sides, 12 above the avatar and 32 below
@@ -279,6 +283,10 @@ internal fun ProfileDrawer(
                             color = if (name.isBlank()) D.Quiet else D.Black,
                             style = Type.heading,
                             maxLines = 1,
+                            // A long .skr name took the whole row, pushed the tick out of it and
+                            // was cut mid-letter. It gives way to the tick and ends in an ellipsis.
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false),
                         )
                         if (isSeeker) {
                             Spacer(Modifier.width(Space.tight))
@@ -329,14 +337,14 @@ internal fun ProfileDrawer(
                 }
             } else {
                 Spacer(Modifier.height(24.dp))
-                WalletBadge(address, walletName ?: wallet?.name, wallet)
+                WalletBadge(address, walletLabel, wallet)
             }
 
             // -------------------------------------------------------------- doors
             // No heading on the first group: these three are not a category, they are the three
             // things somebody came in here to do.
             Spacer(Modifier.height(24.dp))
-            DrawerRow("Connected wallets", linkedLine(linked.size, walletName ?: wallet?.name),
+            DrawerRow("Connected wallets", linkedLine(linked.size, walletLabel),
                 onOpen = onWallets)
             Divider()
             DrawerRow("Help center", "Questions, and how to reach us")
@@ -390,7 +398,10 @@ internal fun ProfileDrawer(
                         .clickable(out, indication = null) {
                             if (confirming) onLogout() else { confirming = true; Haptics.tick(context) }
                         }
-                        .heightIn(min = 52.dp),
+                        .heightIn(min = 52.dp)
+                        // The confirming line wraps to two at this width, and with no padding
+                        // its words ran into the outline.
+                        .padding(horizontal = Space.row, vertical = Space.inline),
                     contentAlignment = Alignment.Center,
                 ) {
                     Text(
@@ -608,7 +619,9 @@ private fun DrawerRow(
             Text(title, color = D.Black, style = Type.body)
             if (detail != null) {
                 Spacer(Modifier.height(Space.tight))
-                Text(detail, color = D.Quiet, style = Type.caption, maxLines = 1)
+                // An email address or a long name is cut with an ellipsis, not mid-letter.
+                Text(detail, color = D.Quiet, style = Type.caption, maxLines = 1,
+                    overflow = TextOverflow.Ellipsis)
             }
         }
         Spacer(Modifier.width(Space.inline))

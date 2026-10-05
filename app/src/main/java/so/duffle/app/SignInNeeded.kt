@@ -22,6 +22,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 
 /**
@@ -62,7 +63,11 @@ internal fun AuthorizeBody(
             ) {
                 WalletMark(wallet, 24.dp)
                 Spacer(Modifier.width(8.dp))
-                Text(wallet.username ?: wallet.name, color = D.Black, style = Type.body, maxLines = 1)
+                // The name gives way to the address: a long one pushed the address out of the chip.
+                Text(
+                    wallet.username ?: wallet.name, color = D.Black, style = Type.body, maxLines = 1,
+                    overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false),
+                )
                 Spacer(Modifier.width(8.dp))
                 Text(wallet.short, color = D.Quiet, style = Type.mono)
             }

@@ -103,6 +103,9 @@ object Session {
 
     fun clear(context: Context) {
         token = null; address = null; wallets = emptySet()
+        // The last attempt's outcome goes with the session it was for. Kept, the next wallet's
+        // sign-in sheet opened already saying "That didn't go through".
+        failed = false
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().clear().apply()
         version++
     }

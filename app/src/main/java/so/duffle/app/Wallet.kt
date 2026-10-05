@@ -85,9 +85,26 @@ class Wallet(private val activity: ComponentActivity) {
         }
     }
 
-    /** Base58 address of the connected account, or null when not connected. */
-    var address: String? = addressOf(activity)
-        private set
+    /**
+     * Base58 address of the wallet in use, or null when none is linked.
+     *
+     * Checked against the list on every read, not trusted. The Wallets screen removes a wallet
+     * through [linked] directly, and the tap sheet is another activity with a Wallet of its own,
+     * so the copy held here went on naming a wallet that had been removed or switched away
+     * from. Removing the last wallet never reached the first screen, the removed address was
+     * still the one a tap answered with, and the next launch linked it again from what was left
+     * on disk.
+     */
+    val address: String?
+        get() {
+            val now = linked.selected()
+            if (now?.address != current) {
+                if (now != null) use(now) else drop()
+            }
+            return current
+        }
+
+    private var current: String? = addressOf(activity)
 
     /**
      * Switches which linked wallet AirPay uses.
@@ -98,12 +115,25 @@ class Wallet(private val activity: ComponentActivity) {
      * the same path a stale token already takes.
      */
     fun use(w: Linked) {
-        linked.select(w)
-        address = w.address
+        // Read again from the list: a caller passes the copy its screen was drawn from, and a
+        // session refreshed since then is only in the list. The old copy's token is a dead one.
+        val now = linked.holding(w.address) ?: return
+        linked.select(now)
+        current = now.address
         // A fresh adapter, so the one we carry is not still pointed at the previous wallet's app.
-        adapter = newAdapter(w.token)
-        prefs.edit().putString(KEY_ADDRESS, w.address).apply()
-        w.token?.let { prefs.edit().putString(KEY_TOKEN, it).apply() }
+        adapter = newAdapter(now.token)
+        // The token is removed when this wallet has none. Left behind, the previous wallet's
+        // session was offered for this one at the next launch.
+        val e = prefs.edit().putString(KEY_ADDRESS, now.address)
+        if (now.token != null) e.putString(KEY_TOKEN, now.token) else e.remove(KEY_TOKEN)
+        e.apply()
+    }
+
+    /** No wallet is left: nothing is held here, on disk or in the adapter. */
+    private fun drop() {
+        current = null
+        adapter = newAdapter(null)
+        prefs.edit().remove(KEY_TOKEN).remove(KEY_ADDRESS).apply()
     }
 
     sealed interface Outcome {
@@ -117,17 +147,27 @@ class Wallet(private val activity: ComponentActivity) {
      *   token asks that same wallet to reauthorize, which is exactly wrong when the user has
      *   asked for a different one — they would be sent back to the wallet they already have.
      */
-    suspend fun connect(fresh: Boolean = false): Outcome = try {
-        if (fresh) adapter = newAdapter(null)
-        connectInner()
-    } catch (e: Exception) {
-        Outcome.Failed(e.message ?: "the wallet could not be reached")
+    suspend fun connect(fresh: Boolean = false): Outcome {
+        val out = try {
+            if (fresh) adapter = newAdapter(null)
+            connectInner()
+        } catch (e: Exception) {
+            // The exception's own text is for the log. On screen it was a line of Java.
+            android.util.Log.i("Wallet", "connect failed", e)
+            Outcome.Failed("Your wallet could not be reached. Try again.")
+        }
+        // An add that was declined must not cost the wallet already in use its session: the
+        // empty adapter made for the add was kept, so the next payment asked to connect afresh.
+        if (fresh && out !is Outcome.Ok) adapter = newAdapter(linked.selected()?.token)
+        return out
     }
 
     private suspend fun connectInner(): Outcome = when (val r = adapter.connect(sender)) {
         is TransactionResult.Success -> {
             val acct = r.authResult.accounts.firstOrNull()
-            if (acct == null) Outcome.Failed("wallet returned no account")
+            if (acct == null) Outcome.Failed(
+                "Your wallet did not share an account. Open it, choose an account, then try again."
+            )
             else {
                 val a = Base58.encode(acct.publicKey)
                 // The phone's default wallet answered with an address that is already linked
@@ -170,7 +210,12 @@ class Wallet(private val activity: ComponentActivity) {
                 // phone's own account). It used to replace the first card without a word, which
                 // looked like a wallet being disconnected. Now it is refused, and says why.
                 val held = linked.holding(r.address)
-                if (held != null && !linked.sameApp(held, app.pkg)) {
+                // An entry with no app recorded is asked which app it resolves to, as signing
+                // does. Without that, a wallet first linked through this very app (before apps
+                // were recorded) was refused as "already linked" by the app that holds it.
+                val sameApp = held != null &&
+                    (linked.sameApp(held, app.pkg) || WalletLink.resolve(activity, held) == app.pkg)
+                if (held != null && !sameApp) {
                     val through = held.name.takeIf { !it.equals("Wallet", true) } ?: "another wallet app"
                     return Outcome.Failed(
                         "That account (${held.short}) is already linked through $through. " +
@@ -188,7 +233,18 @@ class Wallet(private val activity: ComponentActivity) {
             }
         }
     } catch (e: Exception) {
-        Outcome.Failed(e.message ?: "that wallet did not answer")
+        // A decline arrives here as an exception, and its text is a Java class name: it was
+        // shown as it came, in a dialog. Declining is not a fault, so it is no longer reported
+        // as one; anything else gets a sentence, and the raw text goes to the log.
+        android.util.Log.i("Wallet", "link ${app.pkg} failed", e)
+        val m = "${e.message.orEmpty()} ${e.cause?.message.orEmpty()}"
+        when {
+            m.contains("declin", true) || m.contains("cancel", true) -> Outcome.Declined
+            // A refused authorization is usually a decline too, but the wallet does not say so.
+            m.contains("authoriz", true) ->
+                Outcome.Failed("${app.label} did not approve the link. Nothing changed.")
+            else -> Outcome.Failed("${app.label} did not answer. Open ${app.label} once, then try again.")
+        }
     }
 
     suspend fun disconnect() {
@@ -215,16 +271,32 @@ class Wallet(private val activity: ComponentActivity) {
         // handed a session token issued by a different app, and refuse it.
         linked.selected()?.takeIf { it.token != null }?.let { w ->
             val pkg = WalletLink.resolve(activity, w) ?: return@let
-            return when (val r = WalletLink.sign(
-                pkg, w.token!!, unsignedTx,
-                onToken = { t -> linked.add(w.address, t, w.name, w.uri, w.pkg) },
-            ) { activity.startActivity(it) }) {
-                is WalletLink.Signing.Signed -> SendOutcome.Signed(r.tx)
-                is WalletLink.Signing.Failed -> SendOutcome.Failed(r.why)
-                WalletLink.Signing.NeedsReconnect -> {
-                    linked.clearToken(w)
-                    SendOutcome.Failed("${w.name} needs linking again. Open Wallets and add it.")
+            return try {
+                when (val r = WalletLink.sign(
+                    pkg, w.token!!, unsignedTx,
+                    onToken = { t -> linked.add(w.address, t, w.name, w.uri, w.pkg) },
+                ) { activity.startActivity(it) }) {
+                    is WalletLink.Signing.Signed -> SendOutcome.Signed(r.tx)
+                    is WalletLink.Signing.Failed -> SendOutcome.Failed(r.why)
+                    // The token is kept. A decline and a dead session look the same here, and
+                    // the next try already asks the wallet for a new session by itself. Clearing
+                    // it sent that next try down the untargeted route instead, which on a Seeker
+                    // opens Seeker Wallet for another wallet's account.
+                    WalletLink.Signing.NeedsReconnect -> SendOutcome.Failed(
+                        "Your wallet did not approve that. Nothing was sent. Try again."
+                    )
                 }
+            } catch (e: Exception) {
+                // A decline in the wallet, a wallet that never opens and one that times out all
+                // arrive as an exception. Nothing caught it on this route, so declining a payment
+                // in a wallet linked from the list ended the app instead of the payment.
+                android.util.Log.i("Wallet", "sign through $pkg failed", e)
+                val m = "${e.message.orEmpty()} ${e.cause?.message.orEmpty()}"
+                SendOutcome.Failed(
+                    if (m.contains("declin", true) || m.contains("cancel", true) || m.contains("not signed", true)) {
+                        "You declined the payment in your wallet."
+                    } else "Your wallet did not complete the payment. Nothing was sent."
+                )
             }
         }
         val first = attemptSend(unsignedTx)
@@ -251,15 +323,21 @@ class Wallet(private val activity: ComponentActivity) {
                 // adapter left THIS session still presenting the dead token, so the next
                 // payment failed authorization — which is why every payment was asking to
                 // connect first. Both copies get updated.
-                r.authResult.authToken?.let {
-                    adapter.authToken = it
-                    prefs.edit().putString(KEY_TOKEN, it).apply()
+                r.authResult.authToken?.let { fresh ->
+                    adapter.authToken = fresh
+                    prefs.edit().putString(KEY_TOKEN, fresh).apply()
+                    // And the list, which is what the next launch and the next switch read. It
+                    // kept the token from when the wallet was linked, so a wallet that rolls its
+                    // tokens was handed a dead one after every restart. Only when the wallet that
+                    // answered holds the account in use.
+                    current?.takeIf { a -> r.authResult.accounts.any { Base58.encode(it.publicKey) == a } }
+                        ?.let { keep(it, fresh) }
                 }
                 val signed: ByteArray? = r.payload.signedPayloads.firstOrNull()
                 if (signed == null) SendOutcome.Failed("The wallet returned nothing to send.")
                 else SendOutcome.Signed(signed)
             }
-            is TransactionResult.NoWalletFound -> SendOutcome.Failed("no wallet app found")
+            is TransactionResult.NoWalletFound -> SendOutcome.Failed("No wallet app found on this phone.")
             is TransactionResult.Failure -> classify(r.e.message)
         }
     } catch (e: Exception) {
@@ -282,8 +360,13 @@ class Wallet(private val activity: ComponentActivity) {
         }
     }
 
+    /** A refreshed session, written to the list entry of the wallet it belongs to. */
+    private fun keep(address: String, token: String) {
+        linked.holding(address)?.let { w -> linked.add(w.address, token, w.name, w.uri, w.pkg) }
+    }
+
     private fun remember(addr: String, token: String?) {
-        address = addr
+        current = addr
         prefs.edit().putString(KEY_ADDRESS, addr).apply()
         token?.let {
             adapter.authToken = it
@@ -304,15 +387,13 @@ class Wallet(private val activity: ComponentActivity) {
      */
     fun logoutAll() {
         linked.all().forEach { linked.remove(it) }
-        prefs.edit().remove(KEY_TOKEN).remove(KEY_ADDRESS).apply()
-        address = null
-        adapter = newAdapter(null)
+        drop()
     }
 
     /** A real disconnect: the user asked to sign out. */
     private fun forget() {
         linked.selected()?.let { linked.remove(it) }
-        address = linked.selected()?.address
+        current = linked.selected()?.address
         forgetToken()
         // Another linked wallet takes over rather than leaving the app with none.
         linked.selected()?.let { use(it) } ?: prefs.edit().remove(KEY_ADDRESS).apply()
@@ -392,7 +473,11 @@ class Wallet(private val activity: ComponentActivity) {
             signMessagesDetached(arrayOf(message), arrayOf(addressBytes))
         }) {
             is TransactionResult.Success -> {
-                r.authResult.authToken?.let { adapter.authToken = it; remember(address, it) }
+                r.authResult.authToken?.let {
+                    adapter.authToken = it
+                    remember(address, it)
+                    if (r.authResult.accounts.any { a -> a.publicKey.contentEquals(addressBytes) }) keep(address, it)
+                }
                 // One message in, so one signed message out — and the signature belonging to
                 // the address we asked for, rather than whichever the wallet listed first.
                 val signed = r.payload.messages.firstOrNull()

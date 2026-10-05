@@ -105,7 +105,9 @@ object WalletLink {
             val r = client.authorize(Uri.parse(Wallet.IDENTITY_URI), Uri.parse("favicon.ico"), "AirPay", CLUSTER)
                 .get(TIMEOUT_MS, TimeUnit.MILLISECONDS)
             val account = r.accounts.firstOrNull()
-                ?: return@session Linking.Failed("that wallet returned no account")
+                ?: return@session Linking.Failed(
+                    "That wallet did not share an account. Open it, choose an account, then try again."
+                )
             Linking.Ok(
                 address = Base58.encode(account.publicKey),
                 token = r.authToken,
@@ -136,7 +138,7 @@ object WalletLink {
             if (fresh != token) onToken(fresh)
             val signed = client.signTransactions(arrayOf(tx)).get(TIMEOUT_MS, TimeUnit.MILLISECONDS)
             val out = signed.signedPayloads.firstOrNull()
-                ?: return@session Signing.Failed("the wallet returned no signature")
+                ?: return@session Signing.Failed("The wallet returned no signature. Nothing was sent.")
             Signing.Signed(out)
         }
 
