@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A bill: a receipt with a torn foot and three lines on it. Drawn for AirPay in the stroke
+     and corner of the Hugeicons set the other marks come from (1.5, round). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp" android:viewportWidth="24" android:viewportHeight="24">
+    <path
+        android:pathData="M7.5 2.75H16.5C17.8807 2.75 19 3.86929 19 5.25V21.25L16.6667 19.75L14.3333 21.25L12 19.75L9.66667 21.25L7.33333 19.75L5 21.25V5.25C5 3.86929 6.11929 2.75 7.5 2.75Z"
+        android:strokeColor="#FF000000"
+        android:strokeWidth="1.5"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <path
+        android:pathData="M9 7.5H15M9 11.25H15M9 15H12"
+        android:strokeColor="#FF000000"
+        android:strokeWidth="1.5"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+</vector>

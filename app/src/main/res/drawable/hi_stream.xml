@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Streaming: a screen with a play mark on it, on its stand. Drawn for AirPay in the stroke
+     and corner of the Hugeicons set the other marks come from (1.5, round). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp" android:viewportWidth="24" android:viewportHeight="24">
+    <path
+        android:pathData="M6 4H18C19.6569 4 21 5.34315 21 7V14C21 15.6569 19.6569 17 18 17H6C4.34315 17 3 15.6569 3 14V7C3 5.34315 4.34315 4 6 4Z"
+        android:strokeColor="#FF000000"
+        android:strokeWidth="1.5"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <path
+        android:pathData="M10.25 8.1V12.9C10.25 13.29 10.68 13.53 11.01 13.33L14.9 10.93C15.22 10.73 15.22 10.27 14.9 10.07L11.01 7.67C10.68 7.47 10.25 7.71 10.25 8.1Z"
+        android:strokeColor="#FF000000"
+        android:strokeWidth="1.5"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <path
+        android:pathData="M8 20.5H16"
+        android:strokeColor="#FF000000"
+        android:strokeWidth="1.5"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+</vector>
