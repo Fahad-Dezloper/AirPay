@@ -311,9 +311,12 @@ internal fun Recommended(
             Modifier.fillMaxWidth().heightIn(min = 48.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text("Recommended for you", color = D.Black, style = Type.heading)
+            // The heading takes what is left, so at a large font size it wraps onto a second line
+            // and `See all` keeps its full width, where a spacer between them let the heading
+            // squeeze the button off the row.
+            Text("Recommended for you", color = D.Black, style = Type.heading,
+                modifier = Modifier.weight(1f))
             if (onSeeAll != null) {
-                Spacer(Modifier.weight(1f))
                 Box(
                     Modifier.clip(RoundedCornerShape(8.dp)).clickable(onClick = onSeeAll)
                         .heightIn(min = 48.dp).padding(horizontal = 8.dp),

@@ -114,14 +114,18 @@ internal fun BillTilesSkeleton() {
     }
 }
 
-/** The Rewards page below its title: the total, the claim row, the cards, the week. */
+/**
+ * The Rewards page below its title: the total, the cards, the week.
+ *
+ * No block between the total and the cards. There was one, for a Claim button the page no longer
+ * has, and it pushed the grid 68dp lower than where it lands. The week card is 168, its real
+ * minimum height.
+ */
 @Composable
 internal fun RewardsSkeleton() {
     Column(Modifier.fillMaxWidth().loadingFor("rewards")) {
         Spacer(Modifier.height(24.dp))
         SkeletonBox(Modifier.fillMaxWidth().height(168.dp), RoundedCornerShape(24.dp))
-        Spacer(Modifier.height(Space.lead))
-        SkeletonBox(Modifier.fillMaxWidth().height(56.dp), RoundedCornerShape(18.dp))
         Spacer(Modifier.height(Space.section))
         SkeletonLine(160.dp, 20.dp)
         Spacer(Modifier.height(Space.lead))
@@ -134,7 +138,7 @@ internal fun RewardsSkeleton() {
         Spacer(Modifier.height(Space.section))
         SkeletonLine(110.dp, 20.dp)
         Spacer(Modifier.height(Space.lead))
-        SkeletonBox(Modifier.fillMaxWidth().height(120.dp), RoundedCornerShape(24.dp))
+        SkeletonBox(Modifier.fillMaxWidth().height(168.dp), RoundedCornerShape(24.dp))
     }
 }
 

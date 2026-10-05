@@ -834,6 +834,11 @@ private fun BuySheet(
             val tallest = LocalConfiguration.current.screenHeightDp.dp * 0.88f
             Column(Modifier.heightIn(max = tallest)) {
                 Amounts(service, card, email, onEmail, usdc) { value ->
+                    // This sheet is a Dialog, a window of its own above the activity, and the
+                    // purchase sheet that takes over is drawn in the activity. Left open, this
+                    // one covered it: "Paid" was hidden behind a Pay button that still worked,
+                    // which is an invitation to pay twice. So it steps aside first.
+                    onClose()
                     onBuy(card.product, value)
                 }
             }
@@ -1002,7 +1007,11 @@ private fun PriceBox(
                 // The face value whole, through Money — never a symbol concatenated here. A
                 // value Money cannot write (an unknown currency code, or a bundle whose value
                 // is a sentence) falls back to the value as the server wrote it.
-                pack.price.toBigDecimalOrNull()?.let { faceValue(it, currency) } ?: pack.value,
+                // A sentence with no amount behind it has no figure at all: `price` would hand
+                // back the 0 it was built with, and the box would offer the thing for "₹0".
+                pack.price.toBigDecimalOrNull()
+                    ?.takeIf { pack.amount > 0 || pack.value.toBigDecimalOrNull() != null }
+                    ?.let { faceValue(it, currency) } ?: pack.value,
                 color = D.Black, style = Type.title.figure(),
             )
             // What it costs, in the token it is paid with — null until the server sends one.

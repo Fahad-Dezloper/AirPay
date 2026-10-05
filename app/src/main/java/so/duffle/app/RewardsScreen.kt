@@ -84,6 +84,7 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.window.DialogWindowProvider
 import coil.compose.AsyncImage
 import java.math.BigDecimal
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
@@ -172,6 +173,19 @@ internal fun RewardsTab(
     LaunchedEffect(Unit) {
         Shop.sections()?.let { all -> products = all.flatMap { it.products } }
     }
+    // The time every expiry on this page is judged against. Held in state and moved on, because
+    // a clock read once while drawing stays where it was: a page left open past a card's last
+    // minute went on offering it, and the server then refused the scratch.
+    var now by remember { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(30_000L)
+            now = System.currentTimeMillis()
+        }
+    }
+    // Cards seen covered during this visit. One of them scratched here keeps its place in the
+    // grid: sorted away with the opened ones, it left the slot the stage was carrying it back to.
+    val seenCovered = remember { mutableSetOf<Int>() }
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberHeldScroll("rewards"))) {
         // The three blank states are unchanged, and deliberately carry no title row: they are a
@@ -211,7 +225,7 @@ internal fun RewardsTab(
         // 24 below the title block — the one gap on this page that is neither `lead` nor
         // `section`, and §2 states it outright.
         Spacer(Modifier.height(24.dp))
-        TotalCard(s, isSeeker)
+        TotalCard(s, isSeeker, now)
         ClaimRow(s, connected) { refresh++ }
 
         // ------------------------------------------------------------- §3 scratch & reveal
@@ -221,8 +235,20 @@ internal fun RewardsTab(
         // button could have opened would have shown the same boxes again further down. It is
         // removed outright, not hidden on an empty list, so do not restore it from the brief.
         // Cards still to scratch come first, so the ones that want attention lead the grid.
-        val rows = remember(s.rows) { (MOCK_CARDS + s.rows).sortedBy { it.revealed } }
-        val waiting = rows.count { !it.revealed }
+        // Then the opened ones, then any that ran out, which want nothing from anybody.
+        val rows = remember(s.rows, now) {
+            val all = MOCK_CARDS + s.rows
+            all.forEach { if (!it.revealed) seenCovered += it.id }
+            all.sortedBy {
+                when {
+                    it.expired(now) -> 2
+                    it.revealed && it.id !in seenCovered -> 1
+                    else -> 0
+                }
+            }
+        }
+        // A card that ran out is still covered, but it is not one to scratch.
+        val waiting = rows.count { !it.revealed && !it.expired(now) }
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("Scratch & reveal", color = D.Black, style = Type.heading)
             if (waiting > 0) {
@@ -266,7 +292,7 @@ internal fun RewardsTab(
                             // `connected` is a val and the null case returned above, so it is
                             // smart-cast here — the old `?: return@ScratchCard` guard could
                             // never fire and the compiler said so.
-                            RewardCard(row, hidden = openId == row.id) { bounds -> onOpenCard?.invoke(row, bounds) }
+                            RewardCard(row, now, hidden = openId == row.id) { bounds -> onOpenCard?.invoke(row, bounds) }
                         }
                     }
                     // A lone card on the last row must stay one column wide, not stretch.
@@ -315,7 +341,7 @@ internal fun RewardsTab(
         // one overlay a screen composable can open that genuinely reaches the display's edges.
         // If a strip is ever seen again, the real fix is hoisting this to MainActivity.kt
         // beside `OfferSheet` and `HowToReferSheet`. It measures zero in this column.
-        if (streakInfo) StreakSheet(onClose = { streakInfo = false })
+        if (streakInfo) StreakSheet(steps = s.streakNeeded.coerceAtLeast(1), bonus = s.streak, onClose = { streakInfo = false })
     }
 }
 
@@ -383,8 +409,11 @@ private val HERO_SQUARES = listOf(1 to 0, 4 to 1, 0 to 2, 6 to 0, 3 to 3, 5 to 4
  * 40sp on a money card reads as money. It goes when the server sends a price.
  */
 @Composable
-private fun TotalCard(s: Rewards.Summary, isSeeker: Boolean) {
+private fun TotalCard(s: Rewards.Summary, isSeeker: Boolean, now: Long) {
     val usd = s.totalUsd
+    // Real cards still to scratch. Not the practice cards, which are not in `s.rows`, and not
+    // a card that ran out, which can no longer add anything to this figure.
+    val toScratch = s.rows.count { !it.revealed && !it.expired(now) }
     // Zero is judged on whatever is actually being shown, so the lines below never describe a
     // figure the card is not displaying.
     val empty = (usd ?: s.total.toDouble()) <= 0.0
@@ -420,10 +449,15 @@ private fun TotalCard(s: Rewards.Summary, isSeeker: Boolean) {
                         style = Type.amount)
                 } else {
                     Row {
+                        // One line each, whatever the figure. A total too wide for this column
+                        // ("12,500") used to leave "SKR" a sliver to wrap in, one letter to a
+                        // line; it now runs on under the gift instead, which is still readable.
                         Text(skr(s.total), color = D.Black, style = Type.amount,
+                            maxLines = 1, softWrap = false, overflow = TextOverflow.Visible,
                             modifier = Modifier.alignByBaseline())
                         Spacer(Modifier.width(Space.tight))
                         Text("SKR", color = D.Black, style = Type.heading,
+                            maxLines = 1, softWrap = false, overflow = TextOverflow.Visible,
                             modifier = Modifier.alignByBaseline())
                     }
                 }
@@ -433,8 +467,10 @@ private fun TotalCard(s: Rewards.Summary, isSeeker: Boolean) {
                     when {
                         // A card is waiting: it is not counted until it is scratched, so say so
                         // rather than "Nothing yet", which would be false.
-                        empty && s.rows.any { !it.revealed } ->
+                        empty && toScratch == 1 ->
                             "Scratch your card below to see what you've earned"
+                        empty && toScratch > 1 ->
+                            "Scratch your cards below to see what you've earned"
                         empty && !isSeeker ->
                             "Rewards are for Seeker owners, this wallet holds no Genesis Token"
                         empty ->
@@ -563,18 +599,22 @@ private val CARD_R = 24.dp
  * ([hidden]) so the card is never in two places, and it comes back exactly where it was.
  */
 @Composable
-private fun RewardCard(row: Rewards.Row, hidden: Boolean, onOpen: (androidx.compose.ui.geometry.Rect) -> Unit) {
+private fun RewardCard(row: Rewards.Row, now: Long, hidden: Boolean, onOpen: (androidx.compose.ui.geometry.Rect) -> Unit) {
     var bounds by remember { mutableStateOf(androidx.compose.ui.geometry.Rect.Zero) }
     val press = remember { MutableInteractionSource() }
+    // A card that ran out does not open. Lifted into the stage it could be scratched all the
+    // way to a win the server then refuses to pay, which is the one thing a card must not show.
+    val gone = row.expired(now)
     Box(
         Modifier.fillMaxWidth().aspectRatio(1f)
             .onGloballyPositioned { bounds = it.boundsInWindow() }
             .graphicsLayer { alpha = if (hidden) 0f else 1f }
             .then(PressScale(press))
-            .clickable(press, indication = null) { onOpen(bounds) },
+            // Not before it has been placed: the stage sizes the lift from these bounds.
+            .clickable(press, indication = null, enabled = !gone) { if (bounds.width > 0f) onOpen(bounds) },
     ) {
         CardBody(row, cover = if (row.revealed) 0f else 1f)
-        if (!row.revealed) ScratchCue(row)
+        if (!row.revealed) ScratchCue(row, now)
     }
 }
 
@@ -593,10 +633,11 @@ private fun RewardCard(row: Rewards.Row, hidden: Boolean, onOpen: (androidx.comp
  * crossing the card; it was three animations on a page that already has plenty to look at.
  */
 @Composable
-private fun androidx.compose.foundation.layout.BoxScope.ScratchCue(row: Rewards.Row) {
-    val now = System.currentTimeMillis()
-    val today = row.expiresAt > 0L && row.expiresAt - now in 0..86_400_000L
-    val gone = row.expiresAt in 1..now
+internal fun androidx.compose.foundation.layout.BoxScope.ScratchCue(row: Rewards.Row, now: Long) {
+    // Red for the last 24 hours. The WORD is the calendar's, though: a card that runs out at
+    // nine tomorrow morning is urgent tonight, but "today" would be false.
+    val urgent = row.expiresAt > 0L && row.expiresAt - now in 0..86_400_000L
+    val gone = row.expired(now)
     // The instruction, as a white label with ink words: the strongest contrast there is, on the
     // blue card and the gold one alike, and it reads as a sticker on the card rather than as a
     // shadow over the picture, which is what the dark pill looked like.
@@ -604,7 +645,7 @@ private fun androidx.compose.foundation.layout.BoxScope.ScratchCue(row: Rewards.
         if (gone) "Expired" else "Tap to scratch",
         color = D.Black, style = Type.body.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold),
         modifier = Modifier.align(Alignment.TopCenter).padding(top = 10.dp)
-            .background(Color.White, CircleShape).padding(horizontal = 12.dp, vertical = 4.dp),
+            .background(D.White, CircleShape).padding(horizontal = 12.dp, vertical = 4.dp),
     )
     // The band. It belongs to the card: full width, flush with the foot, cut by the card's corners.
     Box(
@@ -615,7 +656,7 @@ private fun androidx.compose.foundation.layout.BoxScope.ScratchCue(row: Rewards.
             // red on the last day, the one colour that means "now"; grey once it is over.
             .background(when {
                 gone -> BAND_OVER
-                today -> BAND_URGENT
+                urgent -> BAND_URGENT
                 row.isSpecial -> BAND_GOLD
                 else -> BAND_BLUE
             }),
@@ -624,21 +665,41 @@ private fun androidx.compose.foundation.layout.BoxScope.ScratchCue(row: Rewards.
         Text(
             when {
                 gone -> "Not scratched in time"
-                today -> "Expiring today!"
+                urgent && sameDay(row.expiresAt, now) -> "Expiring today!"
+                urgent -> "Expiring tomorrow!"
                 row.expiresAt > 0L -> "Expires on ${EXPIRY_DAY.format(java.util.Date(row.expiresAt))}"
                 else -> "Scratch now"
             },
-            color = Color.White, style = Type.caption.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold),
-            maxLines = 1,
+            color = D.White, style = Type.caption.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold),
+            // Kept off the card's rounded corners, and ended with "…" when a large font or a long
+            // month name will not fit, where it used to be cut off mid-letter.
+            maxLines = 1, overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(horizontal = 8.dp),
         )
     }
 }
 
-// White words on each of these is at least 4.5:1.
+// White words on each of these is at least 4.5:1. Blue and gold are the two covers' own deeper
+// shades, so they stay with the artwork. Red and grey are states, and were raw near-copies of
+// the palette's own danger ink and quiet grey, so they are those tokens now.
 private val BAND_BLUE = Color(0xFF0B6FD6)
 private val BAND_GOLD = Color(0xFFB85C00)
-private val BAND_URGENT = Color(0xFFD81F2A)
-private val BAND_OVER = Color(0xFF5F6368)
+private val BAND_URGENT = D.DangerInk
+private val BAND_OVER = D.Quiet
+
+/**
+ * Whether a covered card ran out before it was scratched. The server refuses to open one
+ * (`refused: "expired"`), so the page must not offer it. Zero means the server gave no date.
+ */
+private fun Rewards.Row.expired(now: Long): Boolean = !revealed && expiresAt in 1..now
+
+/** Whether two moments fall on the same day of this phone's calendar. */
+private fun sameDay(a: Long, b: Long): Boolean {
+    val x = java.util.Calendar.getInstance().apply { timeInMillis = a }
+    val y = java.util.Calendar.getInstance().apply { timeInMillis = b }
+    return x.get(java.util.Calendar.YEAR) == y.get(java.util.Calendar.YEAR) &&
+        x.get(java.util.Calendar.DAY_OF_YEAR) == y.get(java.util.Calendar.DAY_OF_YEAR)
+}
 
 /** "16 Sep": the day and the month, which is all an expiry needs. */
 private val EXPIRY_DAY = java.text.SimpleDateFormat("d MMM", java.util.Locale.getDefault())
@@ -651,7 +712,9 @@ private val EXPIRY_DAY = java.text.SimpleDateFormat("d MMM", java.util.Locale.ge
  * each comes back covered the next time the page is read. That is the point: the scratch can be
  * shown to somebody and tried again and again without a real card being used up.
  */
-private val MOCK_CARDS: List<Rewards.Row> = listOf(
+// Built on every read, not once: as a stored list their expiry was fixed when the app started,
+// so an app left open for six hours showed the second one as expired and it could not be tried.
+private val MOCK_CARDS: List<Rewards.Row> get() = listOf(
     // One with a week left and one that runs out today, so both states of the band can be seen.
     Rewards.Row(id = -1, kind = "per_payment", skr = 40, counterparty = "", at = 0L, unlockAt = 0L,
         state = "paid", reason = null, revealed = false,
@@ -1292,7 +1355,11 @@ private const val NOTE_FULL =
         "behind this sheet says so as soon as that happens."
 
 @Composable
-private fun StreakSheet(onClose: () -> Unit) {
+private fun StreakSheet(steps: Int, bonus: Int, onClose: () -> Unit) {
+    // The count and the bonus are the server's, the same two figures the card behind this sheet
+    // prints. Written into the sentences as "four" and "200" they would disagree with the card
+    // the day either is changed.
+    val count = countWord(steps)
     Dialog(
         onDismissRequest = onClose,
         properties = DialogProperties(
@@ -1316,7 +1383,7 @@ private fun StreakSheet(onClose: () -> Unit) {
             Spacer(Modifier.height(16.dp))
             Text("This week's streak", color = D.Black, style = Type.heading)
             Spacer(Modifier.height(Space.tight))
-            Text("Four tap payments in a week earn a bonus on top.",
+            Text("${count.replaceFirstChar { it.uppercase() }} tap payments in a week earn a bonus on top.",
                 color = D.Quiet, style = Type.caption)
 
             Spacer(Modifier.height(24.dp))
@@ -1326,8 +1393,8 @@ private fun StreakSheet(onClose: () -> Unit) {
                     detail = "Any tap payment that earns a reward fills one.",
                 ) { StepDisc(DiscTone.Paid, 40.dp) }
                 InfoRow(
-                    title = "All four, 200 SKR",
-                    detail = "Paid on top of what those four already earned.",
+                    title = "All $count, ${skr(bonus)} SKR",
+                    detail = "Paid on top of what those $count already earned.",
                 ) {
                     // **The animated coin's home**, corrected by the user on 2026-10-01 — it was
                     // briefed onto the This week card and does not belong there. This row is the
@@ -1388,6 +1455,13 @@ private fun StreakSheet(onClose: () -> Unit) {
             PrimaryButton("Got it", onClick = onClose)
         }
     }
+}
+
+/** A small count as a word, the way a sentence says it. Past ten it is a figure. */
+private fun countWord(n: Int): String = when (n) {
+    1 -> "one"; 2 -> "two"; 3 -> "three"; 4 -> "four"; 5 -> "five"
+    6 -> "six"; 7 -> "seven"; 8 -> "eight"; 9 -> "nine"; 10 -> "ten"
+    else -> "$n"
 }
 
 /** One row of the sheet: a 40 lead, 12, then the rule and what it means. */

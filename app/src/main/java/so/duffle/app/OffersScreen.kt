@@ -139,20 +139,26 @@ internal fun OffersTab(
     reloadKey: Int,
     onBack: (() -> Unit)? = null,
 ) {
-    var offers by remember { mutableStateOf<List<Rewards.Offer>>(emptyList()) }
-    var referral by remember { mutableStateOf<Referrals.Summary?>(null) }
+    // Keyed on the wallet, so another wallet's offers are never shown while this one's load.
+    var offers by remember(connected) { mutableStateOf<List<Rewards.Offer>>(emptyList()) }
+    var referral by remember(connected) { mutableStateOf<Referrals.Summary?>(null) }
     var loading by remember { mutableStateOf(true) }
+    // The last read got no answer at all. Kept apart from "the server answered with no offers",
+    // because the page said "Nothing live right now." for both and only one of them is true.
+    var failed by remember(connected) { mutableStateOf(false) }
 
     LaunchedEffect(connected, reloadKey, Session.version, Live.tick) {
         loading = true
         val me = connected
-        if (me == null) {
-            offers = emptyList(); referral = null
-        } else coroutineScope {
+        if (me != null) coroutineScope {
             val o = async { Rewards.offers(me) }
             val r = async { Referrals.summary(me) }
-            offers = o.await() ?: emptyList()
-            referral = r.await()
+            val got = o.await()
+            // A refresh that fails keeps what is already on screen. Emptying the list on one
+            // dropped request made every offer vanish and come back on the next tick.
+            if (got != null) offers = got
+            failed = got == null
+            r.await()?.let { referral = it }
         }
         loading = false
     }
@@ -162,6 +168,12 @@ internal fun OffersTab(
         // advertising offers above the reason none can be shown was the wrong order — and it
         // is the order RewardsScreen and ReferralsScreen already use for the same state.
         if (connected == null) {
+            // The top bar is not drawn in this state and MainActivity draws no header for this
+            // tab, so without this row the page had no title and no back arrow at all.
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                BackArrow(onBack)
+                Text("Offers", color = D.Black, style = Type.title)
+            }
             Spacer(Modifier.height(Space.section))
             Text("Connect a wallet", color = D.Black, style = Type.heading)
             Spacer(Modifier.height(Space.tight))
@@ -183,7 +195,7 @@ internal fun OffersTab(
         if (!isSeeker) {
             // Said once, at the top, rather than repeated as a refusal on every row.
             Spacer(Modifier.height(Space.tight))
-            Text("Offers are for Seeker owners, this wallet holds no Genesis Token.",
+            Text("Offers are for Seeker owners. This wallet does not hold a Seeker Genesis Token.",
                 color = D.Quiet, style = Type.caption)
         }
         Spacer(Modifier.height(Space.lead))
@@ -199,11 +211,26 @@ internal fun OffersTab(
         // "Nothing live right now." only when the group really is empty — AirPay's own row
         // counts. On the phone it read as a flat contradiction: a live offer with a line
         // underneath saying there were none.
-        if (available.isEmpty() && referral == null && !loading) {
+        if (failed && offers.isEmpty()) {
+            // No answer is not the same as no offers. A lapsed session gets the way to sign in
+            // again; anything else is said plainly, the way the Refer sheet says it.
+            if (!Session.valid(connected)) {
+                SignInNeeded("see offers")
+            } else {
+                if (referral != null) Spacer(Modifier.height(Space.row))
+                Text("Can't reach the server", color = D.Black, style = Type.body)
+                Spacer(Modifier.height(Space.tight))
+                Text("Offers come from the server, so none can be shown right now. " +
+                    "Check your connection and come back.",
+                    color = D.Quiet, style = Type.caption)
+            }
+        } else if (available.isEmpty() && referral == null && !loading) {
             Text("Nothing live right now.", color = D.Quiet, style = Type.caption,
                 modifier = Modifier.padding(top = Space.inline))
         }
-        if (loading && offers.isEmpty()) {
+        // Only on a first load. With AirPay's own row already showing, a skeleton under it on
+        // every refresh was a flicker about nothing.
+        if (loading && offers.isEmpty() && referral == null && !failed) {
             Spacer(Modifier.height(Space.lead))
             OffersSkeleton()
         }
@@ -648,6 +675,20 @@ private const val SEEKER_STORE = "https://solanamobile.com"
 /** The claim refusal that is a dead end rather than something to try again. */
 private const val ALREADY_CLAIMED = "already_claimed"
 
+/**
+ * Every claim refusal that no retry can fix, and what the grey button says for it. The offer
+ * ending and its budget running out are as final as a claim that already exists; left out of this
+ * they kept a live blue "Claim this offer" that could be pressed for ever.
+ */
+private val DEAD_ENDS = mapOf(
+    ALREADY_CLAIMED to "Already claimed",
+    "not_live" to "Offer ended",
+    "offer_budget" to "Fully claimed",
+)
+
+/** Two presses closer together than this are one press. See the claim button in [OfferSheet]. */
+private const val CLAIM_DEBOUNCE_MS = 1_000L
+
 /** More steps than any offer has, so "all of them" is ticked however many the server sent. */
 private const val OFFER_STEPS = Int.MAX_VALUE
 
@@ -693,14 +734,15 @@ private data class OfferView(val label: String, val look: Look, val done: Int, v
  * @param expired the window has run out. It is checked here as well as against `state`, because
  *   the server marks a claim expired on its next sweep rather than on the stroke of the deadline,
  *   so for a minute or two `state` still reads "open".
- * @param refused the claim attempt came back [ALREADY_CLAIMED], which no retry can fix.
+ * @param refused what the grey button says when the claim attempt came back as one of
+ *   [DEAD_ENDS], which no retry can fix. Null when it did not.
  */
 private fun offerView(
     offer: Rewards.Offer,
     first: String?,
     isSeeker: Boolean,
     expired: Boolean,
-    refused: Boolean,
+    refused: String?,
 ): OfferView = when {
     // What was earned, not what was advertised. The one that is a fact is the one the server
     // credited.
@@ -717,7 +759,7 @@ private fun offerView(
         offer.cta?.label ?: "Open ${offer.app}", Look.Go, done = claimedSteps(first), live = true,
     )
     !isSeeker -> OfferView("Get a Seeker", Look.Store, 0, live = true)
-    refused -> OfferView("Already claimed", Look.Over, 0, live = false)
+    refused != null -> OfferView(refused, Look.Over, 0, live = false)
     else -> OfferView("Claim this offer", Look.Go, 0, live = true)
 }
 
@@ -746,7 +788,10 @@ private fun guideFor(offer: Rewards.Offer): List<Rewards.Step> {
         .replaceFirstChar { it.uppercase() }
     return buildList {
         add(Rewards.Step("Claim this offer", "Claiming starts the clock. Only what you do after it counts."))
-        add(Rewards.Step("Install ${offer.app} from the dApp Store"))
+        // Not for a task done inside AirPay: there is nothing to install, the app is already open.
+        if (!offer.inAirPay && !offer.app.equals("AirPay", ignoreCase = true)) {
+            add(Rewards.Step("Install ${offer.app} from the dApp Store"))
+        }
         // Only when the server sent one. An empty step is what writing it unconditionally produces.
         if (task.isNotBlank()) add(Rewards.Step(task))
     }
@@ -768,7 +813,7 @@ private fun rulesFor(offer: Rewards.Offer): List<String> {
             )
             add("The amount must be at least $least.")
         }
-        add("Finish within ${offer.windowHours} hours of claiming.")
+        add("Finish within ${windowWords(offer.windowHours)} of claiming.")
         add("Only what you do after claiming counts, not before.")
     }
 }
@@ -853,14 +898,21 @@ internal fun OfferSheet(
     }
 
     val expired = deadline > 0L && now >= deadline
-    val refused = refusedCode == ALREADY_CLAIMED ||
-        // Fallback for the call site that hands over the translated sentence (see [refusedCode]).
-        // Compared against `offerWhy`'s own output rather than a copy of the words, so the two
-        // cannot drift apart.
-        (refusedCode == null && problem != null && problem == Rewards.offerWhy(ALREADY_CLAIMED))
+    val refusedLabel = DEAD_ENDS.entries.firstOrNull { (code, _) ->
+        refusedCode == code ||
+            // Fallback for the call site that hands over the translated sentence (see
+            // [refusedCode]). Compared against `offerWhy`'s own output rather than a copy of the
+            // words, so the two cannot drift apart.
+            (refusedCode == null && problem != null && problem == Rewards.offerWhy(code))
+    }?.value
+    val refused = refusedLabel != null
+
+    // When Claim was last pressed. `claiming` only disables the button on the next frame, so two
+    // presses inside one frame both reached the caller and sent two claims.
+    val lastClaim = remember { longArrayOf(0L) }
 
     val guide = guideFor(offer)
-    val view = offerView(offer, guide.firstOrNull()?.title, isSeeker, expired, refused)
+    val view = offerView(offer, guide.firstOrNull()?.title, isSeeker, expired, refusedLabel)
     val rules = rulesFor(offer)
 
     // What the claimed offer's button does. "link" leaves AirPay; anything else is a page in it.
@@ -889,10 +941,10 @@ internal fun OfferSheet(
                     maxLines = 3, overflow = TextOverflow.Ellipsis,
                 )
             }
-            // The cross every other sheet has, in the place it has it. 44 so it is a real target;
-            // pushed out by the box's own slack so the cross's ink ends on the sheet's edge.
+            // The cross every other sheet has, in the place it has it. 48 so it is a full touch
+            // target; pushed out by the box's own slack so the cross's ink ends on the sheet's edge.
             Box(
-                Modifier.offset(x = 11.dp, y = (-8).dp).size(44.dp).clip(CircleShape)
+                Modifier.offset(x = 13.dp, y = (-10).dp).size(48.dp).clip(CircleShape)
                     .clickable(onClick = onClose),
                 contentAlignment = Alignment.Center,
             ) { HiIcon(Hi.Close, D.Black, 22.dp, contentDescription = "Close") }
@@ -994,7 +1046,17 @@ internal fun OfferSheet(
                     PrimaryButton(view.label, { onGo(target) })
                 }
             } else {
-                PrimaryButton(view.label, onClaim, enabled = !claiming, loading = claiming)
+                PrimaryButton(
+                    view.label,
+                    {
+                        val t = android.os.SystemClock.uptimeMillis()
+                        if (t - lastClaim[0] >= CLAIM_DEBOUNCE_MS) {
+                            lastClaim[0] = t
+                            onClaim()
+                        }
+                    },
+                    enabled = !claiming, loading = claiming,
+                )
             }
         }
         if (leaves) {
@@ -1129,13 +1191,32 @@ private fun androidx.compose.foundation.layout.RowScope.RewardFigure(text: Strin
  * How long is left, to the minute: `21h 14m left`.
  *
  * Minutes floor rather than round, so this never claims more time than there is. Under an hour
- * the hours are dropped, because `0h 14m left` reads as a bug.
+ * the hours are dropped, because `0h 14m left` reads as a bug. From two days up it is days and
+ * hours, because most windows are a month and `719h 14m left` is a sum left for the reader. And
+ * the last minute says so, because `0m left` on an offer that is still open reads as over.
  */
 private fun timeLeft(ms: Long): String {
     val minutes = (ms.coerceAtLeast(0L) / 60_000L)
     val h = minutes / 60
     val m = minutes % 60
-    return if (h > 0) "${h}h ${m}m left" else "${m}m left"
+    return when {
+        h >= 48 -> "${h / 24}d ${h % 24}h left"
+        h > 0 -> "${h}h ${m}m left"
+        m > 0 -> "${m}m left"
+        else -> "Under 1m left"
+    }
+}
+
+/**
+ * An offer's window in the unit somebody would say it in: "3 days", "30 days", "36 hours".
+ *
+ * The server sends hours, and a month-long window read "720 hours from when you claim". Days only
+ * when the hours are whole days, so nothing is rounded into a longer window than there is.
+ */
+private fun windowWords(hours: Int): String = when {
+    hours >= 48 && hours % 24 == 0 -> "${hours / 24} days"
+    hours == 1 -> "1 hour"
+    else -> "$hours hours"
 }
 
 /**
@@ -1219,7 +1300,7 @@ private fun TimeLimitRow(offer: Rewards.Offer, deadline: Long, now: Long, expire
                 expired -> Text("Ended", color = D.Quiet, style = Type.caption)
                 offer.waiting && deadline > 0L -> OnHighlight(timeLeft(deadline - now))
                 else -> Text(
-                    "${offer.windowHours} hours from when you claim",
+                    "${windowWords(offer.windowHours)} from when you claim",
                     color = D.Quiet, style = Type.caption, textAlign = TextAlign.End,
                 )
             }

@@ -207,7 +207,9 @@ object Shop {
          * bundle's value is "2GB/Day 5G Plan - 84 Days" and its price lives nowhere else.
          */
         val price: String get() = value.toDoubleOrNull()
-            ?.let { if (it == Math.floor(it)) it.toLong().toString() else "%.2f".format(it) }
+            // Always a "." for the decimal mark. Callers parse this string back into a number,
+            // and the phone's own format ("99,50") does not parse, which dropped the figure.
+            ?.let { if (it == Math.floor(it)) it.toLong().toString() else String.format(java.util.Locale.US, "%.2f", it) }
             ?: amount.toString()
     }
 
@@ -518,11 +520,19 @@ object Shop {
         }) ?: return null
         val address = o.optString("address").takeIf { PayRequest.isBase58Address(it) } ?: return null
         val amount = o.optLong("amount", 0L).takeIf { it > 0 } ?: return null
+        // An invoice with no id is not paid. The id is the only handle on the order: `Orders`
+        // drops a row without one, so the money would leave and nothing would be written down
+        // or asked about again.
+        val id = o.text("invoice_id") ?: return null
+        // The invoice names its own currency. One that is not what was asked for is not paid:
+        // the amount would be read in the wrong unit.
+        if (!o.optString("currency", payWith.symbol).equals(payWith.symbol, true)) return null
         return Invoice(
-            id = o.optString("invoice_id"), address = address, amount = amount,
-            // The invoice names its own currency. One that is not what was asked for is not
-            // paid: the amount would be read in the wrong unit.
-            currency = o.optString("currency", payWith.symbol).takeIf { it.equals(payWith.symbol, true) } ?: return null,
+            id = id, address = address, amount = amount,
+            // Written our way, not the server's. "usdc" is the same money, but `Money` looks its
+            // decimals up by "USDC", and `buy()` compares this to the chosen token exactly, so a
+            // lower-case answer was shown at four places and then thrown away and asked for again.
+            currency = payWith.symbol,
             productId = productId, value = value, decimals = payWith.decimals,
         )
     }
@@ -703,7 +713,6 @@ object Shop {
             link = any.text("link") ?: any.text("url"),
             instructions = any.text("instructions"),
             expires = any.text("expiration_date"),
-            // Anything Bitrefill sends that we have no name for. Never dropped.
             // Anything Bitrefill sends that we have no name for. Never dropped — Subway's
             // barcode_format arrived this way and is worth keeping.
             //
@@ -713,7 +722,10 @@ object Shop {
             raw = any.keys().asSequence()
                 .filterNot { it in setOf("code", "pin", "link", "url", "instructions", "expiration_date") }
                 .mapNotNull { k ->
-                    any.opt(k)?.toString()?.takeIf { it.isNotBlank() && it != "{}" }?.let { "$k: $it" }
+                    // A JSON null stringifies to the word "null", and an empty list to "[]".
+                    // Neither is a field worth printing under a code.
+                    any.opt(k)?.takeIf { it != JSONObject.NULL }?.toString()
+                        ?.takeIf { it.isNotBlank() && it != "{}" && it != "[]" }?.let { "$k: $it" }
                 }
                 .filterNot { line ->
                     listOf("code", "pin").any { key ->

@@ -292,16 +292,21 @@ internal fun CodeSheet(
         }
 
         if (v.codes && r != null) {
-            Spacer(Modifier.height(Space.row))
-            SheetCard {
-                r.code?.let { CodeField("Code", it) }
-                r.pin?.let {
-                    if (r.code != null) RowLine()
-                    CodeField("PIN", it)
-                }
-                r.link?.let {
-                    if (r.code != null || r.pin != null) RowLine()
-                    LinkField("Redeem at", it, uri)
+            // A redemption can be instructions alone, or only a field we have no name for. Then
+            // there is no row to put in the card, and an empty card drew as a bare outline.
+            val rows = r.code != null || r.pin != null || r.link != null
+            if (rows) {
+                Spacer(Modifier.height(Space.row))
+                SheetCard {
+                    r.code?.let { CodeField("Code", it) }
+                    r.pin?.let {
+                        if (r.code != null) RowLine()
+                        CodeField("PIN", it)
+                    }
+                    r.link?.let {
+                        if (r.code != null || r.pin != null) RowLine()
+                        LinkField("Redeem at", it, uri)
+                    }
                 }
             }
             // Whatever came with the code and could not be made a row. A field we have not seen
@@ -313,9 +318,11 @@ internal fun CodeSheet(
                 r.expires?.let { "Valid until ${it.take(10)}" },
             )
             extras.forEach {
-                Spacer(Modifier.height(GAP))
-                Text(it, color = D.Quiet, style = Type.caption, maxLines = 3,
-                    overflow = TextOverflow.Ellipsis)
+                Spacer(Modifier.height(if (rows) GAP else CARD_ROW))
+                // Three lines beside a code. With no code these lines ARE what was bought, so
+                // they get the room the card would have had, and ink instead of grey.
+                Text(it, color = if (rows) D.Quiet else D.Black, style = Type.caption,
+                    maxLines = if (rows) 3 else 12, overflow = TextOverflow.Ellipsis)
             }
         }
 

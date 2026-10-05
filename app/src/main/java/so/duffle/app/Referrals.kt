@@ -78,9 +78,11 @@ object Referrals {
         "unknown_code" -> "No one has that code"
         "self_referral" -> "That's your own code"
         "already_referred" -> "You've already used a code"
-        "referral_too_late" -> "You've already earned, a code only counts before your first payment"
-        "no_server" -> "Couldn't reach the server"
-        else -> refused.replace('_', ' ')
+        "referral_too_late" -> "You've already earned. A code only counts before your first payment"
+        "no_server" -> "Couldn't reach the server. Try again"
+        // What [claim] answers when the server refused without saying why.
+        "refused" -> "That code could not be added"
+        else -> refused.replace('_', ' ').replaceFirstChar { it.uppercase() }
     }
 
     /**
@@ -98,7 +100,9 @@ object Referrals {
         val opener = me.trim().takeIf { it.isNotBlank() }
             ?.let { "$it is paying people by tapping phones with AirPay" }
             ?: "Pay anyone by tapping phones with AirPay"
+        // Without a figure when the server sent none: "earns you 0 SKR" is an invitation to nothing.
+        val earns = if (theirReward > 0) " and your first tap earns you $theirReward SKR" else ""
         return "$opener, no address to type.\n\n" +
-            "Use my code $code when you join and your first tap earns you $theirReward SKR."
+            "Use my code $code when you join$earns."
     }
 }

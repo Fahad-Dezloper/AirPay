@@ -243,14 +243,30 @@ object Rewards {
      * Returns true when the server took it. A refusal leaves the card covered rather than
      * showing a reveal the server does not agree happened.
      */
-    suspend fun reveal(address: String, id: Int): Boolean {
-        if (!enabled || id <= 0) return false
+    suspend fun reveal(address: String, id: Int): Boolean = revealWhy(address, id) == null
+
+    /**
+     * [reveal], but saying why not, because the scratch stage has to tell the two failures apart:
+     * a card that ran out ("expired", the server's own word) is gone for good, and one the server
+     * never heard about ([REVEAL_OFFLINE]) can simply be scratched again.
+     *
+     * Null when the server took it. Never null for a practice card (an id below one), which is
+     * not sent at all, so the caller decides what a practice scratch looks like.
+     */
+    suspend fun revealWhy(address: String, id: Int): String? {
+        if (!enabled || id <= 0) return REVEAL_OFFLINE
         val o = ServerClient.ask("/v1/rewards/reveal", JSONObject().apply {
             put("address", address)
             put("id", id)
-        }) ?: return false
-        return o.optBoolean("ok")
+        }) ?: return REVEAL_OFFLINE
+        return if (o.optBoolean("ok")) null else o.text("refused") ?: "refused"
     }
+
+    /** [revealWhy]'s answer when there was no answer: no server, no network, or a dead session. */
+    const val REVEAL_OFFLINE = "offline"
+
+    /** [revealWhy]'s answer, as the server spells it, for a card left unscratched too long. */
+    const val REVEAL_EXPIRED = "expired"
 
     // ------------------------------------------------------------------------- offers
 
@@ -483,7 +499,11 @@ object Rewards {
         "below_minimum" -> "That payment was under the minimum"
         "wrong_token" -> "Paid in the wrong token"
         "chain_unreachable" -> "Couldn't check the chain. Try again"
-        else -> why.replace('_', ' ')
+        // What [claim] answers when the server gave no answer, or an answer with no reason. They
+        // fell through to the line below and were shown as "no server" and "refused".
+        "no_server" -> "Couldn't reach the server. Try again"
+        "refused" -> "That didn't go through. Try again"
+        else -> why.replace('_', ' ').replaceFirstChar { it.uppercase() }
     }
 
     /** What a reward was for, in words. */

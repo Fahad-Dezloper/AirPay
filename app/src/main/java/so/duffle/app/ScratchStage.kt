@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
@@ -89,6 +90,19 @@ private class Bit(
  * own, the card gives one springy pulse, confetti bursts off it and the phone gives its success
  * pattern. The amount was settled when the payment did; scratching only shows it (see
  * [Rewards.reveal]).
+ *
+ * **A reveal the server did not take is not celebrated.** A card is paid when the server records
+ * the scratch, and it can refuse (the card ran out) or never hear of it (no network). With
+ * [onReveal] the stage waits for that answer: confetti and the success pattern only on a yes, and
+ * on a no the cover comes back and the line under the card says why, so nobody is shown a prize
+ * that was not paid.
+ *
+ * @param onRevealed the card was scratched open. The only report when [onReveal] is not given,
+ *   and the stage then celebrates at once without knowing what the server said.
+ * @param onReveal the same moment, for a host that can say how it went: it is handed the card and
+ *   a function to call ONCE with null when the server took the reveal, or with why it did not
+ *   ([Rewards.revealWhy]'s answer). When given it is used INSTEAD of [onRevealed] for real cards.
+ *   Practice cards (ids below zero) are never sent anywhere, so they always celebrate.
  */
 @Composable
 internal fun ScratchStage(
@@ -96,6 +110,7 @@ internal fun ScratchStage(
     t: Animatable<Float, AnimationVector1D>,
     onClose: () -> Unit,
     onRevealed: (Rewards.Row) -> Unit,
+    onReveal: ((Rewards.Row, (String?) -> Unit) -> Unit)? = null,
 ) {
     val row = target.row
     val ctx = LocalContext.current
@@ -104,6 +119,10 @@ internal fun ScratchStage(
     val startedOpen = remember(row.id) { row.revealed }
     var revealed by remember(row.id) { mutableStateOf(row.revealed) }
     var closing by remember { mutableStateOf(false) }
+    // Scratched open, and the server has not answered yet. Nothing is celebrated while this is so.
+    var pending by remember(row.id) { mutableStateOf(false) }
+    // Why the server did not take the reveal, when it did not. Null is "no problem".
+    var problem by remember(row.id) { mutableStateOf<String?>(null) }
     val pulse = remember { Animatable(1f) }
 
     fun close() {
@@ -123,9 +142,15 @@ internal fun ScratchStage(
     BackHandler { close() }
     // "A couple of seconds" after it is open — measured from the reveal, so a card is never taken
     // away mid-scratch.
-    LaunchedEffect(revealed) {
-        if (revealed) {
-            delay(if (startedOpen) 2_400 else 2_800)
+    // Never while the server is still being asked, or the answer would arrive to nobody; and a
+    // refusal stays up longer, because it is a sentence to read and not a number to glance at.
+    LaunchedEffect(revealed, pending, problem) {
+        if (revealed && !pending) {
+            delay(when {
+                problem != null -> 6_000L
+                startedOpen -> 2_400L
+                else -> 2_800L
+            })
             close()
         }
     }
@@ -183,10 +208,12 @@ internal fun ScratchStage(
         ) {
             CompositionLocalProvider(LocalDensity provides Density(density.density * kf, density.fontScale)) {
                 Box(Modifier.size(baseDp).graphicsLayer { scaleX = pulse.value; scaleY = pulse.value }) {
-                    CardBody(row, cover = 0f)
-                    ScratchLayer(
-                        row = row, open = revealed,
-                        onSpawn = { x, y, n, confetti, size ->
+                    // Open underneath, so scratching uncovers it. A reveal the server refused puts
+                    // the cover back: the card in the grid is still covered, and this one must
+                    // not go on showing a win over a line that says nothing was paid.
+                    val recover by animateFloatAsState(if (problem != null) 1f else 0f, tween(380), label = "recover")
+                    CardBody(row, cover = recover)
+                    val spawn: (Float, Float, Int, Boolean, Float) -> Unit = { x, y, n, confetti, size ->
                             val pal = if (confetti) CONFETTI else if (row.isSpecial) GOLD_DUST else DUST
                             repeat(n) {
                                 val a = Random.nextFloat() * 6.2832f
@@ -201,15 +228,37 @@ internal fun ScratchStage(
                                 )
                             }
                             burstKey++
-                        },
+                    }
+                    // The win: the success pattern and confetti off the middle of the card. The
+                    // card is `side` px across in here, whatever its slot in the grid measured.
+                    val celebrate = {
+                        Haptics.success(ctx)
+                        spawn(side / 2f, side / 2f, 46, true, side)
+                    }
+                    ScratchLayer(
+                        row = row, open = revealed,
+                        onSpawn = spawn,
                         onFeel = { Haptics.tick(ctx) },
-                        onOpened = { w ->
+                        onOpened = { _ ->
                             revealed = true
-                            Haptics.success(ctx)
-                            onRevealed(row)
                             scope.launch {
                                 pulse.animateTo(1.07f, spring(dampingRatio = 0.45f, stiffness = 700f))
                                 pulse.animateTo(1f, spring(dampingRatio = 0.55f, stiffness = 280f))
+                            }
+                            if (onReveal == null || row.id < 0) {
+                                onRevealed(row)
+                                celebrate()
+                            } else {
+                                pending = true
+                                onReveal(row) { why ->
+                                    pending = false
+                                    problem = why
+                                    // Not once it is on its way home: a buzz or a burst from a
+                                    // card that has already left the screen belongs to nothing.
+                                    if (!closing) {
+                                        if (why == null) celebrate() else Haptics.failure(ctx)
+                                    }
+                                }
                             }
                         },
                     )
@@ -234,11 +283,22 @@ internal fun ScratchStage(
 
         // What to do, said under the card and gone once it is done.
         Text(
-            if (revealed) "Tap anywhere to close" else "Scratch to reveal",
+            when {
+                problem == Rewards.REVEAL_EXPIRED ->
+                    "This card expired before it was scratched, so nothing was paid."
+                problem == Rewards.REVEAL_OFFLINE ->
+                    "Couldn't reach the server, so nothing was paid. Scratch this card again when you are back online."
+                problem != null -> "This card could not be opened, so nothing was paid."
+                pending -> "One moment"
+                revealed -> "Tap anywhere to close"
+                else -> "Scratch to reveal"
+            },
             color = Color.White.copy(alpha = 0.9f * t.value.coerceIn(0f, 1f)),
             style = Type.body, textAlign = TextAlign.Center,
             modifier = Modifier.align(Alignment.TopCenter)
-                .offset { IntOffset(0, (centreTop + side + with(density) { 28.dp.toPx() }).toInt()) },
+                .offset { IntOffset(0, (centreTop + side + with(density) { 28.dp.toPx() }).toInt()) }
+                // The card's own side margin, so a sentence wraps under the card, not edge to edge.
+                .padding(horizontal = 32.dp),
         )
     }
 }
@@ -309,7 +369,8 @@ private fun ScratchLayer(
                     }
                     if (!done && cells.size >= (GRID * GRID * SCRATCHED_ENOUGH)) {
                         done = true
-                        onSpawn(size.width / 2f, size.height / 2f, 46, true, size.width.toFloat())
+                        // No confetti from here: whether there is anything to celebrate is the
+                        // stage's to say, once it knows the reveal counted.
                         onOpened(Unit)
                     }
                 }

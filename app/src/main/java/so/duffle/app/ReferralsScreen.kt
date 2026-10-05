@@ -88,6 +88,7 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
@@ -185,7 +186,10 @@ internal fun ReferSheet(onClose: () -> Unit, myName: String? = null) {
     var loading by remember { mutableStateOf(true) }
     LaunchedEffect(address, Session.version, Live.tick) {
         loading = true
-        summary = address?.let { Referrals.summary(it) }
+        // A refresh that fails keeps the code already on screen. Replacing it with null swapped
+        // an open sheet, and whatever was being typed on the second one, for "Can't reach the
+        // server" on a single dropped request.
+        address?.let { Referrals.summary(it) }?.let { summary = it }
         loading = false
     }
 
@@ -306,6 +310,9 @@ private fun ReferStack(
     // that follows has nothing left to do. It had no drag at all — it moved only by the toggle.
     val howOffset = remember { Animatable(0f) }
     LaunchedEffect(parked) { if (parked >= 1f) howOffset.snapTo(0f) }
+    // Reopened before the tuck-away above had finished, the pull-down was still in force: the
+    // first sheet dimmed and the second stayed below the screen. Opening always brings it back.
+    LaunchedEffect(how) { if (how && howOffset.value > 0f) howOffset.animateTo(0f, SheetSettle) }
     val howDrag = rememberDraggableState { delta ->
         scope.launch { howOffset.snapTo((howOffset.value + delta).coerceAtLeast(0f)) }
     }
@@ -748,7 +755,9 @@ private fun ShareAction(
             contentAlignment = Alignment.Center,
         ) { icon() }
         Spacer(Modifier.height(8.dp))
-        Text(label, color = D.Quiet, style = Type.caption)
+        // Centred, because with four across "Friend's code" wraps on a narrow phone and a
+        // start-aligned second line sat off-centre under its disc.
+        Text(label, color = D.Quiet, style = Type.caption, textAlign = TextAlign.Center)
     }
 }
 
@@ -779,8 +788,10 @@ private fun InvitedList(s: Referrals.Summary) {
         // to count: "0 of 0 paid" above "Nobody yet" says the same thing twice.
         if (s.people.isNotEmpty()) {
             Spacer(Modifier.width(Space.inline))
+            // The server's own counts, not the list's: it sends at most twenty people, so
+            // counting the rows said "3 of 20 paid" to somebody who had invited thirty-five.
             Text(
-                "${s.people.count { it.paid }} of ${s.people.size} paid",
+                "${maxOf(s.paid, s.people.count { it.paid })} of ${maxOf(s.invited, s.people.size)} paid",
                 color = D.Quiet, style = CaptionTabular,
                 modifier = Modifier.alignByBaseline(),
             )
@@ -1536,7 +1547,12 @@ private fun FriendCodeBody(
     var outcome by remember { mutableStateOf<String?>(null) }
     // Focus when it opens, let go when it closes, so the keyboard comes and goes with the sheet.
     LaunchedEffect(open) {
-        if (open && outcome != "") { kotlinx.coroutines.delay(220); runCatching { field.requestFocus() } }
+        if (open && outcome != "") {
+            // A refused code does not come back with the sheet: reopened, it showed the old code
+            // in red with nothing to press. A half-typed one is kept, and so is a check in flight.
+            if (!busy && outcome != null) { code = ""; outcome = null }
+            kotlinx.coroutines.delay(220); runCatching { field.requestFocus() }
+        }
         else focus.clearFocus()
     }
 
@@ -1600,7 +1616,8 @@ private fun FriendCodeBody(
                     val here = !done && refused == null && i == code.length
                     val shape = RoundedCornerShape(12.dp)
                     Box(
-                        Modifier.weight(1f).height(52.dp).clip(shape)
+                        // A minimum, so a large font grows the box instead of cutting the letter.
+                        Modifier.weight(1f).heightIn(min = 52.dp).clip(shape)
                             .background(if (done) D.Success.copy(alpha = .10f) else Color.Transparent)
                             .border(if (here) 2.dp else 1.5.dp, if (here) D.Blue else edge, shape),
                         contentAlignment = Alignment.Center,
