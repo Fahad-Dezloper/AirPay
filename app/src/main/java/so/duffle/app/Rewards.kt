@@ -95,6 +95,8 @@ object Rewards {
          * sends `gift` the cards appear with no further work. Nothing fabricates one meanwhile.
          */
         val gift: Gift? = null,
+        /** When this card can no longer be scratched, in milliseconds. Zero when the server does not say. */
+        val expiresAt: Long = 0L,
     )
 
     /**
@@ -183,6 +185,7 @@ object Rewards {
                 rows += Row(it.optInt("id"), it.optString("kind"), it.optInt("skr"), it.optString("counterparty"),
                     (it.optDouble("created_at") * 1000).toLong(), (it.optDouble("unlock_at") * 1000).toLong(),
                     it.optString("state"), it.text("reason"), !it.isNull("revealed_at"),
+                    expiresAt = (it.optDouble("expires_at", 0.0) * 1000).toLong(),
                     gift = it.optJSONObject("gift")?.let { g ->
                         Gift(
                             brand = g.text("brand") ?: return@let null,
@@ -291,35 +294,171 @@ object Rewards {
          * itself still lists everything: that is where someone goes to look.
          */
         val notifiedAt: Long = 0L,
+        /**
+         * What sort of task it is: pay, swap, shop, people, tap or stake. Null from an older
+         * server, and null for a word this build does not know, so nothing downstream has to
+         * guess what an unknown kind means.
+         */
+        val kind: String? = null,
+        /**
+         * The steps and the rules, in the server's own words and order. **Empty means "not sent"**,
+         * and the sheet then writes the ones it always wrote. They are the server's because only
+         * it knows what the task is: the phone's hardcoded "Install {app} from the dApp Store" was
+         * wrong for an offer that is done inside AirPay.
+         */
+        val steps: List<String> = emptyList(),
+        val rules: List<String> = emptyList(),
+        /** What the sheet's button says and does once the offer is claimed. Null: "Open {app}". */
+        val cta: Cta? = null,
+        /** How far along a counted task is. Null when the offer is not counted. */
+        val progress: Progress? = null,
+        /** The reward as it should be advertised, "Flat 50 SKR" or "Up to 200 SKR". */
+        val rewardText: String? = null,
+        /** What the offer is, in a sentence or two, for somebody who has never done the task. */
+        val about: String? = null,
+        /** Where the task is done, as a short label: "In AirPay", "In the Jupiter app". */
+        val where: String? = null,
+        /**
+         * The steps with their explanations. **When it is not empty it replaces [steps]**, which
+         * are titles only. Empty means "not sent".
+         */
+        val guide: List<Step> = emptyList(),
+        /** When and how the reward arrives, as one sentence. */
+        val payout: String? = null,
+        /** What somebody needs before starting: a balance, an app, a Seeker. */
+        val needs: List<String> = emptyList(),
+        /**
+         * The least a scratch card pays. **Null means a flat reward**: the offer pays [reward] and
+         * nothing else. Set, the card pays somewhere between this and [reward], so the sheet must
+         * say a range and not promise the top figure.
+         */
+        val rewardMin: Int? = null,
     ) {
         val available get() = state == "available"
         val waiting get() = state == "open"
+
+        /** Done inside AirPay rather than in somebody else's app. False when [kind] is unknown. */
+        val inAirPay get() = kind in IN_AIRPAY
+    }
+
+    /**
+     * The claimed offer's button. [target] is one of [CTA_TARGETS]: "link" opens the offer's own
+     * `link` in the browser, and the other four are places inside AirPay.
+     */
+    data class Cta(val label: String, val target: String)
+
+    /** One step of the guide: what to do, and under it how. [detail] is null when there is none. */
+    data class Step(val title: String, val detail: String? = null)
+
+    /** [done] of [need], with `need` at least 1 and `done` never outside 0..need. */
+    data class Progress(val done: Int, val need: Int)
+
+    private val KINDS = setOf("pay", "swap", "shop", "people", "tap", "stake")
+    private val IN_AIRPAY = setOf("shop", "people", "tap")
+    internal val CTA_TARGETS = setOf("recharge", "shop", "tap", "pay", "link")
+
+    /** `steps` are the short, title-only list. The longer, explained one is `guide`. */
+    private const val MAX_STEPS = 3
+    private const val MAX_RULES = 6
+    /** The guide is the sheet that scrolls, so it has room for the five steps the server may send. */
+    private const val MAX_GUIDE = 6
+    private const val MAX_NEEDS = 6
+
+    /** A string that is really there: not missing, not JSON null, not a number, not blank. */
+    private fun JSONObject.words(key: String): String? =
+        (opt(key) as? String)?.trim()?.takeIf { it.isNotEmpty() }
+
+    /**
+     * The guide's steps, in order. A step needs a title: one without it has nothing to show beside
+     * its number, so it drops itself and the rest renumber. A bare string is taken as a title with
+     * no detail, because that is what an older `steps` array looks like and refusing it would
+     * throw away words that are perfectly readable.
+     */
+    private fun JSONObject.guide(key: String): List<Step> {
+        val arr = optJSONArray(key) ?: return emptyList()
+        return (0 until arr.length()).mapNotNull { i ->
+            when (val e = arr.opt(i)) {
+                is JSONObject -> e.words("title")?.let { Step(it, e.words("detail")) }
+                is String -> e.trim().takeIf { it.isNotEmpty() }?.let { Step(it) }
+                else -> null
+            }
+        }.take(MAX_GUIDE)
+    }
+
+    /**
+     * The strings in an array, in order, and nothing else. A missing key, a value that is not an
+     * array, and elements that are null, blank or not text all come out as "not there", so one
+     * bad element drops itself instead of printing `null` or `{}` as a step.
+     */
+    private fun JSONObject.strings(key: String, max: Int): List<String> {
+        val arr = optJSONArray(key) ?: return emptyList()
+        return (0 until arr.length())
+            .mapNotNull { i -> (arr.opt(i) as? String)?.trim()?.takeIf { it.isNotEmpty() } }
+            .take(max)
+    }
+
+    /**
+     * One offer off the wire. Separate from [offers] so it can be tested without a server.
+     *
+     * Every field added after the first release is optional here, because an older server does
+     * not send it: missing, JSON null and the wrong type all land on the same "not sent" value.
+     */
+    internal fun offerFrom(j: JSONObject): Offer {
+        val token = j.optString("token", "SOL")
+        // A button needs both halves. A label with a target this build cannot act on would be a
+        // blue button that goes nowhere, so the whole thing falls back to "Open {app}".
+        val cta = j.optJSONObject("cta")?.let { c ->
+            val label = (c.opt("label") as? String)?.trim().orEmpty()
+            val target = c.opt("target") as? String
+            if (label.isNotEmpty() && target in CTA_TARGETS) Cta(label, target!!) else null
+        }
+        // Numbers only. `optInt` would read the text "2" as 2 and anything else as 0, and a bar
+        // drawn from a guess is worse than no bar.
+        val progress = j.optJSONObject("progress")?.let { p ->
+            val done = (p.opt("done") as? Number)?.toInt()
+            val need = (p.opt("need") as? Number)?.toInt()
+            if (done != null && need != null && need > 0) Progress(done.coerceIn(0, need), need)
+            else null
+        }
+        val reward = j.optInt("reward")
+        // A range needs a real floor under the top figure. Zero, a negative, text, or a floor at
+        // or above the reward is not a range, and "50 to 50 SKR" would be a flat reward dressed up
+        // as a scratch card.
+        val rewardMin = (j.opt("reward_min") as? Number)?.toInt()?.takeIf { it in 1 until reward }
+        return Offer(
+            id = j.optString("id"), app = j.optString("app"), what = j.optString("what"),
+            funder = j.optString("funder"), reward = j.optInt("reward"),
+            symbol = if (token == "SOL") "SOL" else token.take(4),
+            minimum = j.optLong("minimum"), decimals = if (token == "SOL") 9 else 6,
+            link = j.optString("link"), windowHours = j.optDouble("window_hours", 48.0).toInt(),
+            state = j.optString("state", "available"), earned = j.optInt("skr_earned"),
+            signature = j.text("signature"), refused = j.text("refused"),
+            // Seconds on the wire, and JSON null for an unclaimed offer — `optDouble`
+            // answers the default for both a missing key and JSONObject.NULL, so an
+            // unclaimed offer lands on 0 rather than on the epoch.
+            claimedAt = (j.optDouble("claimed_at", 0.0) * 1000).toLong(),
+            icon = j.text("icon"),
+            notifiedAt = (j.optDouble("notified_at", 0.0) * 1000).toLong(),
+            kind = (j.opt("kind") as? String)?.takeIf { it in KINDS },
+            steps = j.strings("steps", MAX_STEPS),
+            rules = j.strings("rules", MAX_RULES),
+            cta = cta,
+            progress = progress,
+            rewardText = (j.opt("reward_text") as? String)?.trim()?.takeIf { it.isNotEmpty() },
+            about = j.words("about"),
+            where = j.words("where"),
+            guide = j.guide("guide"),
+            payout = j.words("payout"),
+            needs = j.strings("needs", MAX_NEEDS),
+            rewardMin = rewardMin,
+        )
     }
 
     suspend fun offers(address: String): List<Offer>? {
         if (!enabled) return null
         val o = ServerClient.read("/v1/offers?address=$address") ?: return null
         val arr = o.optJSONArray("offers") ?: return emptyList()
-        return (0 until arr.length()).mapNotNull { i ->
-            arr.optJSONObject(i)?.let { j ->
-                val token = j.optString("token", "SOL")
-                Offer(
-                    id = j.optString("id"), app = j.optString("app"), what = j.optString("what"),
-                    funder = j.optString("funder"), reward = j.optInt("reward"),
-                    symbol = if (token == "SOL") "SOL" else token.take(4),
-                    minimum = j.optLong("minimum"), decimals = if (token == "SOL") 9 else 6,
-                    link = j.optString("link"), windowHours = j.optDouble("window_hours", 48.0).toInt(),
-                    state = j.optString("state", "available"), earned = j.optInt("skr_earned"),
-                    signature = j.text("signature"), refused = j.text("refused"),
-                    // Seconds on the wire, and JSON null for an unclaimed offer — `optDouble`
-                    // answers the default for both a missing key and JSONObject.NULL, so an
-                    // unclaimed offer lands on 0 rather than on the epoch.
-                    claimedAt = (j.optDouble("claimed_at", 0.0) * 1000).toLong(),
-                    icon = j.text("icon"),
-                    notifiedAt = (j.optDouble("notified_at", 0.0) * 1000).toLong(),
-                )
-            }
-        }
+        return (0 until arr.length()).mapNotNull { i -> arr.optJSONObject(i)?.let(::offerFrom) }
     }
 
     /** Opens an offer. This is also the moment the attribution window starts, so a payment

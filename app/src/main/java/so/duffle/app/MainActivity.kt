@@ -1680,7 +1680,7 @@ class MainActivity : ComponentActivity() {
                                 },
                                 // The same shelf the More tile opens, from the same function.
                                 onSeeAll = moreSection(shopSections)?.let { more ->
-                                    { shopSection = more; shopProduct = null; shopDirect = false; tab = Tab.SHOP }
+                                    { openShelf(more) }
                                 },
                             )
                             return@Column
@@ -1865,12 +1865,7 @@ class MainActivity : ComponentActivity() {
                             Text("Recharge and bills", color = D.Black, style = Type.heading)
                             Spacer(Modifier.height(Space.lead))
                             if (shopSections.isNotEmpty()) {
-                                ShopTiles(shopSections) { sec, product ->
-                                    shopSection = sec
-                                    shopProduct = product
-                                    shopDirect = product != null
-                                    tab = Tab.SHOP
-                                }
+                                ShopTiles(shopSections) { sec, product -> openShelf(sec, product) }
                             } else {
                                 if (shopLoad == ShopLoad.LOADING) BillTilesSkeleton()
                                 else Text(
@@ -1939,20 +1934,7 @@ class MainActivity : ComponentActivity() {
                     if (home) {
                         PayBar(
                             modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding(),
-                            onTap = {
-                                // The sheet does the waiting now. Arming the radio from here
-                                // left the home screen looking exactly as it had a second
-                                // earlier — nothing said the phone was listening, or that the
-                                // next move was physical.
-                                paidSignature = null
-                                // The sheet blurs what it covers, and has to be handed the picture.
-                                Backdrop.capture(this@MainActivity) {
-                                    startActivity(TapPopupActivity.armed(this@MainActivity))
-                                    // The sheet animates itself. A window slide under it made
-                                    // the blurred page look as if it rose from the bottom.
-                                    @Suppress("DEPRECATION") overridePendingTransition(0, 0)
-                                }
-                            },
+                            onTap = { openTapSheet() },
                             onScan = { startActivity(ScanActivity.intent(this@MainActivity)) },
                         )
                     }
@@ -2004,13 +1986,26 @@ class MainActivity : ComponentActivity() {
                                 offerClaiming = false
                                 if (why == null) {
                                     offersReload++
-                                    offerDetail = null
+                                    // The sheet stays open and becomes the claimed offer, so the
+                                    // person goes straight from claiming to doing the task. Closing
+                                    // it sent them back to a list to find the offer they had just
+                                    // picked. First what the phone already knows (claimed, now),
+                                    // so the step ticks at once; then the server's own row, which
+                                    // carries the real claim time, the button and the progress.
+                                    // Only while this offer is still the one on screen: a slow
+                                    // answer must not reopen a sheet that was closed meanwhile.
+                                    if (offerDetail?.id == o.id) {
+                                        offerDetail = o.copy(state = "open", claimedAt = System.currentTimeMillis())
+                                    }
+                                    val fresh = Rewards.offers(me)?.firstOrNull { it.id == o.id }
+                                    if (fresh != null && offerDetail?.id == o.id) offerDetail = fresh
                                 } else {
                                     offerProblem = Rewards.offerWhy(why)
                                 }
                             }
                         },
                         onClose = { offerDetail = null; offerProblem = null },
+                        onGo = { goFromOffer(it) },
                     )
                 }
 
@@ -2517,6 +2512,61 @@ class MainActivity : ComponentActivity() {
     }
     private fun openRewards() = gated("see your rewards") { tab = Tab.REWARDS }
     private fun openRefer() = gated("see your referral code") { refer = true }
+
+    /**
+     * Opens one shelf of the shop, and a product on top of it when a tile is a single brand.
+     * One function for the Home tiles, "See all" and an offer's button, because the shop body is
+     * `shopSection?.let { … }`: a route that set the tab without the shelf landed on a blank page.
+     */
+    private fun openShelf(sec: Shop.Section, product: Shop.Product? = null) {
+        shopSection = sec
+        shopProduct = product
+        shopDirect = product != null
+        tab = Tab.SHOP
+    }
+
+    /** The tap and pay sheet, armed. What the pay bar's Tap opens. */
+    private fun openTapSheet() {
+        // The sheet does the waiting now. Arming the radio from here
+        // left the home screen looking exactly as it had a second
+        // earlier — nothing said the phone was listening, or that the
+        // next move was physical.
+        paidSignature = null
+        // The sheet blurs what it covers, and has to be handed the picture.
+        Backdrop.capture(this) {
+            startActivity(TapPopupActivity.armed(this))
+            // The sheet animates itself. A window slide under it made
+            // the blurred page look as if it rose from the bottom.
+            @Suppress("DEPRECATION") overridePendingTransition(0, 0)
+        }
+    }
+
+    /**
+     * Where a claimed offer's button leads when the task is done inside AirPay. Each target is
+     * the same call its own door on Home makes, so the two cannot drift.
+     *
+     * The sheet closes first, except when the shop has not loaded: then there is no page to
+     * open, and closing onto the Offers list with nothing having happened would look like a
+     * button that does nothing. The sheet stays and says why.
+     */
+    private fun goFromOffer(target: String) {
+        val shelf = when (target) {
+            "recharge" -> shopSections.firstOrNull { it.isRechargeShelf() }
+            "shop" -> moreSection(shopSections)
+            else -> null
+        }
+        if ((target == "recharge" || target == "shop") && shelf == null) {
+            offerProblem = "That page hasn't loaded yet. Check your connection and try again."
+            return
+        }
+        offerDetail = null
+        offerProblem = null
+        when (target) {
+            "recharge", "shop" -> shelf?.let { openShelf(it) }
+            "tap" -> openTapSheet()
+            "pay" -> payAnyone = true
+        }
+    }
 
     private var signInRunning = false
     init {
