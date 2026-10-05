@@ -4,6 +4,8 @@ are paid, and ring the payee. Everything network-facing is injected so tests run
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import logging
 import calendar
@@ -18,13 +20,17 @@ from concurrent.futures import ThreadPoolExecutor
 from .auth import Auth
 from .payer_client import Payer, PayerError
 from .prices import Prices
-from . import swaps
+from . import stakes, swaps
 from . import activity, chain, offers, patrol, rewards, verify
 from .helius import AddressSync, signatures_in
 from .notify import Fcm, Hub
 from .store import Store
 
 log = logging.getLogger("duffle.service")
+
+#: Tokens worth a dollar a unit, for valuing a payment between people: the mainnet stablecoins a
+#: swap already treats that way, and devnet USDC so the same rule holds where payments are tested.
+DOLLAR_TOKENS = swaps.STABLES | {"4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"}
 
 
 def mint_of(req: dict) -> str | None:
@@ -468,7 +474,13 @@ class Service:
         """This wallet's own code, and how the people it invited are getting on."""
         config = self.reward_config()
         invited = self.store.referrals_by(address)
+        now = time.time()
+        past = self.store.reward_history(address, "", now, rewards.week_of(now), month_start(now))
         return {
+            # Whether this wallet may still enter somebody else's code: the same two conditions
+            # `claim_referral` refuses on, said in advance so the app can take the door away
+            # instead of letting a person walk into a refusal.
+            "can_claim": self.store.referral_of(address) is None and not past["had_first_payment"],
             "code": self.store.referral_code(address, time.time()),
             "reward": config.referral,
             # What the person being invited gets, which is the half worth putting in the
@@ -555,9 +567,27 @@ class Service:
         mine = {c["offer_id"]: c for c in self.store.claims_for(address)} if address else {}
         told = self.store.notified_offers(self.store.account_key(address)) if address else {}
         out = []
+        min_age = self.reward_config().counterparty_min_age_days
         for o in self.store.offers(live_at=now):
             c = mine.get(o["id"])
-            out.append({**o, "spent": self.store.offer_spent(o["id"]),
+            offer = _offer(o)
+            # The page's text is sent once, as the fields below, not a second time inside params.
+            params = {k: v for k, v in offer.params.items() if k not in offers.COPY_KEYS}
+            out.append({**o, "params": params, "spent": self.store.offer_spent(o["id"]),
+                        # Everything the offer's page says, written here from the same numbers the
+                        # watcher checks, so the app holds no text that could disagree with it.
+                        "steps": offers.steps_for(offer),
+                        "rules": offers.rules_for(offer, min_age),
+                        "cta": offers.cta_for(offer),
+                        "about": offers.about_for(offer),
+                        "where": offers.where_for(offer),
+                        "guide": offers.guide_for(offer),
+                        "payout": offers.payout_for(offer),
+                        "needs": offers.needs_for(offer),
+                        "order": offers.order_of(offer),
+                        "reward_text": offers.reward_text(offer),
+                        "reward_min": offer.reward_min if offer.variable else None,
+                        "progress": self._progress(offer, c),
                         # When this person was TOLD about it (a push), or null: the notification page
                         # shows an offer only once they have been.
                         "notified_at": told.get(o["id"]),
@@ -567,7 +597,24 @@ class Service:
                         "refused": (c or {}).get("refused"),
                         "claims_7d": self.store.claims_since(o["id"], now - 7 * rewards.DAY),
                         "claimed_at": (c or {}).get("claimed_at")})
+        # Lowest `order` first. The sort is stable, so offers that name no order keep the order
+        # the store gave them (featured, then ending soonest) and come after those that do.
+        out.sort(key=lambda r: r["order"])
         return out
+
+    def _progress(self, offer: offers.Offer, c: dict | None) -> dict | None:
+        """How far this person's own claim has got, for an offer that counts several things.
+        None when there is nothing to count: not claimed, expired, or a single action."""
+        if not c or offer.need <= 1 or c.get("state") not in (offers.OPEN, offers.PAID):
+            return None
+        if c["state"] == offers.PAID:
+            return {"done": offer.need, "need": offer.need}
+        try:
+            seen = self._seen_for(c["address"], offer, c["claimed_at"])
+        except (chain.Offline, chain.RpcError):
+            return None
+        t = offers.tally(offer, offers.Claim(offer.id, c["address"], c["claimed_at"], c["state"]), seen)
+        return {"done": t.done, "need": t.need}
 
     def put_offer(self, body: dict) -> dict:
         """Creates or replaces an offer. Validated here rather than trusted: an offer with an
@@ -583,7 +630,29 @@ class Service:
         # Only a "pay" offer names an address that has to be paid.
         if kind == "pay" and not verify.is_address(address):
             raise ValueError("invalid address")
-        params = self._clean_params(body.get("params"), kind)
+        # `reward_min`, `cta` and `steps` may be given beside the offer's other fields; they are
+        # kept with the params, which is where everything about how an offer behaves already lives.
+        raw = dict(body.get("params")) if isinstance(body.get("params"), dict) else {}
+        for key in ("reward_min", "steps", "order", *offers.COPY_KEYS):
+            if body.get(key) is not None:
+                raw[key] = body[key]
+        cta = body.get("cta")
+        if isinstance(cta, dict):
+            raw["cta"] = cta.get("target")
+            if cta.get("label"):
+                raw["cta_label"] = cta["label"]
+        elif cta is not None:
+            raw["cta"] = cta
+        params = self._clean_params(raw, kind)
+        reward = max(0, int(body.get("reward") or 0))
+        # The payer refuses a single payout above its cap. An offer promising more would collect
+        # claims it can never pay.
+        if reward > offers.MAX_REWARD:
+            raise ValueError(f"reward must be {offers.MAX_REWARD} SKR or less")
+        if "reward_min" in params and params["reward_min"] > reward:
+            raise ValueError("reward_min cannot be more than reward")
+        if params.get("cta") == "link" and not str(body.get("link") or "").startswith("https://"):
+            raise ValueError("a link button needs an https link")
         token = str(body.get("token") or verify.SOL)
         if token != verify.SOL and not verify.is_address(token):
             raise ValueError("invalid token")
@@ -593,7 +662,7 @@ class Service:
             "app": str(body.get("app") or "")[:48], "what": str(body.get("what") or "")[:120],
             "address": address, "token": token,
             "minimum": max(0, int(body.get("minimum") or 0)),
-            "reward": max(0, int(body.get("reward") or 0)),
+            "reward": reward,
             "budget": max(0, int(body.get("budget") or 0)),
             "starts": float(body.get("starts") or now),
             "ends": float(body.get("ends") or (now + days * rewards.DAY)),
@@ -630,15 +699,93 @@ class Service:
                 raise ValueError("min_usd out of range")
             out["min_usd"] = v
         if kind == "swap":
-            prog = str(raw.get("program") or swaps.JUPITER_V6)
-            if not verify.is_address(prog):
+            # One program, or a short list when the same result can be reached in more than one
+            # place. A single program is stored as plain text, which is what older rows hold.
+            given = raw.get("program")
+            if given is None or given == "":
+                given = swaps.JUPITER_V6
+            progs = list(given) if isinstance(given, (list, tuple)) else [given]
+            if not 1 <= len(progs) <= 4 or not all(verify.is_address(x) for x in progs):
                 raise ValueError("invalid program")
-            out["program"] = prog
+            out["program"] = progs[0] if len(progs) == 1 else progs
+            # Which token has to come OUT of the swap, for an offer about swapping into it:
+            # "USDC", or the mint itself for anything else.
+            if raw.get("receive") is not None:
+                if raw["receive"] != "USDC" and not verify.is_address(raw["receive"]):
+                    raise ValueError("receive must be USDC or a mint address")
+                out["receive"] = raw["receive"]
+            # A floor in SOL rather than dollars, for an offer that is about SOL going in. It
+            # needs no price feed, so a claim never waits on one.
+            if raw.get("min_sol") is not None:
+                v = raw["min_sol"]
+                if isinstance(v, bool) or not isinstance(v, (int, float)) or not 0 < v <= 1000:
+                    raise ValueError("min_sol out of range")
+                out["min_sol"] = float(v)
         if kind == "shop":
             scope = str(raw.get("scope") or "any")
             if scope not in ("any", "recharge", "gift"):
                 raise ValueError("scope must be any, recharge or gift")
             out["scope"] = scope
+        # How many purchases, or how many different people.
+        if kind in ("shop", "people") and raw.get("count") is not None:
+            n = raw["count"]
+            if isinstance(n, bool) or not isinstance(n, int) or not 1 <= n <= 20:
+                raise ValueError("count must be a whole number from 1 to 20")
+            out["count"] = n
+        if kind == "stake":
+            # A stake is measured in SKR, not dollars, so a dollar floor would mean nothing here.
+            out.pop("min_usd", None)
+            n = raw.get("min_skr", 100)
+            if isinstance(n, bool) or not isinstance(n, int) or not 1 <= n <= 1_000_000:
+                raise ValueError("min_skr must be a whole number of SKR")
+            out["min_skr"] = n
+        # A scratch: the least a card can pay. Never zero, because a card that pays nothing after
+        # somebody did the thing is a refusal dressed up as a prize.
+        if raw.get("reward_min") is not None:
+            n = raw["reward_min"]
+            if isinstance(n, bool) or not isinstance(n, int) or not 1 <= n <= offers.MAX_REWARD:
+                raise ValueError("reward_min must be a whole number of SKR, at least 1")
+            out["reward_min"] = n
+        # The offer's own wording and button. Text that lands on somebody's screen: short,
+        # printable, and never an em dash.
+        if raw.get("steps") is not None:
+            steps = raw["steps"]
+            if not isinstance(steps, list) or not 2 <= len(steps) <= 3 or not all(
+                    isinstance(x, str) and 0 < len(x.strip()) <= 100 and x.isprintable() for x in steps):
+                raise ValueError("steps must be 2 or 3 short lines")
+            out["steps"] = [x.strip() for x in steps]
+        # The descriptive page: what the offer is, where it is done, how, and what it takes.
+        # Every line of it is optional, because offers.py writes a default for whatever is left out.
+        for key, most in (("about", 280), ("where", 60), ("payout", 200)):
+            if raw.get(key) is not None:
+                out[key] = _line(raw[key], most, key)
+        if raw.get("guide") is not None:
+            guide = raw["guide"]
+            if not isinstance(guide, list) or not 3 <= len(guide) <= 5 or not all(
+                    isinstance(g, dict) for g in guide):
+                raise ValueError("guide must be 3 to 5 steps")
+            out["guide"] = [{"title": _line(g.get("title"), 40, "guide title"),
+                             "detail": _line(g.get("detail"), 260, "guide detail")} for g in guide]
+        if raw.get("needs") is not None:
+            needs = raw["needs"]
+            if not isinstance(needs, list) or not 1 <= len(needs) <= 4:
+                raise ValueError("needs must be 1 to 4 short lines")
+            out["needs"] = [_line(x, 60, "needs") for x in needs]
+        # Where it sits on the page, lowest first, so one company's offers need not sit together.
+        if raw.get("order") is not None:
+            n = raw["order"]
+            if isinstance(n, bool) or not isinstance(n, int) or not 0 <= n <= 9999:
+                raise ValueError("order must be a whole number from 0 to 9999")
+            out["order"] = n
+        if raw.get("cta") is not None:
+            if raw["cta"] not in offers.CTA_TARGETS:
+                raise ValueError("cta must be one of " + ", ".join(offers.CTA_TARGETS))
+            out["cta"] = raw["cta"]
+        if raw.get("cta_label") is not None:
+            label = str(raw["cta_label"]).strip()
+            if not 0 < len(label) <= 24 or not label.isprintable():
+                raise ValueError("cta label must be 1 to 24 characters")
+            out["cta_label"] = label
         # What the app shows and checks on the phone; never used to decide a payout.
         pkg = raw.get("package")
         if pkg is not None:
@@ -692,14 +839,17 @@ class Service:
                 continue
             offer = _offer(row)
             claim = offers.Claim(c["offer_id"], c["address"], c["claimed_at"], c["state"])
+            # What this claim pays if it is satisfied: the fixed reward, or the card drawn for it.
+            reward = self._reward_of(offer, claim)
             try:
                 if offer.kind == "pay":
                     payments = self._payments_from(c["address"], offer, claim.claimed_at)
-                    d = offers.settle(offer, claim, payments, now, self.store.offer_spent(offer.id))
+                    d = offers.settle(offer, claim, payments, now, self.store.offer_spent(offer.id),
+                                      reward=reward)
                 else:
-                    seen = (self._swaps_seen(c["address"], offer, claim.claimed_at) if offer.kind == "swap"
-                            else self._purchases_seen(c["address"], offer, claim.claimed_at))
-                    d = offers.settle_seen(offer, claim, seen, now, self.store.offer_spent(offer.id))
+                    seen = self._seen_for(c["address"], offer, claim.claimed_at)
+                    d = offers.settle_seen(offer, claim, seen, now, self.store.offer_spent(offer.id),
+                                           reward=reward)
             except (chain.Offline, chain.RpcError) as e:
                 log.info("offer check for %s… deferred: %s", c["address"][:8], e)
                 continue
@@ -729,6 +879,84 @@ class Service:
                 self.store.touch_claim(offer.id, c["address"], now, d.refused)
         return settled
 
+    def _reward_of(self, offer: offers.Offer, claim: offers.Claim) -> int:
+        """What this claim pays. For a scratch, the card is drawn from the claim itself and a
+        secret only this server holds, so it is the same every time it is worked out: checking a
+        claim twice, or restarting, can never deal a second card, and nobody outside can work out
+        which claim gets the big one."""
+        if not offer.variable:
+            return offer.reward
+        claim_id = f"{offer.id}|{claim.address}|{claim.claimed_at!r}".encode()
+        digest = hmac.new(self.store.secret("scratch"), claim_id, hashlib.sha256).digest()
+        return offers.draw(offer.reward_min, offer.reward, digest)
+
+    def _seen_for(self, address: str, offer: offers.Offer, since: float) -> list[offers.Seen]:
+        """What the claimer did that this kind of offer cares about, since they opened it."""
+        if offer.kind == "swap":
+            return self._swaps_seen(address, offer, since)
+        if offer.kind == "shop":
+            return self._purchases_seen(address, offer, since)
+        if offer.kind == "people":
+            return self._paid_people_seen(address, since, tap_only=False)
+        if offer.kind == "tap":
+            return self._paid_people_seen(address, since, tap_only=True)
+        if offer.kind == "stake":
+            return self._stakes_seen(address, offer, since)
+        return []
+
+    def _paid_people_seen(self, address: str, since: float, tap_only: bool) -> list[offers.Seen]:
+        """Payments this wallet made to other people since it opened the offer, from the server's
+        own record of settled requests.
+
+        The same counterparty rules as the tap rewards, for the same reason: a wallet costs
+        nothing to make. Paying another of your own wallets is paying yourself, and a wallet made
+        last week earns the payer nothing unless it is a Seeker. Two wallets of one person share a
+        `key`, so they count as one person however many they have linked.
+        """
+        now = time.time()
+        own = set(self.store.family(address))
+        min_age = self.reward_config().counterparty_min_age_days * rewards.DAY
+        sol = self.prices.sol_usd()
+        out: list[offers.Seen] = []
+        for r in self.store.paid_by(address, since):
+            to = r["recipient"]
+            refused = None
+            if tap_only and (r.get("origin") or "") != "tap":
+                refused = rewards.NOT_A_TAP
+            elif to in own:
+                refused = rewards.SELF_PAYMENT
+            elif not (self.facts and self.facts.is_seeker(to)):
+                first = self.facts.first_seen(to) if self.facts else None
+                if first is None or now - first < min_age:
+                    refused = rewards.NEW_COUNTERPARTY
+            token = r.get("token") or verify.SOL
+            if token == verify.SOL:
+                usd = r["lamports"] / 1e9 * sol if sol else None
+            elif token in DOLLAR_TOKENS:
+                usd = r["lamports"] / 10 ** int(r.get("decimals") or 6)
+            else:
+                usd = None          # a token nobody prices: counts only where there is no floor
+            out.append(offers.Seen(r.get("signature") or r["reference"], float(r["paid_at"]), usd, refused,
+                                   key=self.store.account_key(to)))
+        return out
+
+    def _stakes_seen(self, address: str, offer: offers.Offer, since: float) -> list[offers.Seen]:
+        """SKR stakes this wallet made since it opened the offer, read from its own transactions."""
+        need = int(offer.params.get("min_skr") or 100) * stakes.SKR_UNITS
+        out: list[offers.Seen] = []
+        for entry in self.rpc.signatures_with_time(address):
+            at = entry.get("blockTime")
+            if at is not None and at < since:
+                continue
+            tx = self.rpc.transaction(entry["signature"])
+            units = stakes.staked(tx, address)
+            if units is None:
+                continue
+            # Valued in SKR, not dollars: the floor is applied here and the dollar value is nil.
+            out.append(offers.Seen(entry["signature"], float(at or (tx or {}).get("blockTime") or since), 0.0,
+                                   None if units >= need else offers.BELOW_MINIMUM))
+        return out
+
     def _payments_from(self, address: str, offer: offers.Offer, since: float) -> list[offers.Payment]:
         """What this wallet paid the offer's address since it was opened."""
         mint = None if offer.token == verify.SOL else offer.token
@@ -747,7 +975,9 @@ class Service:
 
     def _swaps_seen(self, address: str, offer: offers.Offer, since: float) -> list[offers.Seen]:
         """Swaps this wallet made since it opened the offer, read from its own transactions."""
-        program = str(offer.params.get("program") or swaps.JUPITER_V6)
+        program = swaps.programs_of(offer.params.get("program"))
+        want = swaps.receive_mint(offer.params.get("receive"))
+        min_lamports = int(round(float(offer.params.get("min_sol") or 0) * 1e9))
         sol = self.prices.sol_usd()
         out: list[offers.Seen] = []
         for entry in self.rpc.signatures_with_time(address):
@@ -758,8 +988,18 @@ class Service:
             sw = swaps.swap_of(tx, address, program)
             if sw is None:
                 continue
+            refused = swaps.refusal(sw)
+            # An offer about swapping INTO something: the right swap of the wrong token is not it.
+            if refused is None and want and sw.bought != want:
+                refused = offers.WRONG_TOKEN
+            # A floor in SOL is measured on the SOL that left, so the swap has to be paid in SOL.
+            if refused is None and min_lamports:
+                if sw.sold != swaps.WSOL:
+                    refused = offers.WRONG_TOKEN
+                elif sw.sold_units < min_lamports:
+                    refused = offers.BELOW_MINIMUM
             out.append(offers.Seen(entry["signature"], float(at or (tx or {}).get("blockTime") or since),
-                                   swaps.usd_value(sw, sol), swaps.refusal(sw)))
+                                   swaps.usd_value(sw, sol), refused))
         return out
 
     def _purchases_seen(self, address: str, offer: offers.Offer, since: float) -> list[offers.Seen]:
@@ -769,7 +1009,9 @@ class Service:
         for p in self.store.delivered_purchases(address, since):
             if scope != "any" and p.get("category") != scope:
                 continue
-            usd = (p["amount"] / 1e6) if p.get("amount") else None
+            # The dollar value recorded at invoice time, whatever it was paid in. A row from before
+            # that was recorded only knows its USDC amount.
+            usd = p["usd"] if p.get("usd") is not None else ((p["amount"] / 1e6) if p.get("amount") else None)
             out.append(offers.Seen(p["invoice_id"], float(p["delivered_at"] or p["created_at"]), usd))
         return out
 
@@ -948,6 +1190,8 @@ class Service:
         at = self.store.reveal_reward(address, reward_id, time.time())
         if at is None:
             return {"ok": False, "refused": "unknown_reward"}
+        if at < 0:
+            return {"ok": False, "refused": "expired"}
         # Paid the moment it is scratched. Off this request's thread: the payer waits on the
         # chain, and the screen should not.
         self._pool.submit(self._safe, self.pay_revealed, address)
@@ -1219,6 +1463,15 @@ def month_start(at: float) -> float:
     """Midnight UTC on the first of the month `at` falls in — the monthly cap's window."""
     t = time.gmtime(at)
     return calendar.timegm((t.tm_year, t.tm_mon, 1, 0, 0, 0, 0, 0, 0))
+
+
+def _line(value, most: int, name: str) -> str:
+    """One piece of text that lands on somebody's screen: present, short, on one line, and with
+    no em dash, which the app's wording never uses."""
+    text = value.strip() if isinstance(value, str) else ""
+    if not 0 < len(text) <= most or not text.isprintable() or "\u2014" in text:
+        raise ValueError(f"{name} must be 1 to {most} plain characters")
+    return text
 
 
 def _offer(row: dict) -> offers.Offer:

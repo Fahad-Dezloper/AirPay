@@ -321,9 +321,10 @@ class SeedTest(unittest.TestCase):
         svc = Service(Store(), FakeRpc())
         for o in launch_offers(NOW):
             self.assertTrue(svc.put_offer(o)["ok"], o["id"])
-        self.assertEqual(3, len(svc.store.offers()))
-        # Idempotent: seeding twice leaves three, not six.
+        every = len(launch_offers(NOW))
+        self.assertEqual(every, len(svc.store.offers()))
+        # Idempotent: seeding twice leaves the same rows, not twice as many.
         for o in launch_offers(NOW):
             svc.put_offer(o)
-        self.assertEqual(3, len(svc.store.offers()))
+        self.assertEqual(every, len(svc.store.offers()))
         self.assertTrue(all(r["funder"] == "duffle" for r in svc.store.offers()))

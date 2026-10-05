@@ -149,6 +149,30 @@ class ReferralTest(unittest.TestCase):
         self.assertEqual(300, s["reward"])
         self.assertEqual(250, s["their_reward"], "what they get is their reason to accept")
 
+    def test_the_summary_says_whether_a_code_can_still_be_entered(self):
+        self.assertTrue(self.svc.referral_summary(SEEKER)["can_claim"])
+        self.svc.claim_referral(self.code_of(), SEEKER)
+        self.assertFalse(self.svc.referral_summary(SEEKER)["can_claim"], "one code, once")
+
+    def test_a_code_cannot_be_entered_after_a_first_rewarded_payment(self):
+        self.pay()
+        self.assertFalse(self.svc.referral_summary(SEEKER)["can_claim"])
+
+
+    # -- a scratch card runs out ------------------------------------------------------
+
+    def test_a_card_says_when_it_expires_and_is_not_paid_after(self):
+        from duffleserver import store as st
+        self.pay()
+        card = self.store.rewards_for(SEEKER)[0]
+        self.assertAlmostEqual(card["created_at"] + st.SCRATCH_TTL, card["expires_at"])
+        late = card["created_at"] + st.SCRATCH_TTL + 1
+        self.assertEqual(st.EXPIRED, self.store.reveal_reward(SEEKER, card["id"], late))
+        self.assertIsNone(self.store.rewards_for(SEEKER)[0]["revealed_at"], "nothing was uncovered")
+        # In time, it is uncovered as before.
+        self.assertGreater(self.store.reveal_reward(SEEKER, card["id"], card["created_at"] + 60), 0)
+
+
 
 if __name__ == "__main__":
     unittest.main()

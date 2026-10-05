@@ -140,6 +140,13 @@ SECTIONS = (
 )
 
 
+def _positive(v) -> bool:
+    try:
+        return float(v) > 0
+    except (TypeError, ValueError):
+        return False
+
+
 class Shop:
     """Bitrefill, reduced to the two things Duffle needs: what can I buy, and where do I pay."""
 
@@ -425,6 +432,40 @@ class Shop:
             "product_id": product_id,
             "value": value,
         }
+
+    def usd_estimate(self, product_id: str, package_id: str | None, value) -> float | None:
+        """About what a purchase costs in dollars, or None when the catalogue cannot say.
+
+        The same estimate the catalogue shows beside a package (see [_usd]), found for the package
+        actually bought. It exists so a purchase paid in SOL still has a dollar value on record: a
+        SOL invoice is quoted in lamports, which says nothing about dollars by itself.
+
+        A product sold by a free amount has no package to match. Its listed packages still say what
+        one unit of face value costs, so the price is scaled from the nearest of those. Good to a
+        few percent, which is enough to compare with an offer's floor and is never shown as a price.
+        """
+        try:
+            for p in self.products():
+                if p.get("id") != product_id:
+                    continue
+                packs = p.get("packages") or []
+                for pk in packs:
+                    if (package_id and pk.get("id") == package_id) or \
+                            (not package_id and str(pk.get("value")) == str(value)):
+                        est = self._usd(pk.get("price")).get("usd_price")
+                        return float(est) if est else None
+                if package_id:
+                    return None
+                face = float(value)
+                priced = [(float(pk["amount"]), float(pk["price"])) for pk in packs
+                          if _positive(pk.get("amount")) and _positive(pk.get("price"))]
+                if face <= 0 or not priced or Shop.price_units <= 0:
+                    return None
+                amount, price = min(priced, key=lambda ap: abs(ap[0] - face))
+                return round(face * price / amount / Shop.price_units, 2)
+        except (TypeError, ValueError):
+            return None
+        return None
 
     def _learn_rate(self, product_id: str, package_id: str | None, value, base_units: int) -> None:
         """Re-measure Bitrefill's unit against what an invoice actually asked for.

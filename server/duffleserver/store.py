@@ -23,6 +23,11 @@ class Conflict(Exception):
 CODE_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 CODE_LENGTH = 8
 
+#: How long a scratch card can be scratched for, from the moment it is earned.
+SCRATCH_TTL = 30 * 86_400.0
+#: What `reveal_reward` returns for a card that was left past that. Not a time.
+EXPIRED = -1.0
+
 class Store:
     def __init__(self, path: str = ":memory:"):
         self._db = sqlite3.connect(path, check_same_thread=False)
@@ -208,6 +213,12 @@ class Store:
                     account    TEXT,
                     created_at REAL NOT NULL
                 );
+                -- Secrets the server makes for itself and never sends anywhere. Kept here rather
+                -- than in the environment so they survive a restart without anybody setting one.
+                CREATE TABLE IF NOT EXISTS server_secrets (
+                    name  TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS devices (
                     recipient  TEXT NOT NULL,
                     token      TEXT NOT NULL,
@@ -260,7 +271,10 @@ class Store:
             ("offers", (("kind", "TEXT NOT NULL DEFAULT 'pay'"), ("params", "TEXT NOT NULL DEFAULT '{}'"),
                         ("featured", "INTEGER NOT NULL DEFAULT 0"), ("icon", "TEXT"))),
             ("purchases", (("product_id", "TEXT"), ("category", "TEXT"), ("amount", "INTEGER"),
-                           ("created_at", "REAL"), ("delivered_at", "REAL"))),
+                           ("created_at", "REAL"), ("delivered_at", "REAL"),
+                           # What it cost in dollars, whatever it was paid in. `amount` is only
+                           # ever USDC base units, so a purchase paid in SOL had no price at all.
+                           ("usd", "REAL"))),
         ):
             have = {r[1] for r in self._db.execute(f"PRAGMA table_info({table})")}
             for col, ddl in wanted:
@@ -386,6 +400,27 @@ class Store:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    def paid_by(self, payer: str, since: float, limit: int = 500) -> list[dict]:
+        """Requests this wallet paid that settled after `since`, oldest first. The server's own
+        record of a payment, which is the evidence for offers about paying people."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT reference, recipient, lamports, token, decimals, origin, signature, paid_at FROM requests"
+                " WHERE payer=? AND status='paid' AND paid_at>=? ORDER BY paid_at LIMIT ?",
+                (payer, since, limit),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def secret(self, name: str) -> bytes:
+        """A random secret under this name, made the first time it is asked for and the same
+        ever after. Two threads asking at once both get the one that was stored."""
+        import secrets as _secrets
+        with self._lock, self._db:
+            self._db.execute("INSERT OR IGNORE INTO server_secrets(name,value) VALUES (?,?)",
+                             (name, _secrets.token_hex(32)))
+            return bytes.fromhex(self._db.execute(
+                "SELECT value FROM server_secrets WHERE name=?", (name,)).fetchone()[0])
+
     def recipients(self) -> list[str]:
         with self._lock:
             rows = self._db.execute(
@@ -400,16 +435,20 @@ class Store:
     # -- shop purchases ---------------------------------------------------------------------
 
     def remember_purchase(self, invoice_id: str, buyer: str | None, product_id: str | None = None,
-                          category: str | None = None, amount: int | None = None) -> None:
+                          category: str | None = None, amount: int | None = None,
+                          usd: float | None = None) -> None:
         """Notes who bought what, at invoice time, so a later webhook knows who to tell — and so a
-        shop offer can later prove the purchase happened, what kind it was and what it cost."""
+        shop offer can later prove the purchase happened, what kind it was and what it cost.
+
+        `amount` is USDC base units and only set for a USDC invoice. `usd` is the dollar value
+        whatever it was paid in, and is what an offer's floor is compared with."""
         now = time.time()
         with self._lock:
             self._db.execute(
-                "INSERT INTO purchases(invoice_id,buyer,status,updated_at,product_id,category,amount,created_at) "
-                "VALUES (?,?,?,?,?,?,?,?) "
+                "INSERT INTO purchases(invoice_id,buyer,status,updated_at,product_id,category,amount,created_at,usd) "
+                "VALUES (?,?,?,?,?,?,?,?,?) "
                 "ON CONFLICT(invoice_id) DO UPDATE SET buyer=COALESCE(excluded.buyer,buyer)",
-                (invoice_id, buyer, "created", now, product_id, category, amount, now),
+                (invoice_id, buyer, "created", now, product_id, category, amount, now, usd),
             )
             self._db.commit()
 
@@ -422,7 +461,7 @@ class Store:
         marks = ",".join("?" * len(self.DELIVERED))
         with self._lock:
             return [dict(r) for r in self._db.execute(
-                f"SELECT invoice_id, category, amount, created_at, delivered_at FROM purchases "
+                f"SELECT invoice_id, category, amount, usd, created_at, delivered_at FROM purchases "
                 f"WHERE buyer=? AND status IN ({marks}) AND delivered_at IS NOT NULL AND created_at>=?",
                 (buyer, *self.DELIVERED, since))]
 
@@ -652,7 +691,9 @@ class Store:
                 f"SELECT * FROM rewards WHERE payer IN ({','.join('?' * len(fam))}) ORDER BY created_at DESC LIMIT ?",
                 (*fam, limit),
             ).fetchall()
-        return [dict(r) for r in rows]
+        # When each card stops being scratchable, sent with it so the phone can say so on the
+        # card. The same figure `reveal_reward` enforces.
+        return [dict(r) | {"expires_at": float(r["created_at"]) + SCRATCH_TTL} for r in rows]
 
     # -- referrals --------------------------------------------------------------------------
 
@@ -740,13 +781,17 @@ class Store:
         with self._lock, self._db:
             fam = self._family(payer)
             row = self._db.execute(
-                f"SELECT revealed_at FROM rewards WHERE id=? AND payer IN ({','.join('?' * len(fam))})",
+                f"SELECT revealed_at, created_at FROM rewards WHERE id=? AND payer IN ({','.join('?' * len(fam))})",
                 (reward_id, *fam),
             ).fetchone()
             if row is None:
                 return None
             if row["revealed_at"] is not None:
                 return float(row["revealed_at"])
+            # Left too long. A card nobody scratched in time is not paid, which is what gives
+            # the date on the card a meaning.
+            if now > float(row["created_at"]) + SCRATCH_TTL:
+                return EXPIRED
             self._db.execute(
                 "UPDATE rewards SET revealed_at=? WHERE id=? AND revealed_at IS NULL",
                 (now, reward_id),

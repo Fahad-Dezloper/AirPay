@@ -53,15 +53,16 @@ class DripTest(NoticeBase):
         self.assertEqual(3, len(set(self.told())))
 
     def test_once_every_offer_has_been_told_nothing_more_is_sent(self):
-        for h in (3.1, 9.2, 15.4, 21.6, 27.8):
-            self.run_at(h)
-        self.assertEqual(3, len(self.told()))
+        every = len(seed.launch_offers(self.t0))
+        for i in range(every + 2):                       # two passes more than there are offers
+            self.run_at(3.1 + 6.2 * i)
+        self.assertEqual(every, len(self.told()))
 
     def test_the_push_says_what_the_offer_is(self):
         self.run_at(3.1)
         data = self.fcm.sent[0][1]
         self.assertEqual({"type": "offer", "state": "new"}, {k: data[k] for k in ("type", "state")})
-        self.assertEqual(300, data["skr"])
+        self.assertEqual(75, data["skr"])
         self.assertEqual("Jupiter", data["app"])
         self.assertIn("Jupiter", data["detail"])
 

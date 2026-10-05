@@ -309,13 +309,19 @@ def make_handler(service, helius_auth: str | None, limiter: RateLimit | None = N
                         # Who bought it, so the webhook has somebody to tell. The refund address
                         # is the buyer's own wallet, which is also how push is addressed.
                         if out.get("invoice_id"):
+                            # The recorded cost is USDC base units. A SOL invoice is in
+                            # lamports, which would read as a wildly wrong price, so it is
+                            # left empty rather than written in the wrong unit.
+                            usdc = out.get("amount") if method == "usdc_solana" and isinstance(out.get("amount"), int) else None
+                            # The dollar value, whatever it is paid in: exact from a USDC
+                            # invoice, the catalogue's estimate otherwise. This is what lets a
+                            # purchase paid in SOL count toward an offer with a dollar floor.
+                            usd = (usdc / 1_000_000) if usdc else shop.usd_estimate(
+                                str(body.get("product_id") or ""), body.get("package_id") or None, body.get("value"))
                             service.store.remember_purchase(
                                 out["invoice_id"], body.get("refund_address") or None,
                                 str(body.get("product_id") or "")[:80], shop.category_of(str(body.get("product_id") or "")),
-                                # The recorded cost is USDC base units. A SOL invoice is in
-                                # lamports, which would read as a wildly wrong price, so it is
-                                # left empty rather than written in the wrong unit.
-                                out.get("amount") if method == "usdc_solana" and isinstance(out.get("amount"), int) else None)
+                                usdc, usd)
                         return self._json(200, out)
                     except Exception as e:
                         # Includes "out of stock" and "no such product", which are answers
