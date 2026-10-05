@@ -157,24 +157,40 @@ private val END_GAP = 8.dp
  * the blue dot stays as a graphic so "new" is never told by colour alone.
  */
 @Composable
-internal fun AlertsTab(list: List<Alerts.Alert>, seenAt: Long, onOpen: (Alerts.Alert) -> Unit) {
+internal fun AlertsTab(
+    list: List<Alerts.Alert>, seenAt: Long,
+    /** The phone would swallow anything we posted. Draws [AllowNotifications] above the list. */
+    notifOff: Boolean = false,
+    onAllow: () -> Unit = {},
+    onOpen: (Alerts.Alert) -> Unit,
+) {
     if (list.isEmpty()) {
-        // Nothing to list, so nothing to align a list to: the message sits in the middle of the
-        // screen. The bottom padding is the title row above it, so it is the SCREEN's middle and
-        // not the middle of what is left under the title.
-        Column(
-            Modifier.fillMaxSize().padding(horizontal = Space.section).padding(bottom = 96.dp),
-            verticalArrangement = Arrangement.Center,
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            Text("Nothing new", color = D.Black, style = Type.body, textAlign = TextAlign.Center)
-            Spacer(Modifier.height(Space.tight))
-            Text("Requests, replies, messages, new offers and anything you've bought show up here.",
-                color = D.Quiet, style = Type.caption, textAlign = TextAlign.Center)
+        Column(Modifier.fillMaxSize()) {
+            if (notifOff) AllowNotifications(onAllow)
+            // Nothing to list, so nothing to align a list to: the message sits in the middle of
+            // the screen. The bottom padding is the title row above it, so it is the SCREEN's
+            // middle and not the middle of what is left under the title.
+            Column(
+                Modifier.weight(1f).fillMaxWidth().padding(horizontal = Space.section)
+                    .padding(bottom = if (notifOff) 0.dp else 96.dp),
+                verticalArrangement = Arrangement.Center,
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Text("Nothing new", color = D.Black, style = Type.body, textAlign = TextAlign.Center)
+                Spacer(Modifier.height(Space.tight))
+                Text("Payments, requests, replies, messages, rewards, offers and anything you've bought show up here.",
+                    color = D.Quiet, style = Type.caption, textAlign = TextAlign.Center)
+            }
         }
         return
     }
     LazyColumn(Modifier.fillMaxSize(), state = rememberHeldList("alerts")) {
+        // In the list rather than pinned above it, so it scrolls away with the rows: what has
+        // already happened is listed whether or not the phone is allowed to announce the next.
+        if (notifOff) item(key = "allow") {
+            AllowNotifications(onAllow)
+            Spacer(Modifier.height(Space.tight))
+        }
         itemsIndexed(list) { i, a ->
             val fresh = a.at > seenAt
             Row(
@@ -204,7 +220,8 @@ internal fun AlertsTab(list: List<Alerts.Alert>, seenAt: Long, onOpen: (Alerts.A
                     // is the badge, which says what happened, and that is enough.
                     Text(
                         a.detail,
-                        color = if (a.kind == Alerts.Kind.RECEIVED) D.SuccessInk else D.Quiet,
+                        color = if (a.kind == Alerts.Kind.RECEIVED ||
+                            (a.kind == Alerts.Kind.MONEY && a.done)) D.SuccessInk else D.Quiet,
                         style = Type.caption, maxLines = 2,
                     )
                 }
@@ -247,11 +264,46 @@ internal fun AlertsTab(list: List<Alerts.Alert>, seenAt: Long, onOpen: (Alerts.A
 }
 
 /**
+ * The one place the app asks to be allowed to notify, and only while it is not.
+ *
+ * It used to be a banner on Home, under the balance, on every launch. Home is where money is
+ * looked at, and a standing complaint there reads as something being wrong with the money. This
+ * page is where the question belongs: it is the list of what a notification would have said, so
+ * what is being missed is on screen right under the button.
+ *
+ * It says what is lost in the terms of this app (being paid, being asked, a reward) and has one
+ * action. It goes away by itself the moment notifications are allowed; nothing dismisses it,
+ * because dismissing it would leave the phone silent with no way back to the question.
+ */
+@Composable
+private fun AllowNotifications(onAllow: () -> Unit) {
+    val shape = RoundedCornerShape(16.dp)
+    Column(
+        Modifier.fillMaxWidth().padding(top = Space.tight, bottom = Space.lead)
+            .clip(shape).border(1.5.dp, D.Line, shape).padding(Space.row),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            HiIcon(Hi.Bell, D.Black, 22.dp)
+            Spacer(Modifier.width(Space.inline))
+            Text("Notifications are off", color = D.Black, style = Type.heading)
+        }
+        Spacer(Modifier.height(Space.tight))
+        Text(
+            "You will not hear when someone pays you, asks you for money or when a reward arrives.",
+            color = D.Quiet, style = Type.caption,
+        )
+        Spacer(Modifier.height(Space.row))
+        PrimaryButton("Allow notifications", onAllow)
+    }
+}
+
+/**
  * What the notification is ABOUT, in a 40 box (§7).
  *
  * Three answers, in the order the sandbox asks them (`components/screens/Lists.tsx` → `Alerts`):
  * a person is their face; an app is its own icon; a shop order is the category it came off.
- * Nothing falls through — every `Alerts.Kind` is one of a person, an order or an offer.
+ * Nothing falls through — every `Alerts.Kind` is one of a person, an order, an offer, or (for
+ * money in a wallet and rewards, which have nobody behind them) the thing itself.
  */
 @Composable
 private fun AlertIcon(a: Alerts.Alert) {
@@ -278,6 +330,23 @@ private fun AlertIcon(a: Alerts.Alert) {
             } else {
                 FaceDisc(a.who.orEmpty(), a.seed, ALERT_ICON)
             }
+        }
+        // Money in a wallet and a reward have nobody behind them to draw: the transfer came from
+        // an address this phone may never have met, and a reward comes from the app. So the
+        // icon is the WHAT, the same glyph Home uses for it, on the neutral fill. Not a tinted
+        // disc per kind: the badge still says what happened.
+        a.kind == Alerts.Kind.MONEY || a.kind == Alerts.Kind.REWARD -> Box(
+            Modifier.size(ALERT_ICON).clip(CircleShape).background(D.Fill),
+            contentAlignment = Alignment.Center,
+        ) {
+            HiIcon(
+                when {
+                    a.kind == Alerts.Kind.REWARD -> Hi.Gift
+                    a.topic == "out" -> Hi.ArrowUpRight
+                    else -> Hi.Receive
+                },
+                D.Black, 22.dp,
+            )
         }
         // Their face, seeded on the address so one person is one colour everywhere. A null
         // seed is an entry old enough not to have recorded who it was with; `FaceDisc` draws

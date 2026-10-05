@@ -1,6 +1,11 @@
 package so.duffle.app
 
 import android.content.Context
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.setValue
+import org.json.JSONArray
+import org.json.JSONObject
 
 /**
  * Everything worth telling someone, in one list.
@@ -14,11 +19,24 @@ import android.content.Context
  *
  * The consequence to keep in mind: an alert cannot be dismissed on its own, because there is
  * nothing to dismiss. It stops appearing when the thing it is about stops being true.
+ *
+ * **The exception is [AlertLog].** Money moving in a wallet, a reward, a friend joining and a
+ * tap are things that HAPPENED, and nothing else on the phone keeps them: they were shown as a
+ * notification and then gone, so this page disagreed with the notification shade about what the
+ * person had been told. Those are written down, once each, and listed beside the derived lines.
  */
 object Alerts {
 
     /** What a line is about, which decides its icon and where tapping it goes. */
-    enum class Kind { ASKED, DECLINED, LATER, RECEIVED, WITHDRAWN, MESSAGE, OFFER, ORDER }
+    enum class Kind {
+        ASKED, DECLINED, LATER, RECEIVED, WITHDRAWN, MESSAGE, OFFER, ORDER,
+        /** Money moved in one of our wallets outside an AirPay request. From [AlertLog]. */
+        MONEY,
+        /** A reward, a referral, a finished offer or a payout. From [AlertLog]. */
+        REWARD,
+        /** Somebody touched phones with us. From [AlertLog]. */
+        TAPPED,
+    }
 
     /**
      * One line.
@@ -85,6 +103,12 @@ object Alerts {
          * that sentence mean something.
          */
         val amount: String? = null,
+        /**
+         * For a [Kind.REWARD] line, which part of rewards it is about ("referral", "offer",
+         * "reward", "payout"), so tapping it can open the referral sheet for a friend and the
+         * rewards page for the rest. For a [Kind.MONEY] line, "in" or "out".
+         */
+        val topic: String? = null,
     )
 
     private const val PREFS = "alerts"
@@ -112,6 +136,8 @@ object Alerts {
         orders: List<Orders.Order>,
         offers: List<Rewards.Offer>,
         name: (String) -> String,
+        /** What [AlertLog] has written down. Defaulted so the derived half can be built alone. */
+        logged: List<AlertLog.Entry> = emptyList(),
     ): List<Alert> {
         val out = mutableListOf<Alert>()
 
@@ -174,8 +200,208 @@ object Alerts {
                 iconUrl = o.icon)
         }
 
+        // A payment this phone asked for and has confirmed already has its line above, with a
+        // name and "Confirmed on-chain". The push's own note of the same payment gives way.
+        val confirmed = owed.filter { it.paid }.map { "paid:${it.reference}" }.toSet()
+        for (e in logged) {
+            if (e.hard != null && e.hard in confirmed) continue
+            val kind = runCatching { Kind.valueOf(e.kind) }.getOrNull() ?: continue
+            // A tap is about a person, and their name may have been learned since it was
+            // written down, so it is looked up now. The stored words are the fallback.
+            val who = e.peer?.let(name)?.takeIf { it != "Someone" } ?: e.who
+            out += Alert(
+                kind,
+                if (kind == Kind.TAPPED && who != null) "$who tapped your phone" else e.title,
+                e.detail, e.at, peer = e.peer, who = who, seed = e.peer,
+                done = e.done, topic = e.topic,
+            )
+        }
+
         return out.sortedByDescending { it.at }
     }
 
     fun unread(list: List<Alert>, seenAt: Long): Int = list.count { it.at > seenAt }
+}
+
+/**
+ * The notifications nothing else on the phone remembers, written down once each.
+ *
+ * ### Why "once" needs two keys
+ *
+ * With the app open, one event reaches the phone twice: on the live stream and as a push. Both
+ * end up here, and they must make one line.
+ *
+ * - [Entry.hard] is the event's own identity (a transaction signature, a payment reference). A
+ *   second arrival with the same one is the same event, however much later it turns up. This is
+ *   what stops a push that FCM redelivers after a day from becoming a second line.
+ * - [Entry.soft] is what the line SAYS ("in 0.5 SOL"). The live stream's wallet event carries no
+ *   signature, so the only way to match it to its push is that they say the same thing within
+ *   [WINDOW] of each other.
+ *
+ * Two arrivals that both carry a hard key and disagree are two events, even if they say the
+ * same thing a second apart: being paid 1 USDC twice is two payments. The cost of the soft key
+ * is narrow and stated: two identical transfers inside [WINDOW], both heard ONLY on the live
+ * stream (push switched off on the server), are listed as one. The balance is still right.
+ */
+object AlertLog {
+
+    data class Entry(
+        /** An [Alerts.Kind] name. A string so an entry written by a newer build is skipped, not a crash. */
+        val kind: String,
+        val title: String,
+        val detail: String,
+        val at: Long,
+        val soft: String,
+        val hard: String? = null,
+        val peer: String? = null,
+        val who: String? = null,
+        val topic: String? = null,
+        val done: Boolean = false,
+    )
+
+    private const val PREFS = "alerts"
+    private const val KEY = "log"
+    /** Enough to scroll back through a busy week; old lines fall off the end. */
+    private const val KEEP = 60
+    /** How far apart a push and its live-stream twin can land. Generous: a push can be slow. */
+    private const val WINDOW = 2 * 60_000L
+
+    /**
+     * Bumped on every change, so the page redraws when a push lands while it is open.
+     *
+     * Written from the messaging service's thread as well as the main one, which snapshot state
+     * allows. The same idea as [Live.tick].
+     */
+    var version by mutableIntStateOf(0)
+        private set
+
+    /** What [record] found. The push handler rings for everything except a [REPEAT]. */
+    enum class Wrote {
+        /** Never heard of it: a new line. */
+        NEW,
+        /** The live stream had already written it, and this arrival told us which event it was. */
+        TWIN,
+        /** The same slot saying something newer: "on its way" became "arrived". */
+        REPLACED,
+        /** This exact event, again. Nothing changed, and nothing should ring. */
+        REPEAT,
+    }
+
+    /**
+     * Writes one line, unless it is already there.
+     *
+     * With [replace], a line already present under the same key is rewritten in place when the
+     * words differ: see [Progress.slot], where a payout's "on its way" becomes "arrived".
+     */
+    @Synchronized
+    fun record(
+        context: Context, kind: Alerts.Kind, title: String, detail: String, soft: String,
+        hard: String? = null, peer: String? = null, who: String? = null, topic: String? = null,
+        done: Boolean = false, replace: Boolean = false, at: Long = System.currentTimeMillis(),
+    ): Wrote {
+        val list = all(context).toMutableList()
+        val fresh = Entry(kind.name, title.take(120), detail.take(200), at, soft, hard, peer, who?.take(64), topic, done)
+        val i = list.indexOfFirst { e ->
+            (hard != null && e.hard == hard) ||
+                (e.soft == soft && kotlin.math.abs(at - e.at) < WINDOW && (hard == null || e.hard == null))
+        }
+        if (i >= 0) {
+            val was = list[i]
+            return when {
+                // The same slot saying something newer: the payout that has now arrived.
+                replace && (was.title != fresh.title || was.detail != fresh.detail) -> {
+                    list[i] = fresh
+                    save(context, list.sortedByDescending { it.at })
+                    Wrote.REPLACED
+                }
+                // The live stream wrote it first; the push now tells us which event it was.
+                was.hard == null && hard != null -> {
+                    list[i] = was.copy(hard = hard)
+                    save(context, list)
+                    Wrote.TWIN
+                }
+                // The other way round (the push wrote it, the live stream now repeats it) and
+                // two live-stream arrivals look the same from here, and neither is news.
+                else -> Wrote.REPEAT
+            }
+        }
+        list.add(0, fresh)
+        save(context, list.sortedByDescending { it.at }.take(KEEP))
+        return Wrote.NEW
+    }
+
+    @Synchronized
+    fun all(context: Context): List<Entry> = try {
+        val arr = JSONArray(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY, "[]"))
+        (0 until arr.length()).mapNotNull { n ->
+            val o = arr.optJSONObject(n) ?: return@mapNotNull null
+            Entry(
+                kind = o.optString("kind"), title = o.optString("title"), detail = o.optString("detail"),
+                at = o.optLong("at"), soft = o.optString("soft"),
+                hard = o.optString("hard").takeIf { it.isNotBlank() },
+                peer = o.optString("peer").takeIf { it.isNotBlank() },
+                who = o.optString("who").takeIf { it.isNotBlank() },
+                topic = o.optString("topic").takeIf { it.isNotBlank() },
+                done = o.optBoolean("done"),
+            ).takeIf { it.kind.isNotBlank() && it.title.isNotBlank() }
+        }
+    } catch (e: Exception) {
+        emptyList()
+    }
+
+    private fun save(context: Context, list: List<Entry>) {
+        val arr = JSONArray()
+        for (e in list) {
+            arr.put(JSONObject().apply {
+                put("kind", e.kind); put("title", e.title); put("detail", e.detail)
+                put("at", e.at); put("soft", e.soft); put("done", e.done)
+                e.hard?.let { put("hard", it) }
+                e.peer?.let { put("peer", it) }
+                e.who?.let { put("who", it) }
+                e.topic?.let { put("topic", it) }
+            })
+        }
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(KEY, arr.toString()).apply()
+        version++
+    }
+
+    // The words and keys for each kind live here, in one place, because every kind is written
+    // from two places (the push handler and the live stream) and the two must agree to the
+    // letter or the soft key does not match and the line appears twice.
+
+    /** Money moved in a wallet. [signature] is null on the live stream, which does not carry it. */
+    fun wallet(context: Context, direction: String, amount: String, symbol: String, signature: String?): Wrote {
+        if (direction != "in" && direction != "out") return Wrote.REPEAT
+        val incoming = direction == "in"
+        return record(
+            context, Alerts.Kind.MONEY,
+            title = if (incoming) "Received $amount $symbol" else "Sent $amount $symbol",
+            detail = if (incoming) "Arrived in your wallet" else "Left your wallet",
+            soft = "wallet:$direction:$amount:$symbol",
+            hard = signature?.takeIf { it.isNotBlank() }?.let { "wallet:$it:$symbol:$direction" },
+            topic = direction, done = incoming,
+        )
+    }
+
+    /** A reward, referral, finished offer or payout. A new offer is NOT written: `/v1/offers` lists it. */
+    fun progress(context: Context, p: Progress): Wrote {
+        // NEW, not REPEAT: it is not written here, but it is news, and the server sends each
+        // offer to each person once (`offer_notices`).
+        if (p.kind == "offer" && p.state == "new") return Wrote.NEW
+        val (title, text) = p.words() ?: return Wrote.REPEAT
+        return record(
+            context, Alerts.Kind.REWARD, title, text,
+            soft = "progress:${p.kind}:${p.state}:${p.skr}:${p.app}",
+            hard = p.id.takeIf { it.isNotBlank() }?.let { "progress:${p.slot}" },
+            topic = p.kind, done = p.state == "confirmed" || p.state == "paid",
+            replace = p.kind == "payout",
+        )
+    }
+
+    /** Somebody touched phones with us, by radio or relayed by the server. */
+    fun tapped(context: Context, card: TapCard): Wrote = record(
+        context, Alerts.Kind.TAPPED, "${card.label.ifBlank { "Someone" }} tapped your phone",
+        "Open their page to pay or request", soft = "tap:${card.address}",
+        peer = card.address, who = card.label.takeIf { it.isNotBlank() },
+    )
 }
