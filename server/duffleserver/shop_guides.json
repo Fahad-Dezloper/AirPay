@@ -371,6 +371,26 @@
       "line": "Flights and hotels.",
       "where_it_works": "Online · In the app",
       "amounts": "The amount is the value of the card."
+    },
+    "hp-petro-india": {
+      "kind": "Fuel voucher",
+      "line": "Fuel, CNG, lubricants and car wash at HP petrol pumps.",
+      "where_it_works": "At HP pumps that take HP Pay",
+      "valid_for": "Has an expiry date, shown with the code. It cannot be extended",
+      "how_used": "Add the code to HP Pay once, then spend the balance over time",
+      "know": [
+        "It is used through the HP Pay app, not shown at the pump.",
+        "Not every HP pump takes HP Pay. Ask at the pump before you fill up.",
+        "Cannot be cancelled or refunded once bought. Balance left at expiry is lost."
+      ],
+      "steps": [
+        "Install the HP Pay app and sign in.",
+        "Choose Add Voucher and add it to your HP Pay wallet.",
+        "At the pump, scan the HP Pay QR code.",
+        "Pay from your wallet balance."
+      ],
+      "amounts": "The amount is the fuel balance you get, in rupees.",
+      "brand_colour": "#386FB8"
     }
   }
 }

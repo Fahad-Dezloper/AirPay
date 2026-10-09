@@ -35,7 +35,7 @@ def raw(pid="google-play-india", **kw) -> dict:
 class GuideTest(unittest.TestCase):
     def test_the_file_ships_and_loads(self):
         # The same file the sandbox was written against: 23 products, keyed by Bitrefill id.
-        self.assertEqual(len(GUIDES), 23)
+        self.assertEqual(len(GUIDES), 24)
         self.assertIn("google-play-india", GUIDES)
 
     def test_a_guide_is_merged_under_the_keys_the_app_reads(self):
