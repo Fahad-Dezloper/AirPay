@@ -531,7 +531,7 @@ class Store:
             ).fetchall()
             spent = self._db.execute(
                 "SELECT COALESCE(SUM(skr),0) FROM rewards WHERE week=? AND state!='reversed'"
-                " AND kind NOT IN ('offer','signup')", (week,),
+                " AND kind NOT IN ('offer','signup','recharge','voucher')", (week,),
             ).fetchone()[0]
         with_them = [r["created_at"] for r in rows if r["counterparty"] == counterparty]
         # The per-person caps are about the TAP reward budget: they stop one person taking the
@@ -541,7 +541,7 @@ class Store:
         # `week_spent` below counts TAP rewards only. Offers are earmarked: each has its own
         # budget, so a popular offer cannot empty the pool and stop tap rewards, and the money
         # for each is reserved in the vault separately.
-        taps = [r for r in rows if r["kind"] not in ("offer", "signup")]
+        taps = [r for r in rows if r["kind"] not in ("offer", "signup", "recharge", "voucher")]
         return {
             "rewarded_this_week": sum(1 for r in rows if r["week"] == week and r["kind"] == "per_payment"),
             "earned_in_campaign": sum(r["skr"] for r in taps),
@@ -1308,6 +1308,30 @@ class Store:
         with self._lock:
             return self._db.execute(
                 "SELECT COALESCE(SUM(skr),0) FROM rewards WHERE kind='signup' AND week=?", (week,)).fetchone()[0]
+
+    def recharge_spent(self, week: int) -> int:
+        """SKR handed out as recharge cards this week."""
+        with self._lock:
+            return self._db.execute(
+                "SELECT COALESCE(SUM(skr),0) FROM rewards WHERE kind='recharge' AND week=?"
+                " AND state!='reversed'", (week,)).fetchone()[0]
+
+    def recharge_cards_since(self, payer: str, since: float) -> int:
+        """Recharge cards this wallet's whole account has been given after `since`."""
+        with self._lock:
+            fam = self._family(payer)
+            return self._db.execute(
+                "SELECT COUNT(*) FROM rewards WHERE kind='recharge' AND state!='reversed'"
+                f" AND created_at>=? AND payer IN ({','.join('?' * len(fam))})",
+                (since, *fam)).fetchone()[0]
+
+    def purchase(self, invoice_id: str) -> dict | None:
+        """One purchase as it was remembered: who bought it, what kind, and what became of it."""
+        with self._lock:
+            r = self._db.execute(
+                "SELECT invoice_id, buyer, status, category, product_id, delivered_at FROM purchases WHERE invoice_id=?",
+                (invoice_id,)).fetchone()
+            return dict(r) if r else None
 
     def link_wallet(self, account_id: str, address: str, now: float) -> str:
         """Puts a wallet in an account: "ok", or "other_account" if it already belongs to a

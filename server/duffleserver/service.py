@@ -454,6 +454,70 @@ class Service:
                                     "kinds": rewards.SIGNUP, "unlock_at": unlock})
         return bool(written)
 
+    def _grant_recharge(self, buyer: str, invoice_id: str) -> bool:
+        """A scratch card for a phone recharge that was paid for and delivered.
+
+        Fixed, like every reward here: the amount is the config's, decided now and counted
+        against this week's recharge budget now. Scratching it later only uncovers it and
+        sends it. It is refused, quietly, when the purchase was not a recharge, the buyer is
+        not a Seeker, the account has had its cards for the day, or the week's budget is spent.
+        """
+        config = self.reward_config()
+        if config.recharge <= 0:
+            return False
+        bought = self.store.purchase(invoice_id)
+        if not bought or bought.get("category") != "recharge":
+            return False
+        seeker = self.facts.is_seeker(buyer) if self.facts else False
+        if not seeker:
+            # False is "not a Seeker": rewards are for Seekers. None is "could not ask": no
+            # card now, and the next look at this order asks again.
+            if seeker is None:
+                log.info("recharge card for %s… waits: the chain could not be asked", buyer[:8])
+            return False
+        now = time.time()
+        week = rewards.week_of(now)
+        if self.store.recharge_cards_since(buyer, now - rewards.DAY) >= config.recharge_daily:
+            log.info("recharge card for %s… not given: today's cards are used", buyer[:8])
+            return False
+        if self.store.recharge_spent(week) + config.recharge > config.recharge_pool:
+            log.info("recharge card for %s… not given: this week's budget is spent", buyer[:8])
+            return False
+        reference = f"recharge-{invoice_id}"
+        unlock = now + config.lock_days * rewards.DAY
+        written = self.store.record_rewards(reference, buyer, "", [(rewards.RECHARGE, config.recharge)],
+                                            week, now, unlock)
+        if written:
+            log.info("recharge card: %s SKR to %s…", config.recharge, buyer[:8])
+            self._deliver(buyer, {"type": "reward", "reference": reference, "skr": config.recharge,
+                                  "kinds": rewards.RECHARGE, "unlock_at": unlock})
+        return bool(written)
+
+    def _grant_demo_voucher(self, buyer: str, invoice_id: str) -> bool:
+        """The DEMONSTRATION voucher card, for a delivered PhonePe gift card. Off unless asked for.
+
+        It is a reward row like any other so that it scratches, notifies and lists like any
+        other, but it carries no SKR: nothing is counted against any budget and nothing is ever
+        paid for it. What it opens onto is `rewards.DEMO_VOUCHER`, added where the rows are read.
+        """
+        config = self.reward_config()
+        if not config.demo_voucher:
+            return False
+        bought = self.store.purchase(invoice_id)
+        if not bought or bought.get("product_id") != rewards.DEMO_VOUCHER_FOR:
+            return False
+        if not (self.facts.is_seeker(buyer) if self.facts else False):
+            return False
+        now = time.time()
+        reference = f"voucher-{invoice_id}"
+        written = self.store.record_rewards(reference, buyer, "", [(rewards.VOUCHER, 0)],
+                                            rewards.week_of(now), now, now)
+        if written:
+            log.info("demo voucher card to %s…", buyer[:8])
+            self._deliver(buyer, {"type": "reward", "reference": reference, "skr": 0,
+                                  "kinds": rewards.VOUCHER, "unlock_at": now})
+        return bool(written)
+
     def _pay_referrer(self, invitee: str, reference: str, now: float, config: rewards.Config) -> None:
         """Pays the inviter, once, on the invitee's first rewarded payment.
 
@@ -1107,7 +1171,10 @@ class Service:
             "this_week": {"rewarded_payments": past["rewarded_this_week"], "of": config.weekly_payments},
             "this_month": {"earned": past["earned_this_month"], "cap": config.monthly_cap},
             "pool_left": max(0, config.weekly_pool - past["week_spent"]),
-            "recent": self.store.rewards_for(address, 20),
+            # A demonstration voucher card says what it opens onto. Added here, where the rows
+            # leave for the phone, because nothing about it is stored: it is not a real voucher.
+            "recent": [r | {"gift": rewards.DEMO_VOUCHER} if r["kind"] == rewards.VOUCHER else r
+                       for r in self.store.rewards_for(address, 20)],
             "payouts": self.store.payouts_for(address, 10),
             "min_payout": config.min_payout,
             "payouts_enabled": self.payer.enabled,
@@ -1353,14 +1420,38 @@ class Service:
         except Exception as e:                                   # noqa: BLE001
             log.info("shop webhook %s: %s", invoice_id, e)
             return
+        self.settle_order(invoice_id, out)
+
+    def settle_order(self, invoice_id: str, out: dict) -> None:
+        """Records what the shop says became of an order, and tells the buyer once.
+
+        `out` is always an answer WE fetched from the shop with our own key (the webhook's
+        fetch above, or the buyer's own app asking how its order is doing), never a body
+        somebody posted. The second road matters: the webhook needs this server to be
+        reachable from outside, and a delivery must not go unrecorded, or its card ungiven,
+        because a tunnel was down.
+        """
         status = out.get("status") or ""
         code = next((o.get("redemption") for o in out.get("orders") or []
                      if o.get("redemption")), None)
         if isinstance(code, (dict, list)):
             code = json.dumps(code)
         buyer, changed = self.store.settle_purchase(invoice_id, status, code)
-        if not changed or not buyer:
+        if not buyer:
             return
+        if changed:
+            self._announce_order(buyer, invoice_id, status, code)
+        if status in self.store.DELIVERED:
+            # After the delivery is announced, so the card's notice is the newer of the two and
+            # sits above it. Tried on every look at a delivered order, not only the first: if
+            # the chain could not be asked whether this is a Seeker, the next look asks again.
+            # The reward row is unique per invoice, so however often this runs it gives one card.
+            try:
+                self._grant_recharge(buyer, invoice_id) or self._grant_demo_voucher(buyer, invoice_id)
+            except Exception:  # a card must never stop a delivery being recorded or announced
+                log.exception("recharge card failed")
+
+    def _announce_order(self, buyer: str, invoice_id: str, status: str, code) -> None:
         # Same road as every other notification: the live stream when the app is open, push
         # when it is not — which is the usual case here, since delivery lands after the buyer
         # has put the phone away.

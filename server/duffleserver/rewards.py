@@ -55,6 +55,23 @@ REFERRAL = "referral"
 #: A new account's welcome card. Not earned by a payment, so it never counts against the tap
 #: pool or the per-person tap caps; it has a weekly budget of its own instead.
 SIGNUP = "signup"
+#: A card for a phone recharge that was paid for AND delivered. Like the welcome card it is not
+#: a tap reward, so it has a budget and a daily limit of its own and never counts against the
+#: tap pool or the per-person tap caps.
+RECHARGE = "recharge"
+#: A DEMONSTRATION card, off unless `demo_voucher` is set: a scratch card that opens onto a gift
+#: voucher where the others open onto SKR. It is worth no SKR, nothing is paid for it, and no
+#: real voucher code stands behind it. It exists to show what a voucher reward will look like;
+#: see [DEMO_VOUCHER] and `Service._grant_demo_voucher`.
+VOUCHER = "voucher"
+
+#: What the demonstration card opens onto. The brand, logo and price are a real product in the
+#: shop's catalogue (Tinder Plus & Gold, the $3 code); the voucher itself is not issued. `usd`
+#: is left out on purpose, so a card that is worth nothing adds nothing to anybody's total.
+DEMO_VOUCHER = {"brand": "Tinder", "logo_id": "2024_logos/tinder_logo", "face": 3, "currency": "USD",
+                "usd": None, "demo": True}
+#: The one purchase that earns the demonstration card.
+DEMO_VOUCHER_FOR = "phonepe-india"
 
 
 @dataclass(frozen=True)
@@ -82,6 +99,17 @@ class Config:
     #: The most that may be handed out as welcome cards in one week, across everyone. A wallet
     #: costs nothing to make, so this is what bounds the price of someone making a great many.
     signup_pool: int = 1_000
+    #: The card a delivered phone recharge earns, in whole SKR. Zero turns it off.
+    recharge: int = 10
+    #: The most that may be handed out as recharge cards in one week, across everyone. A
+    #: recharge costs real money, but the cheapest costs less than the card is worth, so this
+    #: and the daily limit below are what bound the price of buying cards with small recharges.
+    recharge_pool: int = 500
+    #: Recharge cards one account may earn in any 24 hours.
+    recharge_daily: int = 3
+    #: 1 turns the demonstration voucher card on. Off by default, and meant to stay off anywhere
+    #: but a demo: the card shows a reward that is not really given.
+    demo_voucher: int = 0
     #: Rewarded payments in one week that complete a streak.
     streak_needed: int = 4
     #: Rewarded payments allowed per week (the streak is the last of them).
@@ -119,7 +147,8 @@ class Config:
     #: silently invent a setting nobody reads.
     TUNABLE = ("first_payment", "per_payment", "streak", "streak_needed", "weekly_payments",
                "monthly_cap", "user_cap", "weekly_pool", "cooldown_days",
-               "counterparty_min_age_days", "lock_days", "referral", "min_payout", "signup", "signup_pool")
+               "counterparty_min_age_days", "lock_days", "referral", "min_payout", "signup", "signup_pool",
+               "recharge", "recharge_pool", "recharge_daily", "demo_voucher")
 
     def with_overrides(self, values: dict) -> "Config":
         """A copy with whatever the database says on top. Unknown or unusable values are

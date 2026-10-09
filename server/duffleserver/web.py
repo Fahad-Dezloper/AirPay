@@ -358,7 +358,7 @@ def make_handler(service, helius_auth: str | None, limiter: RateLimit | None = N
                 # buyer is the signed-in wallet, never one named in the request.
                 if path == "/v1/sponsor":
                     try:
-                        return self._json(200, service.payer.sponsor_info())
+                        return self._json(200, service.payer.sponsor_info(me))
                     except PayerError:
                         return self._json(200, {"enabled": False})
                 if path == "/v1/sponsor/submit":
@@ -368,7 +368,16 @@ def make_handler(service, helius_auth: str | None, limiter: RateLimit | None = N
                         return self._json(503 if e.retryable else 422, {"error": e.code})
                 if path == "/v1/shop/order":
                     try:
-                        return self._json(200, shop.order(str(body.get("invoice_id") or "")))
+                        invoice_id = str(body.get("invoice_id") or "")
+                        out = shop.order(invoice_id)
+                        # The buyer's own app asking is also a look at the order, and is
+                        # recorded as one: it is how a delivery is noticed when the shop's
+                        # webhook cannot reach this server. Only for an order this server
+                        # sold, and only to its buyer.
+                        bought = service.store.purchase(invoice_id)
+                        if bought and bought.get("buyer") == me:
+                            service.settle_order(invoice_id, out)
+                        return self._json(200, out)
                     except Exception as e:
                         return self._json(502, {"error": str(e) or "the shop did not answer"})
                 if path == "/v1/deferrals":

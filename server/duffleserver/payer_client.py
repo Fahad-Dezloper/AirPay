@@ -76,9 +76,10 @@ class Payer:
 
     # -- the fee wallet: see payer/skrpayer/sponsor.py -------------------------------------
 
-    def sponsor_info(self) -> dict:
-        """Whether network fees can be paid for a buyer, by which wallet, and what it costs."""
-        return self._call("GET", "/sponsor")
+    def sponsor_info(self, user: str | None = None) -> dict:
+        """Whether network fees can be paid for a buyer, by which wallet, and what it costs
+        [user], which is nothing for a wallet that holds enough SKR."""
+        return self._call("GET", f"/sponsor?user={user}" if user else "/sponsor")
 
     def sponsor(self, tx_b64: str, user: str) -> dict:
         """Hands over a transaction the buyer has signed, to be co-signed and submitted."""
