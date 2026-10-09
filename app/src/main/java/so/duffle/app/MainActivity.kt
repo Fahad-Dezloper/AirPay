@@ -1,5 +1,6 @@
 package so.duffle.app
 
+import androidx.compose.animation.slideInVertically
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.ui.platform.LocalDensity
@@ -313,6 +314,10 @@ class MainActivity : ComponentActivity() {
      * that was refused looked exactly like one that had quietly done nothing.
      */
     private var walletNotice by mutableStateOf<String?>(null)
+    /** The Buy SKR sheet is up. */
+    private var buySkr by mutableStateOf(false)
+    /** The sheet that says what holding SKR has earned this wallet. */
+    private var freeGasSheet by mutableStateOf(false)
 
     /** A purchase from the shop, from the moment a plan is tapped to the moment it is paid. */
     private var purchase by mutableStateOf<Purchase?>(null)
@@ -395,11 +400,14 @@ class MainActivity : ComponentActivity() {
      * a new activity) does not drag the person back here from wherever they went next.
      */
     private fun openFromNotification(i: Intent?) {
-        if (i == null || i.getStringExtra(Push.EXTRA_OPEN) != Push.OPEN_ALERTS) return
+        val where = i?.getStringExtra(Push.EXTRA_OPEN) ?: return
+        if (where != Push.OPEN_ALERTS && where != Push.OPEN_REWARDS) return
         i.removeExtra(Push.EXTRA_OPEN)
         if (connected == null) return
         thread = null; threadItem = null; drawerOpen = false
-        openAlerts()
+        // A card that was just earned is on the rewards page, waiting to be scratched; that is
+        // where its notification goes. Everything else goes to the line that is about it.
+        if (where == Push.OPEN_REWARDS) { purchase = null; openRewards() } else openAlerts()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -592,9 +600,12 @@ class MainActivity : ComponentActivity() {
                 // The exact price goes on the sheet's own "You pay" line, so the button only has
                 // to say what to do next.
                 purchase = Purchase.Working(item, "Approve in your wallet", payWith, inv.shown)
-                // No SOL for the network fee: the fee wallet pays it and takes it back in USDC.
-                // Only then. A wallet that has SOL pays its own fee as it always did.
-                val sponsor = if (payWith == Shop.PayWith.USDC && needsFeePaid()) ServerClient.sponsor() else null
+                // Two wallets have their network fee paid for them. One that holds enough SKR
+                // pays nothing. One with no SOL has it paid and gives it back in USDC. Any other
+                // wallet pays its own fee as it always did.
+                val sponsor = if (payWith == Shop.PayWith.USDC) {
+                    ServerClient.sponsor()?.takeIf { it.free || needsFeePaid() }
+                } else null
                 val built = withContext(Dispatchers.IO) {
                     when (payWith) {
                         Shop.PayWith.USDC -> Chain.buildTokenTransfer(
@@ -660,6 +671,7 @@ class MainActivity : ComponentActivity() {
                                             Chain.Confirmation.Confirmed -> {
                                                 push("✓ shop: paid ${inv.shown}")
                                                 purchase = Purchase.Done(item, inv.shown, sent.signature, inv.id)
+                                                Push.showBought(this@MainActivity, inv.id, product.name, inv.shown, phone)
                                                 // Delivery trails the payment by seconds.
                                                 launch { watchOrder(inv) }
                                             }
@@ -754,7 +766,7 @@ class MainActivity : ComponentActivity() {
 
     /** Asks what became of an order until it is delivered, or until asking stops being useful. */
     private suspend fun watchOrder(inv: Shop.Invoice) {
-        repeat(12) {
+        repeat(36) {
             delay(5_000)
             val d = Shop.order(inv.id) ?: return@repeat
             push("shop: order ${d.status}")
@@ -893,7 +905,9 @@ class MainActivity : ComponentActivity() {
         // A different wallet: its predecessor's figures must not stand under its name.
         if (rewardFor != connected) { rewardSummary = null; totalUsd = null }
         rewardFor = connected
-        val addr = connected ?: run { myDomain = null; return }
+        val addr = connected ?: run { myDomain = null; lifecycleScope.launch { FreeGas.refresh(null) }; return }
+        // Whether this wallet's network fees are paid for it, asked whenever what it holds is.
+        lifecycleScope.launch { FreeGas.refresh(addr) }
 
         // Whose name this wallet carries, borrowing one if it has none of its own. Seeded from
         // the last answer for *this* address — switching wallets must not leave the previous
@@ -1120,7 +1134,10 @@ class MainActivity : ComponentActivity() {
                 // Preview builds can open the landing page with a wallet still linked, on a
                 // given page, so it can be looked at without logging out.
                 val landingPreview = remember {
-                    intent.getIntExtra("preview_landing", -1).takeIf { BuildConfig.PREVIEWS && it >= 0 }
+                    intent.getIntExtra("preview_landing", -1).takeIf { BuildConfig.PREVIEWS && it >= 0 }.also {
+                        // Preview builds only: draw every "free network fee" mark. See [FreeGas.preview].
+                        if (BuildConfig.PREVIEWS && intent.getBooleanExtra("preview_free_gas", false)) FreeGas.preview = true
+                    }
                 }
                 // The way from the landing page into Home. The page used to be swapped for Home in
                 // one frame the instant a wallet answered: a blue page, then a white one full of
@@ -1350,6 +1367,13 @@ class MainActivity : ComponentActivity() {
                                     // and the server is not the authority on Bitrefill anyway.
                                     push("shop: ${ev.status}")
                                     catchUpOrders()
+                                    // An ending rings, as it does when it arrives by push.
+                                    val arrived = ev.status in setOf("all_delivered", "complete", "delivered")
+                                    val failed = ev.status in setOf("denied", "payment_error", "failed", "expired")
+                                    if (arrived || failed) Push.showOrder(
+                                        this@MainActivity, ev.invoice,
+                                        orders.all().firstOrNull { it.invoiceId == ev.invoice }, delivered = arrived,
+                                    )
                                 }
                                 is ServerClient.Messaged -> {
                                     if (messages.add(Messages.Note(ev.from, ev.body, ev.at, mine = false, id = ev.id))) {
@@ -1362,7 +1386,20 @@ class MainActivity : ComponentActivity() {
                                     // Say it, then re-read everything it could have changed: the
                                     // balance, the offer list, the referral sheet, the history.
                                     ev.progress.words()?.let { (title, text) -> push("$title, $text") }
-                                    AlertLog.progress(this@MainActivity, ev.progress)
+                                    // Into the shade as well as onto the notifications page.
+                                    // With the app open the server sends no push, so without
+                                    // this a card earned while looking at the app made no
+                                    // sound and left nothing to tap. It writes the page's line
+                                    // itself and posts nothing for an event already written.
+                                    Push.showProgress(this@MainActivity, ev.progress)
+                                    // A card for the recharge whose receipt is on screen: say
+                                    // so on the receipt, with the way to it.
+                                    val p = ev.progress
+                                    if (p.kind == "reward" && p.state == "earned") {
+                                        (purchase as? Purchase.Done)
+                                            ?.takeIf { p.id == "recharge-${it.invoiceId}" || p.id == "voucher-${it.invoiceId}" }
+                                            ?.let { purchase = it.copy(card = true) }
+                                    }
                                     when (ev.progress.state) {
                                         "confirmed", "paid", "settled" -> Haptics.success(this@MainActivity)
                                         "reversed" -> Haptics.failure(this@MainActivity)
@@ -1950,6 +1987,13 @@ class MainActivity : ComponentActivity() {
                                     Hi.ArrowDown, D.Quiet, 20.dp,
                                     modifier = Modifier.graphicsLayer { rotationZ = flip },
                                 )
+                                // What holding SKR has earned this wallet, where its money is listed.
+                                if (FreeGas.shown) {
+                                    Spacer(Modifier.width(Space.inline))
+                                    // Its own touch: it opens what the mark means, and does
+                                    // not open the list of assets it happens to sit beside.
+                                    FreeFeeMark("Free network fees", onClick = { freeGasSheet = true })
+                                }
                             }
                             // The token row deliberately runs OUT of the page's gutters to the
                             // screen edge, but `AnimatedVisibility` clips its content to the box
@@ -1991,7 +2035,9 @@ class MainActivity : ComponentActivity() {
                         HomeActions(
                             isSeeker = myGenesis != null,
                             onBuy = { url ->
-                                runCatching { startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url))) }
+                                // SKR is bought here, in a sheet. Anything else is still a link.
+                                if (url.startsWith("https://jup.ag/")) buySkr = true
+                                else runCatching { startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url))) }
                             },
                             onScan = { startActivity(ScanActivity.intent(this@MainActivity)) },
                             onPayAnyone = { payAnyone = true },
@@ -2165,6 +2211,25 @@ class MainActivity : ComponentActivity() {
                     )
                 }
 
+                if (freeGasSheet) FreeGasSheet(
+                    onBuy = { freeGasSheet = false; buySkr = true },
+                    onClose = { freeGasSheet = false },
+                )
+
+                // Buying SKR: a swap through Jupiter, signed by the wallet that is connected.
+                if (buySkr) {
+                    val me = connected
+                    if (me == null) buySkr = false else BuySkrSheet(
+                        holdings = holdings, taker = me, usd = { mint -> market[mint]?.usdPrice },
+                        scope = lifecycleScope,
+                        sign = { tx -> wallet.signOnly(tx) },
+                        // What is held has changed, so it is read again rather than guessed at.
+                        onSwapped = { refreshWallets(quiet = true) },
+                        onClose = { buySkr = false },
+                        previewDone = intent.getLongExtra("preview_swapped", 0L).takeIf { BuildConfig.PREVIEWS && it > 0 },
+                    )
+                }
+
                 // A reward card lifted out of the grid to be scratched, over a dimmed, blurred page.
                 scratching?.let { tgt ->
                     ScratchStage(
@@ -2172,13 +2237,12 @@ class MainActivity : ComponentActivity() {
                         onClose = { scratching = null },
                         onRevealed = { Live.bump() },
                         // The win is shown only once the server has taken the scratch, so nobody
-                        // is shown a prize that was not paid. A practice card (an id below one)
-                        // is never sent, and always "wins".
+                        // is shown a prize that was not paid.
+                        details = { row, close -> VoucherSheet(row, close) },
                         onReveal = { row, done ->
                             lifecycleScope.launch {
                                 val me = connected
                                 val why = when {
-                                    row.id <= 0 -> null
                                     me == null -> Rewards.REVEAL_OFFLINE
                                     else -> Rewards.revealWhy(me, row.id)
                                 }
@@ -2236,6 +2300,7 @@ class MainActivity : ComponentActivity() {
                 purchase?.let { state ->
                     PurchaseSheet(
                         state = state,
+                        onCard = { purchase = null; openRewards() },
                         onPay = { payWith, quoted -> with(state.item) { buy(product, value, category, phone, extra, payWith, quoted) } },
                         quote = { payWith -> quote(state.item, payWith) },
                         sponsor = { ServerClient.sponsor() },
@@ -2582,7 +2647,10 @@ class MainActivity : ComponentActivity() {
      * with the tap popup so the two can never report the same payment differently.
      */
     private suspend fun pay(payer: String, req: PayRequest) {
-        val result = Payments.pay(wallet, payer, req, stage = { status = Status.Working(it) }, log = ::push)
+        val result = Payments.pay(
+            wallet, payer, req, stage = { status = Status.Working(it) }, log = ::push,
+            sponsor = FreeGas.sponsorFor(payer),
+        )
         when (result) {
             is PayResult.Sent -> {
                 inbox.markPaid(req.reference, result.signature); refreshLists()
@@ -5700,6 +5768,8 @@ internal sealed interface Purchase {
     data class Done(
         override val item: Item, val paid: String, val signature: String, val invoiceId: String,
         val delivered: Boolean = false,
+        /** True once this purchase has earned a scratch card: the receipt then says so. */
+        val card: Boolean = false,
     ) : Purchase
     /**
      * [unsure] is the signature of a payment that was sent and not yet confirmed. Then this is
@@ -5713,6 +5783,8 @@ internal sealed interface Purchase {
 @Composable
 private fun PurchaseSheet(
     state: Purchase,
+    /** Opens the rewards page, from the receipt of a purchase that earned a card. */
+    onCard: () -> Unit,
     onPay: (Shop.PayWith, Shop.Invoice?) -> Unit,
     quote: suspend (Shop.PayWith) -> Shop.Invoice?,
     sponsor: suspend () -> Chain.Sponsor?,
@@ -5886,17 +5958,18 @@ private fun PurchaseSheet(
             // No SOL at all for a network fee. Then AirPay's fee wallet pays it and takes the
             // same back in USDC, which is asked about only in that case.
             val noSol = have(Shop.PayWith.SOL)?.let { it < Chain.FEE_HEADROOM_LAMPORTS } == true
-            val helper by produceState<Chain.Sponsor?>(initialValue = null, noSol) {
-                value = if (noSol) sponsor() else null
-            }
-            val covered = payWith == Shop.PayWith.USDC && noSol && helper != null
+            // Asked whatever the wallet holds: one with enough SKR pays no fee, SOL or not.
+            val asked by produceState<Chain.Sponsor?>(initialValue = null, noSol) { value = sponsor() }
+            val helper = asked?.takeIf { it.free || noSol }
+            val free = payWith == Shop.PayWith.USDC && helper?.free == true
+            val covered = payWith == Shop.PayWith.USDC && noSol && helper != null && !free
             // Whether the wallet can pay in [p]. Null means not known yet, which blocks nothing.
             fun canPay(p: Shop.PayWith): Boolean? {
                 val need = cost(p) ?: return null
                 val held = have(p) ?: return null
                 return held >= need + when {
                     p == Shop.PayWith.SOL -> Chain.FEE_HEADROOM_LAMPORTS
-                    noSol -> helper?.feeUnits ?: 0L
+                    noSol && !free -> helper?.feeUnits ?: 0L
                     else -> 0L
                 }
             }
@@ -5940,6 +6013,15 @@ private fun PurchaseSheet(
                     else -> Text("Shown when you proceed", color = D.Quiet, style = Type.caption)
                 }
             }
+            // A price in SOL says little to somebody who thinks in dollars, so the dollars go
+            // under it. USDC is its own dollar figure and needs none.
+            if (payWith == Shop.PayWith.SOL) {
+                val about = quoted?.amount?.let { dollars(it, 9, solRate) }
+                if (about != null) Row {
+                    Spacer(Modifier.weight(1f))
+                    Text("About $about", color = D.Quiet, style = Type.caption)
+                }
+            }
             if (covered) {
                 // The fee as its own line, in the money the buyer actually holds. They are never
                 // asked to go and find SOL.
@@ -5950,6 +6032,14 @@ private fun PurchaseSheet(
                         Money.token(BigDecimal.valueOf(helper!!.feeUnits, Shop.USDC_DECIMALS), "USDC"),
                         color = D.Quiet, style = Type.caption,
                     )
+                }
+            }
+            if (free || (FreeGas.shown && payWith == Shop.PayWith.USDC)) {
+                // What holding SKR buys, said where the fee would have been.
+                Spacer(Modifier.height(Space.tight))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Network fee", color = D.Quiet, style = Type.caption, modifier = Modifier.weight(1f))
+                    FreeFeeMark("Free. It's on us")
                 }
             }
             // Said here, before anything is ordered: the wallet's balance is already known, so
@@ -6036,8 +6126,27 @@ private fun PurchaseSheet(
                     )
                 }
                 Spacer(Modifier.height(Space.section))
-                PrimaryButton("Done", onClose, Modifier.fillMaxWidth())
-                TextLink("View on explorer", { onExplorer(state.signature) }, modifier = Modifier.fillMaxWidth())
+                if (state.card) {
+                    // The card this purchase earned. It takes the main button: it is the next
+                    // thing to do, and Done is still one line under it.
+                    Row(
+                        Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(D.Highlight).padding(horizontal = 16.dp, vertical = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Image(painterResource(R.drawable.skr_token), null, Modifier.size(36.dp))
+                        Spacer(Modifier.width(Space.inline))
+                        Column(Modifier.weight(1f)) {
+                            Text("You earned a scratch card", color = D.Black, style = Type.heading)
+                            Text("Scratch it to see what you won", color = D.Black, style = Type.caption)
+                        }
+                    }
+                    Spacer(Modifier.height(Space.lead))
+                    PrimaryButton("Scratch your card", onCard, Modifier.fillMaxWidth())
+                    TextLink("Done", onClose, modifier = Modifier.fillMaxWidth())
+                } else {
+                    PrimaryButton("Done", onClose, Modifier.fillMaxWidth())
+                    TextLink("View on explorer", { onExplorer(state.signature) }, modifier = Modifier.fillMaxWidth())
+                }
             }
             is Purchase.Problem -> {
                 Spacer(Modifier.height(Space.lead))
@@ -6111,8 +6220,8 @@ private fun planSummary(ex: Plans.Extra?, fallback: String): List<String> {
  */
 /** Between the parts of the plan screen. They are one task, so they sit closer than sections do. */
 private val PLAN_GAP = 20.dp
-private val PLAN_WASH = Color(0xFFF2F8FF)
-private val PLAN_EDGE = Color(0xFFDCEAF9)
+internal val PLAN_WASH = Color(0xFFF2F8FF)
+internal val PLAN_EDGE = Color(0xFFDCEAF9)
 
 /**
  * One tab over the plan list. The label keeps ONE size and weight whether it is chosen or not, so
@@ -6174,4 +6283,123 @@ private fun SubscriptionIcons(subs: List<Plans.Sub>) {
         }
         if (subs.size > 5) Text("+${subs.size - 5}", color = D.Black, style = Type.body)
     }
+}
+
+/**
+ * What a voucher won on a scratch card is, said in as few words as it takes: whose code it is,
+ * what it is worth, where it is used, that it is used once; and a Claim button that brings up
+ * its code.
+ *
+ * **Today this is a demonstration.** The server gives this card only when its `demo_voucher`
+ * switch is on, and no voucher is bought for it. The code is made up here by [demoCode] so the
+ * screen can be shown as it will look; it redeems nothing. When the server issues real vouchers,
+ * Claim asks it for the code and [demoCode] goes.
+ */
+@Composable
+private fun VoucherSheet(row: Rewards.Row, onClose: () -> Unit) {
+    val gift = row.gift ?: return
+    val clipboard = LocalClipboardManager.current
+    // 0 not claimed, 1 claiming, 2 the code is out.
+    var step by rememberSaveable(row.id) { mutableStateOf(0) }
+    var copied by remember { mutableStateOf(false) }
+    val code = remember(row.id) { demoCode(row.id) }
+    LaunchedEffect(copied) { if (copied) { delay(1600); copied = false } }
+    LaunchedEffect(step) { if (step == 1) { delay(1500); step = 2 } }
+    // Written as the card writes it: "$3", and "$1.80" where there are cents to say.
+    val worth = runCatching { fiatWhole(gift.face, gift.currency) }.getOrNull() ?: "${gift.face} ${gift.currency}"
+    Tray(onClose = onClose, dismissible = step != 1) {
+        Spacer(Modifier.height(Space.lead))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                Modifier.size(56.dp).clip(RoundedCornerShape(16.dp))
+                    .background(BRAND_INK[gift.brand] ?: SolidColor(D.Highlight)),
+                contentAlignment = Alignment.Center,
+            ) {
+                gift.logoId?.let {
+                    coil.compose.AsyncImage(
+                        model = "https://www.bitrefill.com/content/cn/c_pad,h_108,w_108/v1/$it.png",
+                        contentDescription = null, modifier = Modifier.size(40.dp),
+                    )
+                }
+            }
+            Spacer(Modifier.width(Space.inline))
+            Column(Modifier.weight(1f)) {
+                Text("${gift.brand} subscription code", color = D.Black, style = Type.heading)
+                Text("Redeem at ${gift.brand.lowercase()}.com", color = D.Quiet, style = Type.caption)
+            }
+            Spacer(Modifier.width(Space.inline))
+            Text(worth, color = D.Black, style = Type.title.copy(fontFeatureSettings = "tnum"))
+        }
+        Spacer(Modifier.height(Space.lead))
+        // What the code is for and how it is used, as the seller's own page for it says.
+        Text(VOUCHER_ABOUT, color = D.Black, style = Type.body)
+        Spacer(Modifier.height(Space.lead))
+        Text("HOW TO USE IT", color = D.Quiet, style = Type.micro)
+        Spacer(Modifier.height(Space.tight))
+        VOUCHER_STEPS.forEachIndexed { i, line ->
+            Row(Modifier.padding(vertical = 4.dp), verticalAlignment = Alignment.Top) {
+                Text("${i + 1}", color = D.Quiet, style = Type.body.copy(fontFeatureSettings = "tnum"), modifier = Modifier.width(22.dp))
+                Text(line, color = D.Black, style = Type.body, modifier = Modifier.weight(1f))
+            }
+        }
+        Spacer(Modifier.height(Space.tight))
+        Text(VOUCHER_TERMS, color = D.Quiet, style = Type.caption)
+        // The code comes up from below and pushes the sheet taller as it does, so nothing jumps.
+        AnimatedVisibility(
+            visible = step == 2,
+            enter = expandVertically(tween(420, easing = FastOutSlowInEasing), expandFrom = Alignment.Top) +
+                slideInVertically(tween(420, easing = FastOutSlowInEasing)) { it / 2 } +
+                fadeIn(tween(320, delayMillis = 120)),
+        ) {
+            Column {
+                Spacer(Modifier.height(Space.lead))
+                Row(
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(D.Highlight)
+                        .clickable { clipboard.setText(AnnotatedString(code)); copied = true }
+                        .padding(horizontal = 18.dp, vertical = 16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(code, color = D.Black, style = Type.title.copy(fontFamily = Mono), modifier = Modifier.weight(1f))
+                    HiIcon(if (copied) Hi.Tick else Hi.Copy, D.Black, 22.dp, contentDescription = if (copied) "Copied" else "Copy the code")
+                }
+            }
+        }
+        Spacer(Modifier.height(Space.lead))
+        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+            Text(
+                "One time use", color = D.Black, style = Type.caption,
+                modifier = Modifier.clip(CircleShape).background(D.Line).padding(horizontal = 12.dp, vertical = 6.dp),
+            )
+        }
+        Spacer(Modifier.height(Space.lead))
+        PrimaryButton(
+            when (step) { 0 -> "Claim"; 1 -> "Claiming"; else -> "Done" },
+            { if (step == 0) step = 1 else onClose() },
+            Modifier.fillMaxWidth(), loading = step == 1,
+        )
+        Spacer(Modifier.height(Space.lead))
+    }
+}
+
+// The demonstration voucher's words, taken from Bitrefill's page for its Tinder Plus and Gold
+// code and Tinder's own help page on promo codes. They are Tinder's, so they are written here for
+// the one voucher there is; a real voucher brings its own from the catalogue.
+private const val VOUCHER_ABOUT =
+    "A code for Tinder Plus and Gold: unlimited likes, Super Likes, Rewind, Boost and seeing who likes you."
+private val VOUCHER_STEPS = listOf(
+    "Go to tinder.com and sign in",
+    "Tap your profile, then Promo Code",
+    "Enter the code and tap Submit",
+)
+private const val VOUCHER_TERMS =
+    "Works in India. It cannot be added to a subscription that is already active."
+
+/**
+ * A made-up code for the demonstration voucher: three groups of four, the same every time for
+ * the same card. No letters or digits that are mistaken for each other. It redeems nothing.
+ */
+private fun demoCode(id: Int): String {
+    val r = kotlin.random.Random(id * 7_919 + 104_729)
+    val set = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+    return (1..3).joinToString("-") { (1..4).map { set[r.nextInt(set.length)] }.joinToString("") }
 }
