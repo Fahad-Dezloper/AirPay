@@ -85,8 +85,10 @@ def make_handler(engine: Engine, secret: bytes, sponsor=None):
                     if sponsor is None:
                         return self._out(200, {"enabled": False}) if self.command == "GET" \
                             else self._out(422, {"error": "sponsor_disabled"})
-                    if self.command == "GET" and self.path == "/sponsor":
-                        return self._out(200, sponsor.info())
+                    if self.command == "GET" and self.path.split("?")[0] == "/sponsor":
+                        # Who is asking decides whether the fee is waived: see Sponsor.holds_enough.
+                        who = self.path.partition("?user=")[2][:64] or None
+                        return self._out(200, sponsor.info(who))
                     if self.command == "POST" and self.path == "/sponsor":
                         d = json.loads(body)
                         return self._out(200, sponsor.submit(d.get("tx"), d.get("user")))

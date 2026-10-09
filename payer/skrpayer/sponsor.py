@@ -19,6 +19,16 @@ network fee". [check] makes that true by refusing everything that is not exactly
 
 It is submitted with preflight on, so a transaction that would fail is never broadcast and costs
 nothing. Per-wallet and daily counts bound what is left.
+
+One wallet pays no fee at all: one that HOLDS SKR, [Sponsor.free_at] of it or more. For it the
+fee is waived, and because its payments to people are covered too, two more shapes are signed:
+
+  * a TransferChecked of ANY token under the token program, not only USDC;
+  * a plain SOL transfer out of the holder's own wallet.
+
+Both move only what the holder signed away, from the holder's own accounts. The rule everything
+leans on is untouched: this wallet is the fee payer and is named in no instruction, so the worst
+either shape can cost it is still one network fee. The same counts apply.
 """
 from __future__ import annotations
 
@@ -35,6 +45,9 @@ from . import solana as sol
 from .engine import Refused
 
 USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+SKR_MINT = "SKRbvo6Gf7GondiT3BbTfuRDPqLWei4j2Qy2NPGZhW3"
+#: Base units of SKR in one SKR.
+SKR_UNITS = 10 ** 6
 COMPUTE_BUDGET = "ComputeBudget111111111111111111111111111111"
 #: The most a transaction may tip validators, on top of the base fee. This wallet pays it.
 MAX_TIP_LAMPORTS = 20_000
@@ -60,8 +73,12 @@ def _read_u16(buf: bytes, at: int) -> tuple[int, int]:
 
 
 def check(tx: bytes, sponsor: str, fee_account: str, fee_units: int, user: str,
-          mint: str = USDC_MINT) -> bytes:
-    """The message to sign, or [Refused]. Pure: no key, no network. See the module docstring."""
+          mint: str = USDC_MINT, holder: bool = False) -> bytes:
+    """The message to sign, or [Refused]. Pure: no key, no network. See the module docstring.
+
+    [holder] is a wallet that holds enough SKR: it owes no fee (the caller passes zero) and may
+    also send any token, or SOL, as well as USDC.
+    """
     if not isinstance(tx, (bytes, bytearray)) or not 0 < len(tx) <= MAX_TX:
         raise Refused("malformed")
     nsig, at = _read_u16(tx, 0)
@@ -96,6 +113,7 @@ def check(tx: bytes, sponsor: str, fee_account: str, fee_units: int, user: str,
         raise Refused("not_signed") from None
 
     token = sol.b58decode(sol.TOKEN_PROGRAM)
+    system = sol.b58decode(sol.SYSTEM_PROGRAM)
     budget = sol.b58decode(COMPUTE_BUDGET)
     mint_raw, fee_raw = sol.b58decode(mint), sol.b58decode(fee_account)
     count, p = _read_u16(msg, p)
@@ -129,6 +147,15 @@ def check(tx: bytes, sponsor: str, fee_account: str, fee_units: int, user: str,
             else:
                 raise Refused("unexpected_instruction")
             continue
+        if holder and raw_keys[prog] == system:
+            # A SOL transfer and nothing else the system program does: instruction 2, a u64 of
+            # lamports, out of the holder's own wallet (+ read-only extras for a reference).
+            if len(data) != 12 or struct.unpack("<I", data[:4])[0] != 2 or len(accounts) < 2:
+                raise Refused("unexpected_instruction")
+            if accounts[0] != 1 or struct.unpack("<Q", data[4:])[0] <= 0:
+                raise Refused("unexpected_instruction")
+            transfers += 1
+            continue
         if raw_keys[prog] != token:
             raise Refused("unexpected_instruction")
         # TransferChecked and nothing else: source, mint, destination, authority (+ read-only
@@ -137,7 +164,11 @@ def check(tx: bytes, sponsor: str, fee_account: str, fee_units: int, user: str,
             raise Refused("unexpected_instruction")
         amount, decimals = struct.unpack("<QB", data[1:])
         src, mint_i, dst, auth = accounts[:4]
-        if auth != 1 or raw_keys[mint_i] != mint_raw or decimals != 6 or amount <= 0:
+        if auth != 1 or amount <= 0:
+            raise Refused("unexpected_instruction")
+        # USDC, to its six places, for everybody. Any token for a holder: the chain itself
+        # refuses a TransferChecked whose mint or decimals do not match the account it moves.
+        if not holder and (raw_keys[mint_i] != mint_raw or decimals != 6):
             raise Refused("unexpected_instruction")
         transfers += 1
         if raw_keys[dst] == fee_raw:
@@ -167,8 +198,11 @@ class Sponsor:
     """The fee wallet: its key, its limits and a record of what it signed."""
 
     def __init__(self, db_path: str, key: SigningKey, rpc, fee_units: int = 10_000,
-                 per_user_day: int = 20, per_day: int = 2_000, mint: str = USDC_MINT):
+                 per_user_day: int = 20, per_day: int = 2_000, mint: str = USDC_MINT,
+                 free_at: int = 1_000, skr_mint: str = SKR_MINT):
         self.key, self.rpc, self.mint = key, rpc, mint
+        #: Whole SKR a wallet must hold to pay no fee. Zero turns the waiver off.
+        self.free_at, self.skr_mint = free_at, skr_mint
         self.pubkey = sol.b58encode(bytes(key.verify_key))
         self.fee_account = sol.ata(self.pubkey, mint, sol.TOKEN_PROGRAM)
         self.fee_units, self.per_user_day, self.per_day = fee_units, per_user_day, per_day
@@ -206,10 +240,28 @@ class Sponsor:
             return False
         return True
 
-    def info(self) -> dict:
+    def holds_enough(self, user: str) -> bool:
+        """Whether [user] holds enough SKR, in its own SKR account, to pay no fee.
+
+        Read from the chain at the moment it matters, never taken from the phone. A node that
+        cannot be asked is "no": the buyer then pays the ordinary fee, which is the safe mistake.
+        """
+        if self.free_at <= 0 or not sol.is_address(user):
+            return False
+        try:
+            held = self.rpc.token_balance(sol.ata(user, self.skr_mint, sol.TOKEN_PROGRAM))
+        except (sol.RpcError, KeyError, TypeError, ValueError):
+            return False
+        return held >= self.free_at * SKR_UNITS
+
+    def info(self, user: str | None = None) -> dict:
         ready = self.ready()
+        # Whether the wallet HOLDS enough, said whether or not this fee wallet can pay today:
+        # the app shows what holding SKR earns from this alone. Whether a fee is really paid is
+        # [enabled], and nothing is signed without it.
+        free = bool(user and self.holds_enough(user))
         return {"enabled": ready, "fee_payer": self.pubkey, "fee_account": self.fee_account,
-                "fee_units": self.fee_units}
+                "fee_units": 0 if free else self.fee_units, "free": free, "free_at": self.free_at}
 
     def _count(self, since: float, user: str | None = None) -> int:
         q, args = "SELECT COUNT(*) FROM sponsored WHERE at >= ?", [since]
@@ -227,7 +279,11 @@ class Sponsor:
             raise Refused("malformed") from None
         if not self.ready():
             raise Refused("sponsor_not_ready")
-        msg = check(tx, self.pubkey, self.fee_account, self.fee_units, user, self.mint)
+        # A holder's fee is waived. Asked of the chain here, at signing, whatever the phone was
+        # told earlier: a wallet that sold its SKR since then is checked as anybody else is.
+        holder = self.holds_enough(user)
+        msg = check(tx, self.pubkey, self.fee_account, 0 if holder else self.fee_units, user, self.mint,
+                    holder=holder)
         with self._lock:
             day = now - 86_400
             if self._count(day, user) >= self.per_user_day or self._count(day) >= self.per_day:

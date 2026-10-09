@@ -158,6 +158,15 @@ class FakeRpc:
         self.sent: list[bytes] = []
         self.error: Exception | None = None
         self.account = {"value": {"lamports": 1}}
+        #: Base units of SKR the buyer holds.
+        self.skr = 0
+        self.skr_asked: list[str] = []
+
+    def token_balance(self, account):
+        self.skr_asked.append(account)
+        if isinstance(self.skr, Exception):
+            raise self.skr
+        return self.skr
 
     def call(self, method, params):
         if method == "getAccountInfo":
@@ -236,3 +245,119 @@ class TestSponsor(Case):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestHolder(TestSponsor):
+    """A wallet holding enough SKR pays no fee. Nothing else about what is signed changes."""
+
+    def no_fee(self):
+        return self.tx([ix(6, [2, 5, 3, 1], xfer(310_000))])
+
+    def test_a_holder_pays_no_fee(self):
+        s = self.make()
+        self.rpc.skr = 1_000 * 10 ** 6
+        out = s.submit(self.b64(self.no_fee()), self.user)
+        self.assertEqual(1, len(self.rpc.sent))
+        self.assertTrue(out["signature"])
+        # It was the buyer's own SKR account that was read, not one the phone named.
+        self.assertEqual([sol.ata(self.user, "SKRbvo6Gf7GondiT3BbTfuRDPqLWei4j2Qy2NPGZhW3", sol.TOKEN_PROGRAM)],
+                         self.rpc.skr_asked)
+
+    def test_one_unit_short_is_not_a_holder(self):
+        s = self.make()
+        self.rpc.skr = 1_000 * 10 ** 6 - 1
+        with self.assertRaises(Refused) as r:
+            s.submit(self.b64(self.no_fee()), self.user)
+        self.assertEqual("fee_missing", r.exception.code)
+        self.assertEqual([], self.rpc.sent)
+
+    def test_a_node_that_cannot_say_means_the_fee_is_owed(self):
+        s = self.make()
+        self.rpc.skr = sol.RpcError("down")
+        with self.assertRaises(Refused) as r:
+            s.submit(self.b64(self.no_fee()), self.user)
+        self.assertEqual("fee_missing", r.exception.code)
+
+    def test_holding_skr_does_not_widen_what_is_signed(self):
+        s = self.make()
+        self.rpc.skr = 5_000 * 10 ** 6
+        # Naming the fee wallet in an instruction, or calling any other program: still refused.
+        for bad, code in (
+            (self.tx([ix(6, [2, 5, 3, 1], xfer(310_000)), ix(8, [0, 1], struct.pack("<IQ", 2, 1_000))]), "touches_sponsor"),
+            (self.tx([ix(7, [1, 3], struct.pack("<IQ", 2, 1_000))]), "unexpected_instruction"),
+            (self.tx([ix(6, [2, 5, 3, 0], xfer(310_000))]), "touches_sponsor"),
+        ):
+            with self.assertRaises(Refused) as r:
+                s.submit(self.b64(bad), self.user)
+            self.assertEqual(code, r.exception.code)
+        self.assertEqual([], self.rpc.sent)
+
+    def sol(self, lamports=1_000_000, accounts=(1, 3), op=2):
+        return ix(8, list(accounts), struct.pack("<IQ", op, lamports))
+
+    def test_a_holder_may_send_sol_and_other_tokens(self):
+        s = self.make()
+        self.rpc.skr = 1_000 * 10 ** 6
+        # SOL to somebody, with a reference riding along; and a token that is not USDC.
+        s.submit(self.b64(self.tx([self.sol(accounts=(1, 3, 4))])), self.user, now=1.0)
+        other = self.keys[:5] + [SHOP] + self.keys[6:]
+        s.submit(self.b64(self.tx([ix(6, [2, 5, 3, 1], xfer(5, decimals=9))], keys=other)), self.user, now=2.0)
+        self.assertEqual(2, len(self.rpc.sent))
+
+    def test_somebody_who_does_not_hold_skr_may_not(self):
+        s = self.make()
+        for bad in (self.tx([self.sol(), ix(6, [2, 5, 4, 1], xfer(FEE))]),
+                    self.tx([ix(6, [2, 5, 3, 1], xfer(5, decimals=9)), ix(6, [2, 5, 4, 1], xfer(FEE))])):
+            with self.assertRaises(Refused) as r:
+                s.submit(self.b64(bad), self.user)
+            self.assertEqual("unexpected_instruction", r.exception.code)
+        self.assertEqual([], self.rpc.sent)
+
+    def test_a_holders_sol_transfer_can_only_be_a_transfer_out_of_their_own_wallet(self):
+        s = self.make()
+        self.rpc.skr = 1_000 * 10 ** 6
+        for bad, code in (
+            (self.tx([self.sol(accounts=(0, 3))]), "touches_sponsor"),        # out of the fee wallet
+            (self.tx([self.sol(accounts=(1, 0))]), "touches_sponsor"),        # naming the fee wallet at all
+            (self.tx([self.sol(accounts=(3, 1))]), "unexpected_instruction"),  # out of somebody else's
+            (self.tx([self.sol(op=0)]), "unexpected_instruction"),            # create account
+            (self.tx([self.sol(op=1)]), "unexpected_instruction"),            # assign
+            (self.tx([self.sol(lamports=0)]), "unexpected_instruction"),
+            (self.tx([ix(8, [1, 3], struct.pack("<I", 2))]), "unexpected_instruction"),  # short data
+        ):
+            with self.assertRaises(Refused) as r:
+                s.submit(self.b64(bad), self.user)
+            self.assertEqual(code, r.exception.code)
+        self.assertEqual([], self.rpc.sent)
+
+    def test_a_holder_is_still_counted(self):
+        s = self.make(per_user_day=1)
+        self.rpc.skr = 1_000 * 10 ** 6
+        s.submit(self.b64(self.no_fee()), self.user, now=1000.0)
+        with self.assertRaises(Refused) as r:
+            s.submit(self.b64(self.tx([ix(6, [2, 5, 3, 1], xfer(310_001))])), self.user, now=1001.0)
+        self.assertEqual("sponsor_limit", r.exception.code)
+
+    def test_info_says_free_only_to_a_holder(self):
+        s = self.make()
+        self.assertEqual((False, FEE), (s.info(self.user)["free"], s.info(self.user)["fee_units"]))
+        self.rpc.skr = 1_000 * 10 ** 6
+        self.assertEqual((True, 0), (s.info(self.user)["free"], s.info(self.user)["fee_units"]))
+        self.assertFalse(s.info()["free"])
+
+    def test_a_holder_is_told_so_even_while_the_fee_wallet_cannot_pay(self):
+        s = self.make()
+        self.rpc.account = {"value": None}
+        self.rpc.skr = 1_000 * 10 ** 6
+        told = s.info(self.user)
+        self.assertEqual((True, False), (told["free"], told["enabled"]))
+        # Being told is all it is: nothing is signed until the fee wallet is ready.
+        with self.assertRaises(Refused) as r:
+            s.submit(self.b64(self.no_fee()), self.user)
+        self.assertEqual("sponsor_not_ready", r.exception.code)
+
+    def test_zero_turns_the_waiver_off(self):
+        s = self.make(free_at=0)
+        self.rpc.skr = 10 ** 12
+        with self.assertRaises(Refused):
+            s.submit(self.b64(self.no_fee()), self.user)
