@@ -102,6 +102,11 @@ class TapPopupActivity : ComponentActivity() {
     private var holdings by mutableStateOf<List<Tokens.Holding>?>(null)
     /** How this sheet came to be open — in person, or relayed afterwards. Shown on the device page. */
     private var cameFrom by mutableStateOf<String?>(null)
+    /**
+     * The dotted name this phone looked up itself, and the address the chain gave for it. A
+     * payment to exactly that pair may carry the name; nothing else may. See [PayRequest.validate].
+     */
+    private var resolvedName: Pair<String, String>? = null
     /** Debug preview only: the amount to show in the "working" state. */
     private var previewAmount by mutableStateOf<String?>(null)
     /**
@@ -168,6 +173,8 @@ class TapPopupActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         wallet = Wallet(this)
         address = wallet.address
+        // Whether this wallet's network fee is paid for it, for the sheet to say and the payment to use.
+        lifecycleScope.launch { FreeGas.refresh(address) }
         wallets = wallet.linked.all()
         activeWallet = wallet.linked.selected()?.id
         refreshRole()
@@ -500,6 +507,7 @@ class TapPopupActivity : ComponentActivity() {
                     peer?.address == payload.address
                 ) {
                     peer = TapPayload.Card(payload.card.copy(label = really.name))
+                    resolvedName = really.name to payload.address
                 }
             }
         }
@@ -644,6 +652,11 @@ class TapPopupActivity : ComponentActivity() {
                     // about a minute, and some of that is needed for the wallet and the second
                     // tap; an older one would be signed only to be refused.
                     handOver = p is TapPayload.Request && System.currentTimeMillis() - readAt < FRESH_MS,
+                    // Paying dezloper.skr was refused as "a name shaped like a domain": the rule
+                    // that stops another phone claiming a name it never proved was also turning
+                    // away the names this phone had proved for itself.
+                    nameResolved = p is TapPayload.Card && resolvedName == (p.card.label to p.card.address),
+                    sponsor = FreeGas.sponsorFor(payer),
                 )
             } catch (e: Exception) {
                 // The exception goes to the log, not onto the screen: `e.message` is the

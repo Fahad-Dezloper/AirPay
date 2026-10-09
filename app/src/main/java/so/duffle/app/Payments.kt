@@ -33,6 +33,9 @@ sealed interface PayResult {
 
 object Payments {
 
+    /** Tokens a covered payment may move: both live under the ordinary token program. */
+    private val SPONSORED_MINTS = setOf(Shop.USDC_MAINNET, Swap.SKR_MINT)
+
     suspend fun pay(
         wallet: Wallet,
         payer: String,
@@ -46,10 +49,17 @@ object Payments {
          * [PayResult.SignedOffline]. Anyone else gets "You're offline", as before.
          */
         handOver: Boolean = false,
+        /** See [PayRequest.validate]: the name on [req] was resolved on the chain by this phone. */
+        nameResolved: Boolean = false,
+        /**
+         * Who pays the network fee, for a wallet that holds enough SKR: [FreeGas.sponsorFor].
+         * Null is the ordinary payment, where the wallet pays its own.
+         */
+        sponsor: Chain.Sponsor? = null,
     ): PayResult {
         if (req.recipient == payer)
             return PayResult.Error("That's your own wallet", "Pick a different phone to pay.")
-        req.validate()?.let { return PayResult.Error("Can't pay this", it) }
+        req.validate(nameResolved)?.let { return PayResult.Error("Can't pay this", it) }
         // In the token's own smallest unit: lamports for SOL, 10^-6 for USDC, and so on.
         val units = req.units()
             ?: return PayResult.Error("Enter an amount", "${req.symbol} amounts can have up to ${req.decimals} decimal places.")
@@ -68,10 +78,20 @@ object Payments {
 
         stage("Checking your balance…")
         log("pay: building on a fresh blockhash")
-        val tx = when (val built = withContext(Dispatchers.IO) {
+        // The fee is paid for this wallet only for what the fee wallet will sign: SOL, and the
+        // two tokens known to live under the ordinary token program.
+        val gas = sponsor?.takeIf { it.free && (req.mint == null || req.mint in SPONSORED_MINTS) }
+        var covered = gas != null
+        fun build(with: Chain.Sponsor?): Chain.Built {
             val mint = req.mint
-            if (mint == null) Chain.buildTransfer(payer, req.recipient, units, req.reference)
-            else Chain.buildTokenTransfer(payer, req.recipient, mint, units, req.decimals, req.reference, req.symbol)
+            return if (mint == null) Chain.buildTransfer(payer, req.recipient, units, req.reference, sponsor = with)
+            else Chain.buildTokenTransfer(payer, req.recipient, mint, units, req.decimals, req.reference, req.symbol, sponsor = with)
+        }
+        val tx = when (val built = withContext(Dispatchers.IO) {
+            val first = build(gas)
+            // What cannot be covered (a recipient whose token account has to be made, which
+            // costs rent) is paid the ordinary way instead of being refused.
+            if (gas != null && first is Chain.Built.Bad) { covered = false; build(null) } else first
         }) {
             is Chain.Built.Ok -> built.tx
             is Chain.Built.NotEnough -> return PayResult.Error(
@@ -96,8 +116,14 @@ object Payments {
 
         // We submit, not the wallet — so the cluster is ours to choose.
         stage("Sending…")
-        val signature = when (val sent = withContext(Dispatchers.IO) { Chain.submit(bytes) }) {
+        val signature = when (val sent = if (covered) ServerClient.sponsorSubmit(bytes) else withContext(Dispatchers.IO) { Chain.submit(bytes) }) {
             is Chain.Submitted.Ok -> sent.signature
+            // The fee wallet would not sign it, so it never went anywhere. Whatever this phone
+            // believed about free fees is asked for again before the next payment.
+            is Chain.Submitted.Rejected if covered -> {
+                FreeGas.forget()
+                return PayResult.Error("Nothing was sent", sent.why + " Try again.")
+            }
             // An expired blockhash is NOT a failure: the transaction never reached the chain,
             // so nothing was sent and nothing can land later. It was returning `Failed` — the
             // red "the chain refused it" shape — while its own text said "Nothing was sent",

@@ -99,11 +99,19 @@ object Chain {
         reference: String,
         /** Test seam — also skips the balance check, so tests need no network. */
         blockhashOverride: String? = null,
+        /**
+         * Set for a wallet whose network fee is paid for it: see [Sponsor]. The fee wallet is
+         * then the fee payer, and this wallet needs only the amount itself.
+         */
+        sponsor: Sponsor? = null,
     ): Built {
         if (!PayRequest.isBase58Address(payer)) return Built.Bad("Your wallet address looks wrong.")
         if (!PayRequest.isBase58Address(recipient)) return Built.Bad("That destination address is not valid.")
         if (!PayRequest.isBase58Address(reference)) return Built.Bad("That payment reference is not valid.")
         if (lamports <= 0) return Built.Bad("Enter an amount greater than zero.")
+        // What this wallet pays on top of the amount: nothing when the fee is paid for it.
+        val fee = if (sponsor != null) 0L else NETWORK_FEE_LAMPORTS
+        val headroom = if (sponsor != null) 0L else FEE_HEADROOM_LAMPORTS
 
         val from = try { PublicKey(payer) } catch (e: Exception) { return Built.Bad("Your wallet address looks wrong.") }
         val to = try { PublicKey(recipient) } catch (e: Exception) { return Built.Bad("That destination address is not valid.") }
@@ -118,14 +126,14 @@ object Chain {
                     // Emptying the wallet is allowed: the amount plus the one-signature fee is
                     // exactly what it holds, which leaves zero, and zero is a balance the chain
                     // accepts. Short of that, the usual headroom is asked for.
-                    val emptying = lamports + NETWORK_FEE_LAMPORTS == held
-                    if (!emptying && held < lamports + FEE_HEADROOM_LAMPORTS)
+                    val emptying = lamports + fee == held
+                    if (!emptying && held < lamports + headroom)
                         return Built.NotEnough(fmt(b.sol), fmt(lamports / LAMPORTS_PER_SOL), "SOL")
                     // The same rule [sendable] holds the keypad to, for a request whose amount
                     // is fixed: what is left must be nothing or at least the rent minimum. Past
                     // this point the chain refuses it ("insufficient funds for rent"), but only
                     // after the person has approved it in their wallet.
-                    if (!emptying && held - lamports - NETWORK_FEE_LAMPORTS < RENT_MIN_LAMPORTS)
+                    if (!emptying && held - lamports - fee < RENT_MIN_LAMPORTS)
                         return Built.Bad("That would leave your wallet with less SOL than Solana lets it hold (about 0.0009). Add a little SOL and try again.")
                 }
                 is Balance.Offline -> return Built.Offline(b.detail)
@@ -147,6 +155,12 @@ object Chain {
                 keys = transfer.keys + AccountMeta(publicKey = ref, signer = false, writable = false),
                 programId = transfer.programId,
             )
+            if (sponsor != null) {
+                // Two signers, so two slots: the fee wallet's first, then this wallet's.
+                return Built.Ok(reserveSignatureSlot(
+                    Transaction(blockhash, listOf(withRef), feePayer = PublicKey(sponsor.feePayer)).serialize(), slots = 2,
+                ))
+            }
             val tx = Transaction(blockhash, withRef, feePayer = from)
             Built.Ok(reserveSignatureSlot(tx.serialize()))
         } catch (e: Exception) {
@@ -178,7 +192,15 @@ object Chain {
      * transaction's fee payer and nothing else in it. [feeUnits] of USDC go to [feeAccount], its
      * token account, in the same transaction, so the fee is paid or nothing is.
      */
-    data class Sponsor(val feePayer: String, val feeAccount: String, val feeUnits: Long)
+    data class Sponsor(
+        val feePayer: String, val feeAccount: String, val feeUnits: Long,
+        /**
+         * True for a wallet that holds enough SKR: the fee wallet pays and takes nothing back,
+         * so [feeUnits] is zero and no fee transfer is built. The server decides this from the
+         * chain, and decides it again when it signs.
+         */
+        val free: Boolean = false,
+    )
 
     const val TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
     const val TOKEN_2022_PROGRAM = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
@@ -333,6 +355,13 @@ object Chain {
                 ),
                 programId = programKey,
             )
+            if (sponsor != null && sponsor.feeUnits == 0L) {
+                // A holder's fee is waived: the fee wallet pays, and the transfer is the whole of
+                // it. Still two signers, the fee wallet's slot first.
+                return Built.Ok(reserveSignatureSlot(
+                    Transaction(blockhash, listOf(transfer), feePayer = PublicKey(sponsor.feePayer)).serialize(), slots = 2,
+                ))
+            }
             if (sponsor != null) {
                 // The fee, in the same token, to the fee wallet's own account. The fee wallet is
                 // the fee payer and appears in no instruction: that is the rule it signs under.

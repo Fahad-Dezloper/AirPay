@@ -350,11 +350,24 @@ object ServerClient {
      * Who will pay the network fee for a buyer with no SOL, or null when nobody will (the fee
      * wallet is not set up, is not funded yet, or the server cannot be reached).
      */
-    suspend fun sponsor(): Chain.Sponsor? {
+    suspend fun sponsor(): Chain.Sponsor? = freeGas()?.second
+
+    /**
+     * Whether this wallet holds enough SKR to pay no network fee, and who will pay it. The two
+     * are separate answers: the first is about the wallet, the second is null whenever the fee
+     * wallet cannot pay right now. Null altogether when the server did not answer.
+     */
+    suspend fun freeGas(): Pair<Boolean, Chain.Sponsor?>? {
         val o = ask("/v1/sponsor", JSONObject()) ?: return null
+        return o.optBoolean("free") to sponsorFrom(o)
+    }
+
+    private fun sponsorFrom(o: JSONObject): Chain.Sponsor? {
         if (!o.optBoolean("enabled")) return null
         val payer = o.optString("fee_payer").takeIf { PayRequest.isBase58Address(it) } ?: return null
         val account = o.optString("fee_account").takeIf { PayRequest.isBase58Address(it) } ?: return null
+        // Nothing at all for a wallet that holds enough SKR.
+        if (o.optBoolean("free")) return Chain.Sponsor(payer, account, 0L, free = true)
         // A fee is small by definition. One above ten cents is refused here rather than paid.
         val units = o.optLong("fee_units", 0L).takeIf { it in 1..100_000 } ?: return null
         return Chain.Sponsor(payer, account, units)

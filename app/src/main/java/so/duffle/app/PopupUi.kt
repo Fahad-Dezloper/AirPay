@@ -374,6 +374,10 @@ internal fun PopupScreen(
                 val paying = peer is TapPayload.Card && connected && (phase == Phase.Ready || phase is Phase.Working)
                 PeerHeader(peer, me, history, title = if (paying && !aboutThem) "Pay ${peer.label.ifBlank { "them" }}" else peer.label.ifBlank { "Unknown phone" },
                     verified = genesis is Genesis.Check.Held,
+                    // Two phones that met are drawn as phones. A payment made by name or by
+                    // code is between wallets, and is drawn as the wallets it is between.
+                    fromWallet = payWith.takeIf { !inPerson },
+                    toWallet = wallets.firstOrNull { it.address == peer.address }.takeIf { !inPerson },
                     onOpen = if (phase is Phase.Working) null else ({ aboutThem = !aboutThem }), open = aboutThem,
                     // §1.4: only a chain refusal puts the explorer up here, and only when there
                     // really is a signature to look up. Nothing is invented when there isn't —
@@ -1016,6 +1020,10 @@ private fun PeerHeader(
     peer: TapPayload, me: String, history: Contact?, title: String,
     verified: Boolean, onOpen: (() -> Unit)?, open: Boolean,
     onExplorer: (() -> Unit)? = null,
+    /** The wallet paying, when this is not two phones meeting. Its mark replaces this phone's. */
+    fromWallet: Linked? = null,
+    /** The wallet being paid, when it is one of this person's own. Its mark replaces theirs. */
+    toWallet: Linked? = null,
 ) {
     // Only what the chain confirmed. A claimed Genesis token used to earn the badge by itself.
     val seeker = verified
@@ -1030,10 +1038,12 @@ private fun PeerHeader(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(Modifier.size(width = 70.dp, height = 46.dp)) {
-            Avatar(me, D.Blue, Brand.mine(), Modifier.align(Alignment.CenterStart).graphicsLayer { translationX = -gap * meet.value; alpha = 1f - meet.value * .6f })
+            val left = Modifier.align(Alignment.CenterStart).graphicsLayer { translationX = -gap * meet.value; alpha = 1f - meet.value * .6f }
+            if (fromWallet != null) WalletAvatar(fromWallet, left) else Avatar(me, D.Blue, Brand.mine(), left)
             // The Seeker mark, like the badge, only once the chain has confirmed it.
-            Avatar(peer.label.take(1).uppercase().ifBlank { "?" }, D.Black, Brand.of(peer, verified),
-                Modifier.align(Alignment.CenterEnd).graphicsLayer { translationX = gap * meet.value; alpha = 1f - meet.value * .6f })
+            val right = Modifier.align(Alignment.CenterEnd).graphicsLayer { translationX = gap * meet.value; alpha = 1f - meet.value * .6f }
+            if (toWallet != null) WalletAvatar(toWallet, right)
+            else Avatar(peer.label.take(1).uppercase().ifBlank { "?" }, D.Black, Brand.of(peer, verified), right)
         }
         Spacer(Modifier.width(Space.inline))
         Column(Modifier.weight(1f)) {
@@ -1067,6 +1077,21 @@ private fun PeerHeader(
             }
         }
     }
+}
+
+/** Whether a payment in [t] is one the fee wallet covers: SOL, USDC and SKR. See `Payments.pay`. */
+private fun feeCovered(t: Tokens.Holding) = t.isSol || t.mint == Shop.USDC_MAINNET || t.mint == Swap.SKR_MINT
+
+/** A wallet in the header: its own mark on its own colour, the size and ring of an [Avatar]. */
+@Composable
+private fun WalletAvatar(w: Linked, modifier: Modifier) {
+    // The Seeker wallet is drawn with the Seeker mark this header has always used, not with the
+    // wallet app's icon: that mark was drawn for this spot.
+    if (w.isSeeker) return Avatar("S", D.Black, Brand.SEEKER, modifier)
+    Box(
+        modifier.size(46.dp).background(D.White, CircleShape).padding(3.dp).clip(CircleShape).background(w.colour),
+        contentAlignment = Alignment.Center,
+    ) { WalletMark(w, 24.dp) }
 }
 
 @Composable
@@ -1334,6 +1359,11 @@ private fun Entry(
         onAmount(typed(amount, key, chosen.decimals))
     }
     Spacer(Modifier.height(Space.row))
+    // Said before the amount is even reviewed: this payment costs nothing to send.
+    if (FreeGas.shown && feeCovered(chosen)) {
+        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { FreeFeeMark("No network fee. It's on us") }
+        Spacer(Modifier.height(Space.inline))
+    }
     PrimaryButton(
         working ?: "Pay",
         onReview, Modifier.fillMaxWidth().shared("primary", bounds = true), enabled = valid && enough, loading = working != null,
@@ -1364,7 +1394,9 @@ private fun ConfirmBody(
     onBack: () -> Unit,
 ) {
     val asked = PayRequest.baseUnits(amount, token.decimals) ?: 0L
-    val fee = Chain.NETWORK_FEE_LAMPORTS // one signature
+    // One signature, or nothing at all when the fee is paid for this wallet.
+    val covered = FreeGas.paid && feeCovered(token)
+    val fee = if (covered) 0L else Chain.NETWORK_FEE_LAMPORTS
     // Sending all the SOL there is leaves nothing to pay the fee with. That is not refused: the
     // fee comes out of the amount and the rest is sent. Only for an amount somebody typed; a
     // request names its own figure, and paying less than it asks would not settle it.
@@ -1384,7 +1416,11 @@ private fun ConfirmBody(
         }
     }
     val setupLamports = if (needsAccount == true) 2_039_280L else 0L
-    val solCost = fee + setupLamports + if (token.isSol) units else 0L
+    // Opening somebody's account costs rent, which the fee wallet does not pay: that payment is
+    // made the ordinary way, fee and all.
+    val feeNow = if (needsAccount == true) Chain.NETWORK_FEE_LAMPORTS else fee
+    val free = (covered || (FreeGas.shown && feeCovered(token))) && needsAccount != true
+    val solCost = feeNow + setupLamports + if (token.isSol) units else 0L
     val left = if (token.isSol) token.units - solCost else token.units - units
     val enough = known && left >= 0 && !stuck
     val brand = Brand.of(peer, LocalVerified.current)
@@ -1423,7 +1459,9 @@ private fun ConfirmBody(
         }
         DetailRow("Address") { Value("${peer.address.take(6)}…${peer.address.takeLast(6)}") }
         DetailRow("Network") { Value("Solana mainnet") }
-        DetailRow("Network fee") { Value("~${Chain.fmtUnits(fee, 9)} SOL") }
+        DetailRow("Network fee") {
+            if (free) FreeFeeMark("Free. It's on us") else Value("~${Chain.fmtUnits(feeNow, 9)} SOL")
+        }
         if (fromAmount) {
             DetailRow("They receive") { Value("${Chain.fmtUnits(units, 9)} SOL", strong = true) }
         }
@@ -1433,7 +1471,8 @@ private fun ConfirmBody(
         DetailRow("Total") {
             Value(
                 if (token.isSol) "${Chain.fmtUnits(solCost, 9)} SOL"
-                else "$amount ${token.symbol} + ${Chain.fmtUnits(fee + setupLamports, 9)} SOL",
+                else if (feeNow + setupLamports == 0L) "$amount ${token.symbol}"
+                else "$amount ${token.symbol} + ${Chain.fmtUnits(feeNow + setupLamports, 9)} SOL",
                 strong = true,
             )
         }

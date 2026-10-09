@@ -129,7 +129,13 @@ data class PayRequest(
      * base58, so an unvalidated payload from a hostile or buggy peer would crash the payer's
      * app at the worst possible moment — mid-tap, in front of someone.
      */
-    fun validate(): String? = when {
+    /**
+     * @param nameResolved true only for a request this phone built itself, for a name it looked
+     *   up on the chain and found at [recipient]. That is the one way a name with a dot is
+     *   proven, so it is the one request allowed to carry one. Anything that arrived from
+     *   somewhere else is checked with the default, and a domain-shaped name on it is refused.
+     */
+    fun validate(nameResolved: Boolean = false): String? = when {
         !isBase58Address(recipient) -> "The request has an invalid destination address."
         !isBase58Address(reference) -> "The request has an invalid reference."
         genesis != null && !isBase58Address(genesis) -> "The request has an invalid Genesis token."
@@ -142,7 +148,7 @@ data class PayRequest(
         // Readable and in range but not expressible in lamports, e.g. "0.0000000001" or "0".
         amount.isNotBlank() && units() == null -> "That amount can't be paid in $symbol."
         label.length > 64 -> "The request has an oversized label."
-        Username.looksLikeDomain(label) -> "The request has a name shaped like a domain."
+        !nameResolved && Username.looksLikeDomain(label) -> "The request has a name shaped like a domain."
         owner != null && !isBase58Address(owner) -> "The request has an invalid owner."
         (owner == null) != (linkSignature == null) -> "The request carries half a wallet link."
         else -> null

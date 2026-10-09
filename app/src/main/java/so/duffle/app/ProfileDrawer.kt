@@ -339,6 +339,20 @@ internal fun ProfileDrawer(
                 Spacer(Modifier.height(24.dp))
                 WalletBadge(address, walletLabel, wallet)
             }
+            if (FreeGas.shown) {
+                Spacer(Modifier.height(Space.inline))
+                Row(
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(D.Highlight).padding(14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    HiIcon(Hi.Gift, D.Black, 22.dp, contentDescription = null)
+                    Spacer(Modifier.width(Space.inline))
+                    Column(Modifier.weight(1f)) {
+                        Text("Your network fees are on us", color = D.Black, style = Type.heading)
+                        Text("Because this wallet holds ${"%,d".format(FREE_GAS_SKR)} SKR or more", color = D.Black, style = Type.caption)
+                    }
+                }
+            }
 
             // -------------------------------------------------------------- doors
             // No heading on the first group: these three are not a category, they are the three
