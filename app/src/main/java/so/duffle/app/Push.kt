@@ -144,6 +144,9 @@ object Push {
     /** Opens the notifications page, where the line this notification is about is listed. */
     private fun page(context: Context) = home(context).putExtra(EXTRA_OPEN, OPEN_ALERTS)
 
+    /** Opens the rewards page, where a card that was just earned is waiting to be scratched. */
+    private fun cards(context: Context) = home(context).putExtra(EXTRA_OPEN, OPEN_REWARDS)
+
     fun showPaid(context: Context, amount: String, reference: String, symbol: String = "SOL") {
         val title = if (amount.isNotBlank()) "Received $amount $symbol" else "Payment received"
         // Written down for the page as well. On the phone that made the request the page already
@@ -270,10 +273,13 @@ object Push {
     fun showProgress(context: Context, p: Progress) {
         val (title, text) = p.words() ?: return
         if (AlertLog.progress(context, p) == AlertLog.Wrote.REPEAT) return
+        // A card to scratch is the one piece of reward news that asks for something now, and it
+        // is money: it gets the banner, and it opens on the cards and not on the list of news.
+        val card = p.kind == "reward" && (p.state == "earned" || p.state == "settled")
         notify(
-            context, if (p.quiet) Level.QUIET else Level.ACTIVITY, tapId("progress:${p.slot}"),
+            context, if (p.quiet) Level.QUIET else if (card) Level.MONEY else Level.ACTIVITY, tapId("progress:${p.slot}"),
             title = title, text = text,
-            open = page(context),
+            open = if (card) cards(context) else page(context),
             publicText = if (p.kind == "offer" && p.state == "new") "A new offer" else "News about your rewards",
             category = if (p.kind == "offer" && p.state == "new") NotificationCompat.CATEGORY_PROMO else null,
         )
@@ -285,14 +291,43 @@ object Push {
      * The line on the notifications page comes from [Orders], which the app brings up to date
      * when it is opened. This only rings: delivery usually lands after the phone was put away.
      */
-    fun showOrder(context: Context, invoice: String, name: String, delivered: Boolean) {
-        val what = name.ifBlank { "Your order" }
+    /**
+     * The payment for something bought is confirmed. Said at once, because the delivery that
+     * [showOrder] reports trails it, and until then nothing outside the app says the money went.
+     *
+     * The same id as [showOrder], so the news of the delivery takes this one's place in the
+     * shade and one purchase is never two lines saying half a thing each.
+     */
+    fun showBought(context: Context, invoice: String, name: String, paid: String, number: String?) {
+        val what = name.removeSuffix(" India").removeSuffix(" Bundles").trim().ifBlank { "your order" }
+        val recharge = !number.isNullOrBlank()
         notify(
-            context, Level.ACTIVITY, tapId("order$invoice"),
-            title = if (delivered) "$what delivered" else "$what did not go through",
-            text = if (delivered) "Tap to see it in AirPay." else "Tap to see what happened.",
+            context, Level.MONEY, tapId("order$invoice"),
+            title = if (recharge) "Recharge paid" else "You bought $what",
+            text = if (recharge) "$paid paid. Your $what recharge for $number is on its way."
+                else "$paid paid. It is on its way to you.",
             open = page(context),
             publicText = "News about your order",
+        )
+    }
+
+    fun showOrder(context: Context, invoice: String, order: Orders.Order?, delivered: Boolean) {
+        val name = order?.name.orEmpty().removeSuffix(" India").removeSuffix(" Bundles").trim()
+        val what = name.ifBlank { "Your order" }
+        // A recharge says what it is and where it went: "Recharge done", then the network and
+        // the number. Anything else is named by what was bought.
+        val number = order?.recipient?.takeIf { it.isNotBlank() }
+        val recharge = delivered && number != null
+        notify(
+            // A banner: this is the end of something that was paid for.
+            context, Level.MONEY, tapId("order$invoice"),
+            title = if (recharge) "Recharge done" else if (delivered) "$what delivered" else "$what did not go through",
+            text = if (recharge) "${name.ifBlank { "Your" }} recharge delivered to $number"
+                else if (delivered) "Tap to see it in AirPay." else "Tap to see what happened.",
+            open = page(context),
+            publicText = "News about your order",
+            // It replaces "paid" in the shade and is news of its own, so it rings again.
+            alertAgain = true,
         )
     }
 
@@ -322,7 +357,7 @@ object Push {
             context, id, open, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
         val builder = NotificationCompat.Builder(context, level.channel)
-            .setSmallIcon(android.R.drawable.stat_notify_more)
+            .setSmallIcon(R.drawable.ic_stat_airpay)
             .setContentTitle(title)
             .setContentText(text)
             // The whole sentence when pulled down: a reward's second line does not fit in one.
@@ -337,7 +372,7 @@ object Push {
             builder.setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
                 .setPublicVersion(
                     NotificationCompat.Builder(context, level.channel)
-                        .setSmallIcon(android.R.drawable.stat_notify_more)
+                        .setSmallIcon(R.drawable.ic_stat_airpay)
                         .setContentTitle("AirPay")
                         .setContentText(publicText)
                         .build()
@@ -349,6 +384,8 @@ object Push {
     /** On the intent a notification opens the app with: where to go. Read by MainActivity. */
     const val EXTRA_OPEN = "so.duffle.app.open"
     const val OPEN_ALERTS = "alerts"
+    /** The rewards page: where a card that was just earned is waiting. */
+    const val OPEN_REWARDS = "rewards"
 
 }
 
@@ -443,8 +480,7 @@ class TapMessagingService : FirebaseMessagingService() {
                 val delivered = status in setOf("all_delivered", "complete", "delivered")
                 val failed = status in setOf("denied", "payment_error", "failed", "expired")
                 if (!delivered && !failed) return
-                val name = Orders(this).all().firstOrNull { it.invoiceId == invoice }?.name.orEmpty()
-                Push.showOrder(this, invoice, name, delivered)
+                Push.showOrder(this, invoice, Orders(this).all().firstOrNull { it.invoiceId == invoice }, delivered)
             }
             // An introduction relayed because the phones parted before HELLO could cross.
             "tap" -> {

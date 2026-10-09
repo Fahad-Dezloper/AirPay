@@ -237,7 +237,7 @@ internal fun RewardsTab(
         // Cards still to scratch come first, so the ones that want attention lead the grid.
         // Then the opened ones, then any that ran out, which want nothing from anybody.
         val rows = remember(s.rows, now) {
-            val all = MOCK_CARDS + s.rows
+            val all = s.rows
             all.forEach { if (!it.revealed) seenCovered += it.id }
             all.sortedBy {
                 when {
@@ -411,8 +411,7 @@ private val HERO_SQUARES = listOf(1 to 0, 4 to 1, 0 to 2, 6 to 0, 3 to 3, 5 to 4
 @Composable
 private fun TotalCard(s: Rewards.Summary, isSeeker: Boolean, now: Long) {
     val usd = s.totalUsd
-    // Real cards still to scratch. Not the practice cards, which are not in `s.rows`, and not
-    // a card that ran out, which can no longer add anything to this figure.
+    // Cards still to scratch. Not a card that ran out, which can no longer add anything to this figure.
     val toScratch = s.rows.count { !it.revealed && !it.expired(now) }
     // Zero is judged on whatever is actually being shown, so the lines below never describe a
     // figure the card is not displaying.
@@ -705,26 +704,6 @@ private fun sameDay(a: Long, b: Long): Boolean {
 private val EXPIRY_DAY = java.text.SimpleDateFormat("d MMM", java.util.Locale.getDefault())
 
 /**
- * Practice cards, for trying the scratch itself. **Take these out before release.**
- *
- * They are not rewards. Their ids are below zero, which [Rewards.reveal] refuses to send to the
- * server, so scratching one pays nothing and records nothing; and because nothing is recorded,
- * each comes back covered the next time the page is read. That is the point: the scratch can be
- * shown to somebody and tried again and again without a real card being used up.
- */
-// Built on every read, not once: as a stored list their expiry was fixed when the app started,
-// so an app left open for six hours showed the second one as expired and it could not be tried.
-private val MOCK_CARDS: List<Rewards.Row> get() = listOf(
-    // One with a week left and one that runs out today, so both states of the band can be seen.
-    Rewards.Row(id = -1, kind = "per_payment", skr = 40, counterparty = "", at = 0L, unlockAt = 0L,
-        state = "paid", reason = null, revealed = false,
-        expiresAt = System.currentTimeMillis() + 7 * 86_400_000L),
-    Rewards.Row(id = -2, kind = "first_payment", skr = 250, counterparty = "", at = 0L, unlockAt = 0L,
-        state = "paid", reason = null, revealed = false,
-        expiresAt = System.currentTimeMillis() + 6 * 3_600_000L),
-)
-
-/**
  * The card itself: the opened face, with the cover artwork over it by [cover] (1 = covered,
  * 0 = open). Used by the grid and by the stage, so a card looks the same in both places and the
  * lift from one to the other has nothing to jump between.
@@ -789,14 +768,15 @@ internal fun OpenedFace(row: Rewards.Row, special: Boolean) {
             if (gift?.logoId != null) {
                 BoxWithConstraints(Modifier.matchParentSize()) {
                     AsyncImage(
-                        model = "https://www.bitrefill.com/content/cn/c_pad,h_108,w_108/v1/${gift.logoId}.png",
+                        model = "https://www.bitrefill.com/content/cn/c_pad,h_256,w_256/v1/${gift.logoId}.png",
                         contentDescription = null,
                         contentScale = ContentScale.Fit,
                         modifier = Modifier
-                            .offset(x = maxWidth * .5f - LOGO / 2, y = maxHeight * .41f - LOGO / 2)
+                            .offset(x = maxWidth * .52f - LOGO / 2, y = maxHeight * .41f - LOGO / 2)
                             .size(LOGO)
                             // The card's own tilt, so the logo lies ON it rather than over it.
-                            .rotate(16.5f),
+                            .rotate(16.5f)
+                            .brandInk(gift.brand),
                     )
                 }
             }
@@ -820,7 +800,7 @@ internal fun OpenedFace(row: Rewards.Row, special: Boolean) {
 }
 
 /** The brand logo on a gift card's blank: 28 × 28, fitted inside. */
-private val LOGO = 28.dp
+private val LOGO = 46.dp
 
 /**
  * Gold or blue: which cover a reward wears.
@@ -845,7 +825,28 @@ internal val Rewards.Row.isSpecial: Boolean
  * A value that is not whole keeps its fraction, exactly as the sandbox does: ₹12.46 has paise
  * and dropping them would be a different number.
  */
-private fun fiatWhole(value: Double, currency: String): String {
+/**
+ * A brand's own colours, for a logo the catalogue only has in white.
+ *
+ * The blank card in the voucher pictures is white, and a white logo on it cannot be seen. Where
+ * the brand's colours are known, the logo's own shape is filled with them; any other logo is
+ * drawn as it came.
+ */
+internal val BRAND_INK: Map<String, Brush> = mapOf(
+    // Tinder's flame gradient, pink to orange.
+    "Tinder" to Brush.linearGradient(listOf(Color(0xFFFD267A), Color(0xFFFF6036))),
+)
+
+internal fun Modifier.brandInk(brand: String): Modifier {
+    val ink = BRAND_INK[brand] ?: return this
+    return graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+        .drawWithContent {
+            drawContent()
+            drawRect(ink, blendMode = BlendMode.SrcIn)
+        }
+}
+
+internal fun fiatWhole(value: Double, currency: String): String {
     val v = BigDecimal.valueOf(value)
     if (v.stripTrailingZeros().scale() > 0) return Money.fiat(v, currency)
     val p = Money.fiatParts(v, currency)

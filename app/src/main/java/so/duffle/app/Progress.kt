@@ -48,7 +48,8 @@ data class Progress(
 
     /** (title, text) for a notification or a log line. Null for an event with nothing to say. */
     fun words(): Pair<String, String>? = when (kind to state) {
-        "reward" to "earned" -> "You earned $skr SKR" to "Scratch your card and it goes straight to your wallet"
+        // The card, not the amount: what is under it is for the scratch to show.
+        "reward" to "earned" -> "You earned a scratch card" to "Scratch it to see what you won"
         // Settled means the week in which it could be taken back is over. Nothing has been sent:
         // a card is paid when it is scratched. This used to say "is on its way", which was the
         // payout's sentence and was not true here.

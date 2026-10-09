@@ -79,7 +79,7 @@ object Alerts {
          */
         val category: String? = null,
         /**
-         * An offer's app icon.
+         * An offer's app icon, or the logo of the brand a shop order was for.
          *
          * `/v1/offers` sends no such key today (see `Rewards.Offer.icon`), so this is almost
          * always null and the row falls back to the app's initial on its own colour. Wired
@@ -179,13 +179,16 @@ object Alerts {
         }
 
         for (o in orders) {
+            // The brand as people say it: "PhonePe", not the catalogue's "PhonePe India". The
+            // same trim the system notification makes.
+            val what = o.name.removeSuffix(" India").removeSuffix(" Bundles").trim().ifBlank { o.name }
             when {
-                o.waiting -> out += Alert(Kind.ORDER, "${o.name} is on its way",
-                    "${o.value} · paid ${o.paid}", o.at, category = o.category)
-                o.delivered -> out += Alert(Kind.ORDER, "${o.name} delivered",
-                    "${o.value} · paid ${o.paid}", o.at, category = o.category, done = true)
-                else -> out += Alert(Kind.ORDER, "${o.name} didn't go through",
-                    "Paid ${o.paid}, ${o.status}", o.at, category = o.category)
+                o.waiting -> out += Alert(Kind.ORDER, "$what is on its way",
+                    "${o.value} · paid ${o.paid}", o.at, category = o.category, iconUrl = o.logoUrl)
+                o.delivered -> out += Alert(Kind.ORDER, "$what delivered",
+                    "${o.value} · paid ${o.paid}", o.at, category = o.category, iconUrl = o.logoUrl, done = true)
+                else -> out += Alert(Kind.ORDER, "$what didn't go through",
+                    "Paid ${o.paid}, ${o.status}", o.at, category = o.category, iconUrl = o.logoUrl)
             }
         }
 

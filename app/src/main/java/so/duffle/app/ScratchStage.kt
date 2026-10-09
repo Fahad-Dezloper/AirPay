@@ -1,5 +1,10 @@
 package so.duffle.app
 
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.background
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.AnimationVector1D
@@ -111,6 +116,12 @@ internal fun ScratchStage(
     onClose: () -> Unit,
     onRevealed: (Rewards.Row) -> Unit,
     onReveal: ((Rewards.Row, (String?) -> Unit) -> Unit)? = null,
+    /**
+     * The sheet that says what an opened voucher card is, and gives its code. Drawn by the stage
+     * itself, under the card: the card rises to make room and the two are read together.
+     * It is handed the row and what puts the sheet away.
+     */
+    details: (@Composable (Rewards.Row, () -> Unit) -> Unit)? = null,
 ) {
     val row = target.row
     val ctx = LocalContext.current
@@ -119,6 +130,11 @@ internal fun ScratchStage(
     val startedOpen = remember(row.id) { row.revealed }
     var revealed by remember(row.id) { mutableStateOf(row.revealed) }
     var closing by remember { mutableStateOf(false) }
+    // The voucher's sheet is up, and the card has moved up to stand above it.
+    var viewing by remember(row.id) { mutableStateOf(false) }
+    val lift by animateFloatAsState(
+        if (viewing) 1f else 0f, spring(dampingRatio = 0.86f, stiffness = 260f), label = "lift",
+    )
     // Scratched open, and the server has not answered yet. Nothing is celebrated while this is so.
     var pending by remember(row.id) { mutableStateOf(false) }
     // Why the server did not take the reveal, when it did not. Null is "no problem".
@@ -145,7 +161,8 @@ internal fun ScratchStage(
     // Never while the server is still being asked, or the answer would arrive to nobody; and a
     // refusal stays up longer, because it is a sentence to read and not a number to glance at.
     LaunchedEffect(revealed, pending, problem) {
-        if (revealed && !pending) {
+        // A voucher stays until it is put away: it has a button under it to read.
+        if (revealed && !pending && (row.gift == null || details == null || problem != null)) {
             delay(when {
                 problem != null -> 6_000L
                 startedOpen -> 2_400L
@@ -196,14 +213,21 @@ internal fun ScratchStage(
                 .clickable(remember { MutableInteractionSource() }, indication = null) { close() },
         )
 
+        // Under the card and over the dim, so the card stays as bright as it was and a touch
+        // beside the sheet puts the sheet away before it can close the stage.
+        if (viewing && details != null) details(row) { viewing = false }
+
+        // Where the card stands while the sheet is up: near the top, clear of the sheet, and a
+        // little smaller so both fit on a short screen.
+        val raisedTop = with(density) { 60.dp.toPx() }
         Box(
             Modifier.size(with(density) { side.toDp() }).graphicsLayer {
                 val p = t.value
-                val s = lerp(1f / kf, 1f, p)
+                val s = lerp(1f / kf, 1f, p) * lerp(1f, RAISED_SCALE, lift)
                 scaleX = s; scaleY = s
                 transformOrigin = TransformOrigin(0f, 0f)
-                translationX = lerp(target.from.left, centreLeft, p)
-                translationY = lerp(target.from.top, centreTop, p)
+                translationX = lerp(target.from.left, lerp(centreLeft, (screenW - side * RAISED_SCALE) / 2f, lift), p)
+                translationY = lerp(target.from.top, lerp(centreTop, raisedTop, lift), p)
             },
         ) {
             CompositionLocalProvider(LocalDensity provides Density(density.density * kf, density.fontScale)) {
@@ -293,15 +317,35 @@ internal fun ScratchStage(
                 revealed -> "Tap anywhere to close"
                 else -> "Scratch to reveal"
             },
-            color = Color.White.copy(alpha = 0.9f * t.value.coerceIn(0f, 1f)),
+            color = Color.White.copy(alpha = 0.9f * t.value.coerceIn(0f, 1f) * (1f - lift)),
             style = Type.body, textAlign = TextAlign.Center,
             modifier = Modifier.align(Alignment.TopCenter)
                 .offset { IntOffset(0, (centreTop + side + with(density) { 28.dp.toPx() }).toInt()) }
                 // The card's own side margin, so a sentence wraps under the card, not edge to edge.
                 .padding(horizontal = 32.dp),
         )
+        // An opened voucher has more to say than an amount of SKR has: an eye under the card
+        // opens it. Its own touch, so pressing it looks at the voucher and does not close the stage.
+        if (details != null && row.gift != null && revealed && !pending && problem == null && !viewing) {
+            Row(
+                Modifier.align(Alignment.TopCenter)
+                    .offset { IntOffset(0, (centreTop + side + with(density) { 76.dp.toPx() }).toInt()) }
+                    .graphicsLayer { alpha = t.value.coerceIn(0f, 1f) * (1f - lift) }
+                    .clip(CircleShape).background(Color.White)
+                    .clickable { viewing = true }
+                    .padding(start = 16.dp, end = 20.dp, top = 12.dp, bottom = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                HiIcon(Hi.Eye, D.Black, 22.dp, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text("View voucher", color = D.Black, style = Type.heading)
+            }
+        }
     }
 }
+
+/** How big the card is while its sheet is up, against its size in the middle of the screen. */
+private const val RAISED_SCALE = 0.8f
 
 // Fixed on purpose: foil dust and confetti are colours of a thing in the world, not of the theme.
 private val DUST = listOf(Color.White, Color(0xFFCFE3FF), Color(0xFF9FC4FF))

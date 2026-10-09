@@ -513,6 +513,8 @@ object Rewards {
         "streak" -> "Weekly streak"
         "offer" -> "Offer completed"
         "signup" -> "Welcome bonus"
+        "recharge" -> "Phone recharge"
+        "voucher" -> "Voucher"
         else -> kind.replace('_', ' ').replaceFirstChar { it.uppercase() }
     }
 

@@ -310,11 +310,24 @@ private fun AlertIcon(a: Alerts.Alert) {
     when {
         // A shelf always resolves: `History.spendFor` falls back to OTHER, so an order bought
         // before categories were recorded draws the "More" mark rather than nothing.
-        a.kind == Alerts.Kind.ORDER -> CategoryMark(
-            CatMark.forCategory(spendLabel(History.spendFor(a.category.orEmpty())))
-                ?: CatMark.More,
-            ALERT_ICON, CatMark.ROW_OPTICAL,
-        )
+        // The brand that was bought, when the order kept its logo. An order from before logos
+        // were kept, or one whose logo will not load, draws its shelf's mark as it always has.
+        a.kind == Alerts.Kind.ORDER -> {
+            val logo = a.iconUrl?.let { rememberLogo(it) }
+            if (logo != null) {
+                Image(
+                    logo, contentDescription = null,
+                    modifier = Modifier.size(ALERT_ICON).clip(CircleShape),
+                    contentScale = ContentScale.Crop,
+                )
+            } else {
+                CategoryMark(
+                    CatMark.forCategory(spendLabel(History.spendFor(a.category.orEmpty())))
+                        ?: CatMark.More,
+                    ALERT_ICON, CatMark.ROW_OPTICAL,
+                )
+            }
+        }
         // The app's own icon, round and cropped to fill. `/v1/offers` sends none today, so in
         // practice this falls through to the app's initial on its own colour — the same
         // fallback `OfferFace` documents, and for the same reason: a name-to-asset map would

@@ -194,7 +194,8 @@ object History {
         // its payout below, not twice. Always SETTLED: a reward is not a purchase waiting on a
         // code, so it never carries the in-progress clock or the "getting your code" line that
         // belong to a shop order.
-        for (r in rewards.filter { it.revealed && it.state != "reversed" && it.state != "paid" }) {
+        // A voucher card is not SKR and has no amount to list here; it is on the rewards page.
+        for (r in rewards.filter { it.revealed && it.state != "reversed" && it.state != "paid" && it.gift == null }) {
             out += Txn(
                 kind = Kind.REWARD,
                 title = rewardTitle(r.kind),
@@ -226,6 +227,7 @@ object History {
         "referral" -> "Referral reward"
         "first_payment" -> "First payment reward"
         "signup" -> "Welcome bonus"
+        "recharge" -> "Recharge reward"
         "offer" -> "Offer reward"
         else -> "Tap reward"
     }
