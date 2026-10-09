@@ -213,7 +213,7 @@ internal fun RegistryMark(name: String, size: androidx.compose.ui.unit.Dp = 40.d
             Modifier.size(size).clip(CircleShape), contentScale = androidx.compose.ui.layout.ContentScale.Crop,
         )
         ".air" -> Box(Modifier.size(size).clip(CircleShape).background(D.Blue), contentAlignment = Alignment.Center) {
-            MarkCanvas(Mark.Rings, size * 0.6f, notch = D.Blue, tint = D.White)
+            BrandMark(size * 0.62f, white = true)
         }
         else -> Box(Modifier.size(size).clip(CircleShape).background(D.Blue.copy(alpha = .14f)), contentAlignment = Alignment.Center) {
             HiIcon(Hi.Wallet, D.BlueInk, size * 0.55f)

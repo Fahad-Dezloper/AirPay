@@ -94,6 +94,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.geometry.Size
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /**
  * The first screen of a fresh install, and the one a log out returns to.
@@ -230,6 +231,8 @@ internal fun Landing(busy: Boolean, startAt: Int = 0, onConnect: () -> Unit) {
 
         // The wordmark as Home draws it. It stays through every picture, Home's included: that
         // picture leaves out Home's own header, so the name is never on the page twice.
+        // The name alone up here. The mark is not beside it: on this page the mark is the
+        // first thing in the middle of the picture, and it is not shown twice.
         Text(
             "AirPay", color = D.Black, fontSize = 30.sp, fontWeight = FontWeight.ExtraBold,
             fontFamily = Display, letterSpacing = (-0.5).sp,
@@ -295,7 +298,7 @@ internal fun Landing(busy: Boolean, startAt: Int = 0, onConnect: () -> Unit) {
 private class Scene(val title: String, val line: String, val holdMs: Long)
 
 private val SCENES = listOf(
-    Scene("Your daily payments app", "Pay people and bills, earn SKR, from\nyour wallet.", 6_600L),
+    Scene("Your daily payments app", "Pay people and bills, earn SKR, from\nyour wallet.", 7_700L),
     // Long enough for the wheel to go once round.
     Scene("Spend it on real things", "Paid for in USDC or SOL, straight from your wallet.", 8_600L),
     Scene("Earn SKR on payments", "Scratch cards, offers and invites on your Seeker.", 6_400L),
@@ -321,6 +324,8 @@ private val EMBER = Color(0xFFFF6A2B)
 private val LEAF = Color(0xFF14B866)
 private val SAND = Color(0xFFEFE7DA)
 private val ROSE = Color(0xFFFF4F7B)
+private val VIOLET = Color(0xFF7A5CFF)
+private val AMBER = Color(0xFFE08A00)
 
 /** How high the glow reaches in the middle, above the navigation bar. */
 private val GLOW_RISE = 300.dp
@@ -419,8 +424,8 @@ private val RINGS = listOf(
 )
 
 /**
- * What the app is for, as one mark in the middle that keeps becoming the next: pay somebody, pay
- * a bill, buy something, earn SKR. Its colour, its corners and its name change with it. Round it,
+ * What the app is for, as one mark in the middle that keeps becoming the next: first the app's
+ * own mark, then pay somebody, pay a bill, buy something, earn SKR. Its colour, its corners and its name change with it. Round it,
  * on faint rings, the same four small, among the things that go with money changing hands kindly:
  * stars, a coin, arrows on their way, a heart, a shield, a padlock, a wallet, a present. No rings and no loose dots: every piece
  * is something. They come out from the middle when the
@@ -443,8 +448,12 @@ private fun Four(shown: Float, running: Boolean, modifier: Modifier) {
             delay(1_250)
             turns++
             // Up and back, both animated: snapped up, it was a jump in size on every change.
-            bump.animateTo(1f, tween(140, easing = FastOutSlowInEasing))
-            bump.animateTo(0f, spring(dampingRatio = 0.5f, stiffness = 240f))
+            // In its own job, so the bounce settling does not hold up the next change: waited
+            // for, it stretched every step from 1.25 seconds to nearly two.
+            launch {
+                bump.animateTo(1f, tween(140, easing = FastOutSlowInEasing))
+                bump.animateTo(0f, spring(dampingRatio = 0.5f, stiffness = 240f))
+            }
         }
     }
     val use = USES[which]
@@ -474,8 +483,10 @@ private fun Four(shown: Float, running: Boolean, modifier: Modifier) {
         }
         // The four, small, where the eye finds them on the middle ring.
         for ((i, small) in USES.withIndex()) {
+            // Not the app's own mark: that is the middle's alone.
+            if (i == 0) continue
             val a = 2 * Math.PI * (drift * 0.5 + i * 0.25)
-            val p = SMALL_AT[i]
+            val p = SMALL_AT[i - 1]
             Box(
                 Modifier.offset(x = (p.first * out).dp * u + (kotlin.math.cos(a).toFloat() * 3f).dp, y = (p.second * out).dp * u + (kotlin.math.sin(a).toFloat() * 4f).dp)
                     .size(68.dp * u).graphicsLayer { val z = 0.4f + 0.6f * out; scaleX = z; scaleY = z; alpha = out }
@@ -533,23 +544,33 @@ private fun Four(shown: Float, running: Boolean, modifier: Modifier) {
  * bag. The app's own line marks for these were read as marks only by somebody who already used
  * the app, which nobody on this page does yet.
  */
-private class Use(val label: String, val ground: Color, val corner: Float, val picture: Int? = null)
+private class Use(val label: String, val ground: Color, val corner: Float, val picture: Int? = null, val art: Int = 0)
 
 private val USES = listOf(
-    Use("Pay anyone", D.Blue, 0.5f),
-    Use("Pay bills", LEAF, 0.3f),
-    Use("Shop", EMBER, 0.5f),
+    // The app itself comes first, as its own icon: the mark in its on-blue tone, on the blue.
+    // Then the four things it is for. It is in the middle only, never among the small ones.
+    Use("AirPay", D.Blue, 0.3f, R.drawable.brand_mark_on_blue),
+    // Pay bills comes straight after the app's mark, not Pay anyone: those two are both white
+    // on the same blue, and one after the other they read as the same thing twice. In this
+    // order no two neighbours share a colour, round the loop included.
+    Use("Pay bills", LEAF, 0.3f, art = ART_BILL),
+    Use("Pay anyone", D.Blue, 0.5f, art = ART_PLANE),
+    Use("Shop", EMBER, 0.5f, art = ART_BAG),
     Use("Earn SKR", D.Black, 0.36f, R.drawable.skr_token),
 )
+
+private const val ART_PLANE = 1
+private const val ART_BILL = 2
+private const val ART_BAG = 3
 
 @Composable
 private fun UseArt(i: Int, modifier: Modifier) {
     val use = USES[i]
     if (use.picture != null) Image(painterResource(use.picture), null, modifier)
-    else Canvas(modifier) { useArt(i, use.ground) }
+    else Canvas(modifier) { useArt(use.art, use.ground) }
 }
 
-/** The drawn three, filling the canvas they are given. [ground] is the disc's colour, for cut-outs. */
+/** The drawn three, by their `ART_` number, filling the canvas they are given. [ground] is the disc's colour, for cut-outs. */
 private fun DrawScope.useArt(i: Int, ground: Color) {
     val r = size.minDimension / 2f
     fun at(x: Float, y: Float) = Offset(center.x + x * r, center.y + y * r)
@@ -557,7 +578,7 @@ private fun DrawScope.useArt(i: Int, ground: Color) {
     when (i) {
         // A paper plane, nose up and to the right: two wings folded along one crease, the under
         // one in shade.
-        0 -> {
+        1 -> {
             val nose = at(0.96f, -0.9f); val tail = at(-0.98f, -0.12f); val foot = at(0.1f, 0.98f); val fold = at(-0.16f, 0.22f)
             val under = Path().apply { moveTo(nose.x, nose.y); lineTo(foot.x, foot.y); lineTo(fold.x, fold.y); close() }
             val over = Path().apply { moveTo(nose.x, nose.y); lineTo(tail.x, tail.y); lineTo(fold.x, fold.y); close() }
@@ -565,7 +586,7 @@ private fun DrawScope.useArt(i: Int, ground: Color) {
             drawPath(over, Color.White); drawPath(over, Color.White, style = round)
         }
         // A bill: paper with a torn foot and three lines of print, and a coin laid on its corner.
-        1 -> {
+        2 -> {
             val paper = Path().apply {
                 moveTo(center.x - 0.86f * r, center.y - 0.74f * r)
                 quadraticTo(center.x - 0.86f * r, center.y - 0.92f * r, center.x - 0.68f * r, center.y - 0.92f * r)
@@ -721,15 +742,21 @@ private fun DrawScope.bit(kind: ScrapKind, c: Offset, d: Float, colour: Color, a
 }
 
 /** One thing the shop sells: its mark, its name, and the colour its mark is drawn in. */
-private class Thing(val mark: Int, val word: String, val colour: Color)
+/**
+ * [grow] evens the marks out by eye. Each is drawn on the same 24 grid but they do not fill it
+ * equally: the gift reaches the edges and the handset is a narrow upright, so at one size the gift
+ * looked right and the rest looked small.
+ */
+private class Thing(val mark: Int, val word: String, val colour: Color, val grow: Float = 1f)
 
 private val THINGS = listOf(
-    Thing(R.drawable.ic_recharge, "Recharge", D.Blue),
-    Thing(R.drawable.hi_gift, "Gift cards", D.Success),
-    Thing(R.drawable.hi_receipt, "Pay bills", D.Black),
-    Thing(R.drawable.hi_stream, "Streaming", D.Blue),
-    Thing(R.drawable.ic_meal, "Food", D.Success),
-    Thing(R.drawable.ic_bag, "Shopping", D.Black),
+    // A colour each, so the wheel changes colour as it turns and no two in a row match.
+    Thing(R.drawable.hi_recharge, "Recharge", D.Blue, 1.22f),
+    Thing(R.drawable.hi_gift, "Gift cards", ROSE, 1f),
+    Thing(R.drawable.hi_receipt, "Pay bills", LEAF, 1.16f),
+    Thing(R.drawable.hi_stream, "Streaming", VIOLET, 1.12f),
+    Thing(R.drawable.hi_food, "Food", EMBER, 1.2f),
+    Thing(R.drawable.hi_shopping, "Shopping", AMBER, 1.16f),
 )
 
 private const val WHEEL_STEP_MS = 1_400L
@@ -774,8 +801,11 @@ private fun Wheel(running: Boolean, modifier: Modifier) {
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 // The mark belongs to the word in focus only; it opens out as the word arrives.
-                Box(Modifier.width(54.dp * focus).graphicsLayer { alpha = focus }) {
-                    if (focus > 0.02f) Icon(painterResource(thing.mark), null, Modifier.size(38.dp), tint = thing.colour)
+                Box(Modifier.width(66.dp * focus).graphicsLayer { alpha = focus }) {
+                    if (focus > 0.02f) Icon(
+                        painterResource(thing.mark), null,
+                        Modifier.size(48.dp).graphicsLayer { scaleX = thing.grow; scaleY = thing.grow }, tint = thing.colour,
+                    )
                 }
                 Text(thing.word, color = D.Black, style = Type.title.copy(fontSize = 44.sp, lineHeight = 50.sp, fontWeight = FontWeight.Medium), maxLines = 1, softWrap = false)
             }

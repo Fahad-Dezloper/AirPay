@@ -601,11 +601,8 @@ private fun ReferralOfferRow(s: Referrals.Summary, first: Boolean, onOpen: () ->
         onOpen = onOpen,
         face = {
             Box(Modifier.size(40.dp), contentAlignment = Alignment.Center) {
-                // [MarkCanvas] itself, not a copy of its geometry. This file carried its own
-                // version of the rings because that composable used to be private to
-                // MainActivity.kt; it is `internal` now, and a second slightly-wrong copy of a
-                // mark is exactly the drift PARITY.md keeps a record of.
-                MarkCanvas(Mark.Rings, 32.dp, tint = D.Blue)
+                // The brand's own mark, from the one place that draws it.
+                BrandMark(34.dp)
             }
         },
     ) { OnHighlight("Earn ${skr(s.reward)} SKR") }
@@ -640,7 +637,7 @@ private fun OfferFace(offer: Rewards.Offer, size: Dp = 40.dp) {
     }
     if (offer.app.equals("AirPay", ignoreCase = true)) {
         Box(Modifier.size(size), contentAlignment = Alignment.Center) {
-            MarkCanvas(Mark.Rings, size * 0.8f, tint = D.Blue)
+            BrandMark(size * 0.86f)
         }
         return
     }

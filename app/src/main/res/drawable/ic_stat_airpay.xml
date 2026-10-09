@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The AirPay mark in one colour, for the status bar: Android draws a notification's small icon
+     as a silhouette, so this is the kit's mark-white (airpay-brand/01-mark/svg), where the dark
+     card is a gap and the wallet and the card behind it stay two shapes. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp" android:viewportWidth="240" android:viewportHeight="240">
+    <group android:translateY="20.9">
+        <group android:scaleX="-1" android:scaleY="-1" android:pivotX="120" android:pivotY="99.095">
+            <path
+                android:fillColor="#FFFFFFFF"
+                android:fillType="evenOdd"
+                android:pathData="M136.09 9.63A32.93 32.93 0 0 1 182.66 9.63L231.84 58.80A27.86 27.86 0 0 1 231.84 98.21L180.65 149.40A29.94 29.94 0 0 1 138.31 149.40L88.48 99.58A29.94 29.94 0 0 1 88.48 57.24ZM116.39 29.33A32.93 32.93 0 0 1 162.96 29.33L212.14 78.50A27.86 27.86 0 0 1 212.14 117.91L160.95 169.10A29.94 29.94 0 0 1 118.61 169.10L68.78 119.28A29.94 29.94 0 0 1 68.78 76.94Z" />
+            <path
+                android:fillColor="#FFFFFFFF"
+                android:pathData="M57.67 10.01A32.93 32.93 0 0 1 104.24 10.01L212.14 117.91L140.63 189.42A29.94 29.94 0 0 1 98.29 189.42L8.27 99.4A28.28 28.28 0 0 1 8.27 59.41L57.67 10.01Z" />
+        </group>
+    </group>
+</vector>

@@ -122,7 +122,9 @@ data class Linked(
             matches("phantom") -> R.drawable.ic_wallet_phantom
             matches("solflare") -> R.drawable.ic_wallet_solflare
             matches("backpack") -> R.drawable.ic_wallet_backpack
-            matches("seeker", "solanamobile", "seed vault", ".skr") -> R.drawable.ic_wallet_seeker
+            // The Seeker mark drawn for this app, with the gradient. The wallet app's own
+            // square icon is [cardIconRes], and belongs only on the wallet's card.
+            matches("seeker", "solanamobile", "seed vault", ".skr") -> R.drawable.brand_seeker
             matches("ledger") -> R.drawable.ic_wallet_ledger
             else -> R.drawable.ic_wallet_chip
         }
@@ -130,10 +132,10 @@ data class Linked(
     /**
      * The mark on the wallet CARD in the pile beside the balance.
      *
-     * Seeker has two marks and each has its own job. On the card it is `seeker.png` (the small
-     * square icon); everywhere else the wallet appears — the line above the total balance, the
-     * profile panel, the wallet details, a thread — it is the "Seeker + r" artwork,
-     * [iconRes]. Every other wallet uses one mark for both.
+     * Seeker has two marks and each has its own job. On its card, on the Wallets page and in
+     * the pile beside the balance, it is the wallet app's own square icon. Everywhere else the
+     * wallet appears (the line above the total balance, the profile panel, a pay sheet, a
+     * thread) it is the gradient Seeker mark, [iconRes]. Every other wallet uses one mark for both.
      */
     val cardIconRes: Int
         get() = if (matches("seeker", "solanamobile", "seed vault", ".skr")) R.drawable.ic_wallet_seeker

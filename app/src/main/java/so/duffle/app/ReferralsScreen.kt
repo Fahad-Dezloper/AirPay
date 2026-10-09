@@ -1231,12 +1231,8 @@ private fun ReferPoster(s: Referrals.Summary) {
             Modifier.align(Alignment.TopEnd).offset(x = 16.dp, y = (-12).dp)
                 .size(96.dp).alpha(.15f),
         ) {
-            // `MarkCanvas` itself, in white. This was a copy of its `Rings` branch, kept only
-            // because the mark was private AND hard-coded its own blue — which is what made a
-            // copy look necessary on a blue poster. With `tint` a parameter it is the same
-            // drawing, and the back ring's .35 alpha comes from the mark rather than from a
-            // second place that has to be kept in step.
-            MarkCanvas(Mark.Rings, 96.dp, tint = Color.White)
+            // The brand's mark in its one-colour tone, which is the one for a blue ground.
+            BrandMark(96.dp, white = true)
         }
         Column(Modifier.padding(24.dp)) {
             Row {

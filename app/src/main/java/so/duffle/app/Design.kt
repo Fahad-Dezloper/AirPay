@@ -310,6 +310,24 @@ internal fun PressScale(interaction: MutableInteractionSource): Modifier {
     return Modifier.graphicsLayer { scaleX = scale; scaleY = scale }
 }
 
+/**
+ * "Your network fee is paid for you", as a mark: ink on the marker-pen yellow, which in this app
+ * means "you gain". Shown only where [FreeGas] says it is true.
+ */
+@Composable
+internal fun FreeFeeMark(text: String = "Network fee on us", modifier: Modifier = Modifier, onClick: (() -> Unit)? = null) {
+    Row(
+        modifier.clip(CircleShape).background(D.Highlight)
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
+            .padding(start = 8.dp, end = 12.dp, top = 5.dp, bottom = 5.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        HiIcon(Hi.Gift, D.Black, 16.dp, contentDescription = null)
+        Spacer(Modifier.width(6.dp))
+        Text(text, color = D.Black, style = Type.caption.copy(fontWeight = FontWeight.SemiBold), maxLines = 1)
+    }
+}
+
 @Composable
 internal fun PrimaryButton(
     label: String, onClick: () -> Unit, modifier: Modifier = Modifier.fillMaxWidth(),
@@ -1001,4 +1019,23 @@ internal fun CopyPill(value: String, modifier: Modifier = Modifier) {
             Text(if (done) "Copied" else "Copy", color = ink, style = Type.caption)
         }
     }
+}
+
+/**
+ * The AirPay mark: a wallet with two cards coming out of it (airpay-brand/README.md).
+ *
+ * Two tones of the one drawing. The colour mark is for white and light grounds; [white] is the
+ * one-colour mark, for a blue or dark ground, where the dark card becomes a gap. The mark is
+ * wider than it is tall, so it is fitted inside a square of [side] and never stretched.
+ *
+ * It sits beside the name or above it, as in the lockups; it is never used as a letter of it.
+ */
+@Composable
+internal fun BrandMark(side: androidx.compose.ui.unit.Dp, modifier: Modifier = Modifier, white: Boolean = false) {
+    androidx.compose.foundation.Image(
+        painterResource(if (white) R.drawable.brand_mark_white else R.drawable.brand_mark),
+        contentDescription = null,
+        modifier = modifier.size(side),
+        contentScale = androidx.compose.ui.layout.ContentScale.Fit,
+    )
 }

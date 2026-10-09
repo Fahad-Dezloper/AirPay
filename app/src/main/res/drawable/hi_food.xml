@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Food, for the wheel: ic_meal.xml, a takeaway cup with a fork on it.
+
+     The SAME drawing as the app's own tile (see the file named above): its path data is copied
+     verbatim, not redrawn. Two things differ, for the landing page's wheel only. The stroke is
+     1.5 where the tile's is 0.833, so it stands beside the gift, bill and streaming marks at
+     their weight; and it is one colour, tinted where it is used, where the tile is ink with a
+     blue detail. The tile's own file is untouched: its 0.833 is part of that drawing. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24">
+    <path
+        android:pathData="M6.542 5.917 6.987 4.225A.917 .917 0 0 1 7.873 3.542H16.127A.917 .917 0 0 1 17.013 4.225L17.458 5.917"
+        android:fillColor="#00000000"
+        android:strokeColor="#FF000000"
+        android:strokeWidth="1.5"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <path
+        android:pathData="M5.208 5.917H18.792A.5 .5 0 0 1 19.292 6.417V7.958A.5 .5 0 0 1 18.792 8.458H5.208A.5 .5 0 0 1 4.708 7.958V6.417A.5 .5 0 0 1 5.208 5.917Z"
+        android:fillColor="#00000000"
+        android:strokeColor="#FF000000"
+        android:strokeWidth="1.5"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <path
+        android:pathData="M5.75 8.458 7.497 19.892A.667 .667 0 0 0 8.156 20.458H15.844A.667 .667 0 0 0 16.503 19.892L18.25 8.458"
+        android:fillColor="#00000000"
+        android:strokeColor="#FF000000"
+        android:strokeWidth="1.5"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <path
+        android:pathData="M10.333 11.458V13.542A1.667 1.667 0 0 0 13.667 13.542V11.458M12 11.458V20.458"
+        android:fillColor="#00000000"
+        android:strokeColor="#FF000000"
+        android:strokeWidth="1.3"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+</vector>

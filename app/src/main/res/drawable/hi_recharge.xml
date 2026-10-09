@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Recharge, for the wheel: ic_recharge.xml, a handset with its speaker slot and a bolt.
+
+     The SAME drawing as the app's own tile (see the file named above): its path data is copied
+     verbatim, not redrawn. Two things differ, for the landing page's wheel only. The stroke is
+     1.5 where the tile's is 0.833, so it stands beside the gift, bill and streaming marks at
+     their weight; and it is one colour, tinted where it is used, where the tile is ink with a
+     blue detail. The tile's own file is untouched: its 0.833 is part of that drawing. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24">
+    <path
+        android:pathData="M8.459 3.521H15.541A1.917 1.917 0 0 1 17.458 5.438V18.562A1.917 1.917 0 0 1 15.541 20.479H8.459A1.917 1.917 0 0 1 6.542 18.562V5.438A1.917 1.917 0 0 1 8.459 3.521Z"
+        android:fillColor="#00000000"
+        android:strokeColor="#FF000000"
+        android:strokeWidth="1.5"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <path
+        android:pathData="M10.833 5.979H13.167"
+        android:fillColor="#00000000"
+        android:strokeColor="#FF000000"
+        android:strokeWidth="1.5"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <path
+        android:pathData="M12.5 10.062 9.917 13.229 11.625 13.271 11.167 15.896 13.833 12.479H12.125Z"
+        android:fillColor="#FF000000"
+        android:strokeColor="#FF000000"
+        android:strokeWidth="0.9"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+</vector>

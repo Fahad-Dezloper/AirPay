@@ -466,7 +466,8 @@ internal fun WalletFace(
     ) {
         Row(Modifier.fillMaxWidth().height(40.dp), verticalAlignment = Alignment.CenterVertically) {
             Image(
-                painterResource(w.iconRes), contentDescription = null,
+                // The card keeps the wallet app's own icon: see [Linked.cardIconRes].
+                painterResource(w.cardIconRes), contentDescription = null,
                 modifier = Modifier.size(40.dp).clip(RoundedCornerShape(10.dp)),
                 contentScale = ContentScale.Fit,
             )
@@ -575,6 +576,7 @@ private fun WalletSheet(
             ) { if (confirming) onRemove() else { confirming = true; Haptics.tick(ctx) } }
 
             Spacer(Modifier.height(32.dp))
+            BrandMark(28.dp, Modifier.align(Alignment.CenterHorizontally).alpha(0.55f))
             // A line box taller than the glyphs: Bricolage's default one cut the tail of the y.
             Text(
                 "AirPay", color = D.Neutral, fontSize = 19.sp, lineHeight = 30.sp,
