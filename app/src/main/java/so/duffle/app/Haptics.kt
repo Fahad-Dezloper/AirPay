@@ -18,9 +18,18 @@ import android.os.VibratorManager
  */
 object Haptics {
 
-    /** The phones found each other. Felt on both at once. */
+    /**
+     * The phones found each other. Felt on both at once.
+     *
+     * One solid buzz, chosen by hand on the Seeker out of six ("Touch 4" in the debug feel
+     * test). The built-in heavy click this used to be is over in a tenth of a second, which is
+     * too little to notice through two phones pressed together. The Seeker's motor has no
+     * strength control and no primitives, so length is the only thing there is to turn up.
+     */
     fun contact(context: Context) =
-        play(context, VibrationEffect.createPredefined(VibrationEffect.EFFECT_HEAVY_CLICK))
+        play(context, VibrationEffect.createOneShot(CONTACT_MS, VibrationEffect.DEFAULT_AMPLITUDE))
+
+    private const val CONTACT_MS = 260L
 
     /** Money moved — sent on the payer, arrived on the payee. Two crisp taps, Apple Pay style. */
     fun success(context: Context) =

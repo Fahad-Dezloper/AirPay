@@ -63,6 +63,9 @@ object Brand {
     /** Known keys only — the wire accepts nothing else. */
     fun isKnown(key: String?) = key != null && key in LOOKS
 
+    /** The key if we can draw it, else null — so an unknown phone falls back to an initial. */
+    fun keyOrNull(key: String?) = key?.takeIf { it in LOOKS }
+
     /** This phone. */
     fun mine(): String? = keyFor(Build.MANUFACTURER, Build.BRAND, Build.MODEL)
 

@@ -15,11 +15,57 @@ services:
       GOOGLE_APPLICATION_CREDENTIALS: /secrets/fcm.json
       # DEBUG shows every request the phones make (set LOG_LEVEL in server/.env)
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # Set by share.sh while the server is reachable through a tunnel: the real caller's address
+      # comes from the tunnel's header (so each friend has their own rate limit), and the shop's
+      # webhook is told where to call back.
+      TRUST_PROXY: ${TRUST_PROXY:-}
+      PUBLIC_URL: ${PUBLIC_URL:-}
+      PAYER_URL: http://skr-payer:8788
+      PAYER_HMAC_SECRET_FILE: /secrets/payer_hmac
     volumes:
       - duffle-data:/data
+      - ../secrets/payer_hmac:/secrets/payer_hmac:ro
       # Path to your Firebase service-account JSON, set as FCM_KEY_FILE in server/.env (gitignored).
       - ${FCM_KEY_FILE:?set FCM_KEY_FILE in server/.env to your Firebase service-account JSON}:/secrets/fcm.json:ro
+    # Same lockdown as the payer: no extra Linux powers, no writes outside the data volume.
+    read_only: true
+    tmpfs: ["/tmp"]
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+
+  # The ONLY thing that holds the SKR key. A separate container with its own database, its own
+  # spend caps and no published port: the main server can ask it to pay, signed with a shared
+  # secret, and cannot read the key or exceed its caps. Behind a profile so the stack still
+  # starts without a key:  docker compose --profile payer up -d
+  skr-payer:
+    profiles: ["payer"]
+    build: ../payer
+    expose: ["8788"]
+    environment:
+      PAYER_KEYFILE: /secrets/payer.json
+      PAYER_HMAC_SECRET_FILE: /secrets/hmac
+      PAYER_PUBKEY: ${PAYER_PUBKEY:-}
+      PAYER_RPC_URL: ${PAYER_RPC_URL:-https://api.mainnet-beta.solana.com}
+      MAX_PAYOUT_SKR: ${MAX_PAYOUT_SKR:-1000}
+      MAX_DAY_SKR: ${MAX_DAY_SKR:-10000}
+      MAX_RECIPIENT_DAY_SKR: ${MAX_RECIPIENT_DAY_SKR:-1500}
+      # The fee wallet: a second, tiny key that pays network fees for buyers with no SOL and is
+      # paid back in USDC. An empty file (the default) leaves sponsoring off.
+      SPONSOR_KEYFILE: /secrets/sponsor.json
+      SPONSOR_PUBKEY: ${SPONSOR_PUBKEY:-}
+      SPONSOR_FEE_USDC_UNITS: ${SPONSOR_FEE_USDC_UNITS:-10000}
+    volumes:
+      - payer-data:/data
+      - ../secrets/payer.json:/secrets/payer.json:ro
+      - ../secrets/sponsor.json:/secrets/sponsor.json:ro
+      - ../secrets/payer_hmac:/secrets/hmac:ro
+    read_only: true
+    tmpfs: ["/tmp"]
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
     restart: unless-stopped
 
 volumes:
+  payer-data:
   duffle-data:

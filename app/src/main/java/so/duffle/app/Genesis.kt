@@ -97,6 +97,10 @@ object Genesis {
     private fun genesisMint(mint: String): Boolean? {
         val res = rpc("""{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["$mint",{"encoding":"jsonParsed"}]}""")
             ?: return null
+        // A refusal arrives as an HTTP 200 carrying an error object. Reading that as "not a
+        // Genesis mint" turned one rate-limited call into a definite no, and a definite no is
+        // what takes a contact's Seeker badge away.
+        if (Chain.rpcError(res) != null) return null
         return try {
             val info = JSONObject(res).getJSONObject("result").getJSONObject("value")
                 .getJSONObject("data").getJSONObject("parsed").getJSONObject("info")

@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  A viewfinder: four corner brackets and the line sweeping through them.
+
+  Distinct from hi_qr, which draws a QR code — the thing being read. This draws the act of
+  reading one, which is what the button does, and it stays legible at 26dp where a QR glyph
+  collapses into a grey smudge.
+
+  Same geometry as the rest of the set: 24dp box, 1.5 stroke, round caps and joins.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp" android:viewportWidth="24" android:viewportHeight="24">
+    <path
+        android:pathData="M3 9V6.5C3 4.57 4.57 3 6.5 3H9"
+        android:strokeColor="#FF000000" android:strokeWidth="1.5"
+        android:strokeLineCap="round" android:strokeLineJoin="round" />
+    <path
+        android:pathData="M15 3H17.5C19.43 3 21 4.57 21 6.5V9"
+        android:strokeColor="#FF000000" android:strokeWidth="1.5"
+        android:strokeLineCap="round" android:strokeLineJoin="round" />
+    <path
+        android:pathData="M21 15V17.5C21 19.43 19.43 21 17.5 21H15"
+        android:strokeColor="#FF000000" android:strokeWidth="1.5"
+        android:strokeLineCap="round" android:strokeLineJoin="round" />
+    <path
+        android:pathData="M9 21H6.5C4.57 21 3 19.43 3 17.5V15"
+        android:strokeColor="#FF000000" android:strokeWidth="1.5"
+        android:strokeLineCap="round" android:strokeLineJoin="round" />
+    <path
+        android:pathData="M3.5 12H20.5"
+        android:strokeColor="#FF000000" android:strokeWidth="1.5"
+        android:strokeLineCap="round" android:strokeLineJoin="round" />
+</vector>

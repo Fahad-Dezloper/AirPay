@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Shopping, for the wheel: ic_bag.xml, a bag with a price tag.
+
+     The SAME drawing as the app's own tile (see the file named above): its path data is copied
+     verbatim, not redrawn. Two things differ, for the landing page's wheel only. The stroke is
+     1.5 where the tile's is 0.833, so it stands beside the gift, bill and streaming marks at
+     their weight; and it is one colour, tinted where it is used, where the tile is ink with a
+     blue detail. The tile's own file is untouched: its 0.833 is part of that drawing. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24">
+    <path
+        android:pathData="M5 8.24A.833 .833 0 0 1 5.828 7.5H18.172A.833 .833 0 0 1 19 8.24L20.228 19.077A1.167 1.167 0 0 1 19.069 20.375H4.931A1.167 1.167 0 0 1 3.772 19.077Z"
+        android:fillColor="#00000000"
+        android:strokeColor="#FF000000"
+        android:strokeWidth="1.5"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <path
+        android:pathData="M8.708 9.583V6.917A3.292 3.292 0 0 1 15.292 6.917V9.583"
+        android:fillColor="#00000000"
+        android:strokeColor="#FF000000"
+        android:strokeWidth="1.5"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <path
+        android:pathData="M13.771 9.458V10.583M13.771 10.583 15.792 11.375 17.792 15.167 14.917 16.958 12.5 13.208 12.625 11.083Z"
+        android:fillColor="#00000000"
+        android:strokeColor="#FF000000"
+        android:strokeWidth="1.3"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+</vector>

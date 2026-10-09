@@ -41,11 +41,55 @@ object TapExchange {
             var introduced = false
             if (me != null && me.address != payload.address) {
                 introduced = runCatching { Apdu.isOk(iso.transceive(Apdu.hello(me))) }.getOrDefault(false)
-                log(if (introduced) "→ introduced ourselves" else "— couldn't introduce ourselves over NFC")
+                log(if (introduced) "→ introduced ourselves" else "- couldn't introduce ourselves over NFC")
             }
             Outcome.Got(payload, introduced)
         } catch (e: Exception) {
             Outcome.Failed("${e.javaClass.simpleName}: ${e.message}")
+        } finally {
+            runCatching { iso.close() }
+        }
+    }
+
+    sealed interface Delivery {
+        /** Every piece was taken. Their phone has the payment; whether it lands is theirs to say. */
+        data object Done : Delivery
+        /** A phone answered, and it is not one holding this request out. Nothing was handed over. */
+        data class NotThem(val why: String) : Delivery
+        /** The radio let go part way, or their phone refused a piece. Worth another tap. */
+        data class Failed(val why: String) : Delivery
+    }
+
+    /**
+     * The second tap of a payment signed with no connection: hand [tx] to the phone that asked.
+     *
+     * Kept apart from [run] so reading a request is exactly what it was. SELECT comes first for
+     * two reasons: the card only takes a hand-over after it, and its answer says which request
+     * that phone is holding out, so a payment is never pushed at somebody else's phone.
+     */
+    fun deliver(tag: Tag, tx: ByteArray, reference: String, log: (String) -> Unit = {}): Delivery {
+        val iso = IsoDep.get(tag) ?: return Delivery.NotThem("that isn't a phone")
+        return try {
+            iso.connect()
+            iso.timeout = 2000
+            val resp = iso.transceive(Apdu.select())
+            if (!Apdu.isOk(resp)) return Delivery.NotThem("select refused (${resp.toHex()})")
+            val theirs = (TapPayload.parse(Apdu.body(resp)) as? TapPayload.Request)?.request?.reference
+            if (theirs != reference) return Delivery.NotThem("that phone is not showing this request")
+
+            // Five bytes of header go out with every piece, and the piece must fit what this
+            // phone's radio can send in one go.
+            val chunk = minOf(OfflineTx.MAX_CHUNK, iso.maxTransceiveLength - 5)
+            val apdus = OfflineTx.apdus(tx, chunk)
+            if (apdus.isEmpty()) return Delivery.Failed("nothing sendable (${tx.size}B in pieces of $chunk)")
+            log("handing over ${tx.size}B in ${apdus.size} piece(s) of up to ${chunk}B")
+            for ((i, apdu) in apdus.withIndex()) {
+                val r = iso.transceive(apdu)
+                if (!Apdu.isOk(r)) return Delivery.Failed("piece $i refused (${r.toHex()})")
+            }
+            Delivery.Done
+        } catch (e: Exception) {
+            Delivery.Failed("${e.javaClass.simpleName}: ${e.message}")
         } finally {
             runCatching { iso.close() }
         }

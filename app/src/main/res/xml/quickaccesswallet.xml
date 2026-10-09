@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- What the system opens when AirPay is the phone's wallet app: the tap and pay sheet. -->
+<quickaccesswallet-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:targetActivity="so.duffle.app.TapPopupActivity"
+    android:settingsActivity="so.duffle.app.MainActivity"
+    android:shortcutShortLabel="@string/app_name"
+    android:shortcutLongLabel="@string/app_name" />

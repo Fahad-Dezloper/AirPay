@@ -37,9 +37,18 @@ object Tokens {
         /** What a request calls this token: "SOL" or the mint. */
         val token get() = mint ?: "SOL"
         val amount: String get() = Chain.fmtUnits(units, decimals)
-        /** For reading, not paying: at most 4 decimals, rounded down so it never overstates. */
-        val shown: String get() = java.math.BigDecimal.valueOf(units, decimals)
-            .setScale(minOf(4, decimals), java.math.RoundingMode.DOWN).stripTrailingZeros().toPlainString()
+        /**
+         * For reading, not paying.
+         *
+         * Through [Money], so it is cut rather than rounded, grouped the way the phone's locale
+         * groups, and says `<0.0001` when a real balance cuts away to nothing.
+         *
+         * It used to end in `stripTrailingZeros()`, which made the decimal count depend on the
+         * value: 2.50 rendered as "2.5" and 2.00 as "2", so a column of balances had its points
+         * in different places and tabular figures had nothing to align.
+         */
+        val shown: String get() =
+            Money.tokenAmount(java.math.BigDecimal.valueOf(units, decimals), symbol)
     }
 
     private const val METAPLEX = "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s"
@@ -53,7 +62,13 @@ object Tokens {
      */
     private val KNOWN = mapOf(
         "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU" to Meta("USDC", "USD Coin", BUNDLED_USDC),
-        "EPjFWdd5AufqSSqeM2qJxdxLTSnu4ZsdH6DsjCfCnDF6" to Meta("USDC", "USD Coin", BUNDLED_USDC),
+        // Mainnet USDC was written out here as its own literal and the literal was wrong:
+        // `EPjFWdd5AufqSSqeM2qJxdxLTSnu4ZsdH6DsjCfCnDF6`, which shares Circle's first nineteen
+        // characters and then diverges. `solana account` on mainnet answers AccountNotFound for
+        // it, so it is not a mint at all, and a real USDC balance fell through to "EPjF". It now
+        // reads the constant `buy()` builds its transfers against, so the two cannot drift apart
+        // again — and the one that is checked against the chain is the one that spends money.
+        Shop.USDC_MAINNET to Meta("USDC", "USD Coin", BUNDLED_USDC),
     )
 
     data class Meta(val symbol: String, val name: String, val image: String?)
@@ -90,6 +105,7 @@ object Tokens {
             }
         }
 
+        android.util.Log.i("Tokens", "owner=${owner.take(6)}… sol=$sol mints=${byMint.keys.map { it.take(6) }}")
         val tokens = byMint.filter { it.value.units > 0 }.map { (mint, acc) ->
             val meta = meta(context, mint)
             Holding(mint, meta.symbol, meta.name, acc.decimals, acc.units, meta.image)

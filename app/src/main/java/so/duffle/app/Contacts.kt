@@ -24,8 +24,29 @@ data class Contact(
     var lastTapMillis: Long,
     var taps: Int,
     var totalPaid: Double = 0.0,
+    /** Their phone, from [Brand]: what to draw instead of an initial. */
+    val brand: String? = null,
+    /**
+     * What **you** decided to call them, which beats every other name.
+     *
+     * The one name on this screen that cannot be wrong: it never crossed the radio, it is not a
+     * claim anybody made about themselves, and you wrote it while standing in front of them.
+     * Their own `label` is only a suggestion that seeds it.
+     */
+    val yours: String? = null,
 ) {
     val short: String get() = "${address.take(6)}…${address.takeLast(4)}"
+
+    /**
+     * The name to show, and whether it can be trusted.
+     *
+     * Deliberately does not consider a `.skr` or `.sol`: those are resolved from the chain by
+     * whoever is drawing the row, and they outrank everything here. This answers the rest.
+     */
+    fun claimed(): String? = yours ?: label.takeIf { it.isNotBlank() }
+
+    /** True when the shown name is yours rather than theirs — never presented as verification. */
+    val renamed: Boolean get() = !yours.isNullOrBlank()
 }
 
 class Contacts(ctx: Context) {
@@ -39,13 +60,21 @@ class Contacts(ctx: Context) {
      * about, because a new counterparty grows the network and a repeat one does not, and
      * tapping the same friend five times is the obvious way to farm.
      */
-    fun record(address: String, label: String, seeker: Boolean, paid: Double = 0.0): Boolean {
+    /**
+     * Records a tap.
+     *
+     * `seeker` is what the **chain** said, never what the tap claimed. A payload can carry any
+     * Genesis mint it likes, and a badge earned by claiming it is worth nothing — the same
+     * mistake the confirm sheet made before it waited for the mainnet lookup. Callers who have
+     * only the claim pass false and let [verify] fill it in when the answer arrives.
+     */
+    fun record(address: String, label: String, seeker: Boolean, paid: Double = 0.0, brand: String? = null): Boolean {
         val list = load().toMutableList()
         val now = System.currentTimeMillis()
         val existing = list.indexOfFirst { it.address == address }
         val isNew = existing < 0
         if (isNew) {
-            list.add(Contact(address, label, seeker, now, now, 1, paid))
+            list.add(Contact(address, label, seeker, now, now, 1, paid, Brand.keyOrNull(brand)))
         } else {
             val c = list[existing]
             list[existing] = c.copy(
@@ -53,13 +82,50 @@ class Contacts(ctx: Context) {
                 // failed lookup — absence of evidence is not evidence of absence.
                 seeker = c.seeker || seeker,
                 label = label.ifBlank { c.label },
+                // Their claim updates their claim. It never touches the name you chose.
+                yours = c.yours,
                 lastTapMillis = now,
                 taps = c.taps + 1,
                 totalPaid = c.totalPaid + paid,
+                brand = Brand.keyOrNull(brand) ?: c.brand,
             )
         }
         save(list)
         return isNew
+    }
+
+    /**
+     * The chain's answer about a contact's Genesis token, once it lands.
+     *
+     * Called only for a **definitive** answer. A lookup that failed, or a wallet queried while
+     * offline, must never reach here: absence of evidence is not evidence of absence, and a
+     * badge earned on a day the network worked should survive a day it did not.
+     *
+     * A definitive "no" does revoke, though, and has to. Contacts used to record the Genesis
+     * claim carried in the tap payload, so phones that merely said they were Seekers were
+     * badged — and a grant-only rule left those badges standing forever, with nothing able to
+     * correct them.
+     */
+    fun verify(address: String, held: Boolean) {
+        val list = load().toMutableList()
+        val i = list.indexOfFirst { it.address == address }
+        if (i < 0 || list[i].seeker == held) return
+        list[i] = list[i].copy(seeker = held)
+        save(list)
+    }
+
+    /**
+     * Give somebody your own name for them, or clear it with a blank.
+     *
+     * This is the fix for a People list full of "CPH2401" and "Scanned": those are what the
+     * transport knew, not who the person is, and the one who can say who they are is you.
+     */
+    fun rename(address: String, name: String) {
+        val list = load().toMutableList()
+        val i = list.indexOfFirst { it.address == address }
+        if (i < 0) return
+        list[i] = list[i].copy(yours = Username.clean(name))
+        save(list)
     }
 
     fun count(): Int = load().size
@@ -75,10 +141,12 @@ class Contacts(ctx: Context) {
                         address = o.getString("a"),
                         label = o.optString("l"),
                         seeker = o.optBoolean("s"),
+                        brand = o.optString("b").takeIf { it.isNotBlank() },
                         firstTapMillis = o.optLong("f"),
                         lastTapMillis = o.optLong("t"),
                         taps = o.optInt("n", 1),
                         totalPaid = o.optDouble("p", 0.0),
+                        yours = o.optString("y").takeIf { it.isNotBlank() },
                     )
                 )
             }
@@ -93,8 +161,10 @@ class Contacts(ctx: Context) {
             arr.put(
                 JSONObject().apply {
                     put("a", c.address); put("l", c.label); put("s", c.seeker)
+                    c.brand?.let { put("b", it) }
                     put("f", c.firstTapMillis); put("t", c.lastTapMillis)
                     put("n", c.taps); put("p", c.totalPaid)
+                    c.yours?.let { put("y", it) }
                 }
             )
         }

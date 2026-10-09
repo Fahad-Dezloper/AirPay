@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Duffle bill tile: More, three dots in a soft square. Ported from
+     ui/components/ui/Marks.tsx `more` (PORT-2026-10-01.md section 5.4).
+     24x24 grid, drawn at 48dp.
+
+     Outline D.Ink #343433; one detail in D.Blue #008FFF: the three dots.
+
+     The 0.833 stroke is part of the drawing. It is traced from the user's reference
+     sheet (12 reference px to a grid unit) and is the ONE exception to the app's
+     stroke rule: it does NOT follow markStroke (CSS var mark-stroke), so do not
+     scale or override it when this drawable is tinted or resized.
+
+     Path data is copied verbatim from Marks.tsx; it has not been redrawn or
+     re-optimised. Its circle and rect elements became paths because
+     VectorDrawable has no such elements; the numbers are unchanged. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="48dp" android:height="48dp"
+    android:viewportWidth="24" android:viewportHeight="24">
+    <path
+        android:pathData="M8.167 4.958H15.833A3.167 3.167 0 0 1 19 8.125V15.875A3.167 3.167 0 0 1 15.833 19.042H8.167A3.167 3.167 0 0 1 5 15.875V8.125A3.167 3.167 0 0 1 8.167 4.958Z"
+        android:fillColor="#00000000"
+        android:strokeColor="#343433"
+        android:strokeWidth="0.833"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <path
+        android:pathData="M7.625 12a1 1 0 1 0 2 0a1 1 0 1 0 -2 0ZM11 12a1 1 0 1 0 2 0a1 1 0 1 0 -2 0ZM14.375 12a1 1 0 1 0 2 0a1 1 0 1 0 -2 0Z"
+        android:fillColor="#008FFF" />
+</vector>

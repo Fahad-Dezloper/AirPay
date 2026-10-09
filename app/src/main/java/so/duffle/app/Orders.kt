@@ -1,0 +1,168 @@
+package so.duffle.app
+
+import android.content.Context
+import org.json.JSONArray
+import org.json.JSONObject
+
+/**
+ * What has been bought, and whether it has arrived.
+ *
+ * A recharge is paid in one second and delivered in ten, and until now that gap existed only
+ * inside a coroutine that died with the screen. Close the app after paying and there was
+ * nothing anywhere — no record that money had left, no way to ask again. **This is the only
+ * thing in the app that spends real money**, so it is the last place that should forget.
+ *
+ * Kept on the phone rather than asked for: Bitrefill knows the invoice, but the invoice id is
+ * the only handle we have on it, and that handle lived in memory too.
+ */
+class Orders(context: Context) {
+
+    private val prefs = context.getSharedPreferences("orders", Context.MODE_PRIVATE)
+
+    data class Order(
+        val invoiceId: String,
+        /** What it was — "Jio India", "Netflix India". Shown, so it is stored, not derived. */
+        val name: String,
+        /**
+         * The shelf it came off: "Phone", "TV & streaming", "Bills & wallets".
+         *
+         * Stored rather than looked up, because the catalogue is the server's and it changes.
+         * A history that says "Phone" for a recharge bought last month has to keep saying it
+         * after the product is gone. Blank for anything bought before this was recorded.
+         */
+        val category: String = "",
+        /**
+         * The product's own currency, so [value] can be written "₹100" and not a bare "100".
+         *
+         * Stored for the same reason as [category]: the catalogue is the server's and the
+         * product can be gone by the time the order is read back. Null for anything bought
+         * before this was recorded, and the figure then prints without a symbol rather than
+         * guessing one — a wrong currency symbol on a receipt is worse than none.
+         */
+        val currency: String? = null,
+        /**
+         * Bitrefill's image id, e.g. "phonepe-svg" — `Shop.Product.image`. See [logoUrl].
+         *
+         * The brand tile on the code sheet needs it, and `Shop.Product` only has it while the
+         * buying is happening; once the sheet is reopened from history the product is gone.
+         */
+        val image: String? = null,
+        /** The denomination in the product's own currency, e.g. "50". */
+        val value: String,
+        /**
+         * The number it was credited to, for a recharge. Null for everything else.
+         *
+         * Kept so the recharge screen can say what you last bought for **this** number, which is
+         * the only honest version of a "recommended plan" available here: no third party can be
+         * told what plan a number is on, so the nearest true statement is what you chose before.
+         */
+        val recipient: String? = null,
+        /**
+         * The code, PIN or link this purchase produced.
+         *
+         * The whole point of buying a gift card, and the app used to throw it away — see
+         * [Shop.order]. Kept here because it has to survive the screen that was open when it
+         * arrived: delivery lands seconds after payment and the buyer is often already gone.
+         */
+        val code: String? = null,
+        /** What it cost, already formatted: "0.56 USDC". */
+        val paid: String,
+        val signature: String,
+        /** Bitrefill's word: "pending", "delivered", "failed" — or "paid" before it answers. */
+        val status: String,
+        val at: Long,
+    ) {
+        /**
+         * Bitrefill's vocabulary, read off a real delivered invoice rather than taken from the
+         * docs — which turned out to describe it differently.
+         *
+         * An invoice goes `not_delivered` → **`all_delivered`**. The docs name the terminal
+         * state `complete`; the API says `all_delivered`. An order inside the invoice goes
+         * `created` → `delivered`. All three words reach this field depending on which one was
+         * written down, so all three are honoured.
+         *
+         * Two of them nearly cost a purchase: the check was `== "delivered"` alone, so a real
+         * ₹7.47 Jio top-up that arrived on the phone sat at "On its way" forever — polled on
+         * every launch, never settled. `not_delivered` is listed on the other side precisely
+         * because "delivered" is a substring of it and any looser test would invert it.
+         */
+        /**
+         * The brand's logo, built exactly as `Shop.Product.logoUrl` builds it — the padded,
+         * square, F8F8F8-grounded form, because the code sheet draws it in a 40dp tile.
+         */
+        val logoUrl: String? get() = image?.takeIf { it.isNotBlank() }?.let {
+            "https://www.bitrefill.com/content/cn/b_rgb:F8F8F8,c_pad,h_256,w_256/v1/$it.png"
+        }
+
+        val delivered get() = status in setOf("all_delivered", "complete", "delivered")
+        val failed get() = status in setOf("denied", "payment_error", "failed", "expired")
+        /** Some orders arrived and some did not. Not finished, and not a failure either. */
+        val partial get() = status == "partially_delivered"
+        /** Still owed to us. The only state worth putting in front of someone. */
+        val waiting get() = !delivered && !failed
+    }
+
+    fun add(o: Order) = save(listOf(o) + all().filter { it.invoiceId != o.invoiceId })
+
+    /** Writes down what a purchase produced. Never overwritten once set. */
+    fun setCode(invoiceId: String, code: String) {
+        // Never overwritten. A later poll returning something emptier must not erase the code
+        // somebody has already been shown and may be relying on.
+        save(all().map {
+            if (it.invoiceId == invoiceId && it.code.isNullOrBlank()) it.copy(code = code) else it
+        })
+    }
+
+    fun setStatus(invoiceId: String, status: String) {
+        save(all().map { if (it.invoiceId == invoiceId) it.copy(status = status) else it })
+    }
+
+    /** Anything paid for and not yet delivered, so the app can ask again on the next launch. */
+    fun waiting(): List<Order> = all().filter { it.waiting }
+
+    fun all(): List<Order> = try {
+        val arr = JSONArray(prefs.getString(KEY, "[]"))
+        (0 until arr.length()).mapNotNull { i ->
+            val o = arr.optJSONObject(i) ?: return@mapNotNull null
+            val id = o.optString("i").ifBlank { return@mapNotNull null }
+            Order(
+                invoiceId = id, name = o.optString("n"), value = o.optString("v"),
+                category = o.optString("g"),
+                paid = o.optString("c"), signature = o.optString("s"),
+                status = o.optString("t", "paid").ifBlank { "paid" }, at = o.optLong("a"),
+                recipient = o.optString("r").takeIf { it.isNotBlank() },
+                code = o.optString("k").takeIf { it.isNotBlank() },
+                currency = o.optString("u").takeIf { it.isNotBlank() },
+                image = o.optString("m").takeIf { it.isNotBlank() },
+            )
+        }
+    } catch (e: Exception) {
+        emptyList()
+    }
+
+    private fun save(list: List<Order>) {
+        val arr = JSONArray()
+        list.sortedByDescending { it.at }.take(MAX).forEach { o ->
+            arr.put(JSONObject().apply {
+                put("i", o.invoiceId)
+                put("n", o.name)
+                put("v", o.value)
+                put("g", o.category)
+                put("c", o.paid)
+                put("s", o.signature)
+                put("t", o.status)
+                put("a", o.at)
+                o.recipient?.let { put("r", it) }
+                o.code?.let { put("k", it) }
+                o.currency?.let { put("u", it) }
+                o.image?.let { put("m", it) }
+            })
+        }
+        prefs.edit().putString(KEY, arr.toString()).apply()
+    }
+
+    private companion object {
+        const val KEY = "orders"
+        const val MAX = 50
+    }
+}

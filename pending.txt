@@ -1,0 +1,109 @@
+PENDING — the rest of the Duffle → AirPay rename
+================================================
+
+The app is AirPay everywhere anybody can see it. What is listed here is the identity
+underneath, which is deliberately still "duffle" and should stay that way until the
+hackathon submission is in (deadline 2026-10-09).
+
+Why it is split: none of the items below are visible to a judge or a user, and every one
+of them costs a coordinated reinstall on BOTH phones or a break in push. The visible
+rename cost twenty minutes and nothing else.
+
+
+1. FIREBASE PROJECT  (the one you asked to defer)
+-------------------------------------------------
+   Today   : project + Android app registered against package so.duffle.app
+             app/google-services.json (gitignored) carries that package name
+   To do   : new Firebase Android app for the new package, download the new
+             google-services.json, replace the local one
+   Careful : push dies the moment the package changes and the new services file is not in
+             place. Payments still work; the payee just hears nothing while the app is
+             closed. Do the package and the Firebase app in the SAME sitting.
+   Also    : Push.kt's channel ids are internal strings, not user-visible — leave them.
+
+
+2. PACKAGE / APPLICATION ID
+----------------------------
+   Today   : so.duffle.app  (app/build.gradle.kts — namespace + applicationId)
+   To do   : so.airpay.app, or whatever the domain ends up being, reversed
+   Careful : a different applicationId is a DIFFERENT APP to Android. No upgrade path —
+             both phones uninstall and reinstall, and every local store is wiped:
+             contacts, threads, messages, inbox, watch, orders, alerts cursor, and the
+             linked wallet. Nobody outside the repo ever sees this string; Twitter still
+             ships com.twitter.android.
+   Note    : the Kotlin package directories (java/so/duffle/app/...) can move with it or
+             stay. They are independent of applicationId. Moving them is a big diff for
+             zero behaviour change — do it separately or not at all.
+
+
+3. NFC AID
+-----------
+   Today   : F0447566666C65   = F0 + "Duffle" in ASCII
+             Wire.kt (Apdu.AID) and res/xml/apduservice.xml must always agree
+   To do   : F0 + "AirPay" = F0416972506179
+   Careful : THIS IS THE ONE THAT BREAKS TAPS. The reader selects an AID and the card
+             either owns it or does not. Two phones on different AIDs do not fail loudly,
+             they simply never see each other. Both phones must be on the same build
+             before the next tap test, and every tap path needs re-running afterwards.
+   Check   : after changing, `adb shell dumpsys nfc` should show the routing table grow
+             again — that is how the current AID was confirmed registered.
+
+
+4. NDEF MIME TYPE
+------------------
+   Today   : application/vnd.so.duffle.app
+             Ndef.kt (MIME) and the AndroidManifest intent-filter must always agree
+   To do   : match the new package
+   Careful : same both-phones constraint as the AID.
+
+
+5. IDENTITY URI  +  DOMAIN
+---------------------------
+   Today   : Wallet.IDENTITY_URI = "https://duffle.so"
+   To do   : whatever domain you actually buy
+   Note    : this is the string Phantom shows in its authorization sheet, so it IS seen —
+             by anyone connecting a wallet. duffle.so DOES NOT RESOLVE today (Phantom's
+             favicon fetch for it fails with UnknownHostException, visible in logcat), so
+             it is already showing an unowned domain. Buy the domain once, set it once.
+   Careful : MWA auth tokens are keyed on the identity URI. Changing it asks every
+             connected wallet to authorize again. Harmless, but do it before a demo, not
+             during one.
+   Done    : the share-invite copy no longer carries a link at all, rather than sharing a
+             dead one. Put the real URL back when the domain exists (MainActivity,
+             shareInvite()).
+
+
+6. SERVER
+----------
+   Today   : python package  server/duffleserver/
+             docker compose service + container  server-duffle-1
+             sqlite file  /data/duffle.db
+   To do   : rename the package and the service if you care; nothing outside the repo
+             reads these names.
+   CAREFUL : offers carry  funder == "duffle"  as a DATA VALUE in the database, and the
+             app compares against that exact lowercase string to decide whether to print
+             "from AirPay" or "from <funder>". It is not our name, it is a row. Renaming
+             the app did not touch it and renaming the server must not either — unless
+             the existing rows are migrated in the same commit.
+
+
+7. INTERNAL NAMES LEFT ALONE ON PURPOSE
+----------------------------------------
+   res/values/themes.xml   Theme.Duffle, Theme.Duffle.Popup  (referenced from the
+                           manifest; invisible, rename only alongside the package)
+   Wire.kt                 the comment documenting the AID spells "Duffle" because the
+                           BYTES do. Do not "correct" it while the AID stands.
+   repo / module names     Seeker-NFC, tap/ — historical, harmless.
+
+
+ORDER TO DO IT IN, when the time comes
+---------------------------------------
+   One sitting, both phones on the desk, nothing else in flight:
+     1. new Firebase app + google-services.json
+     2. applicationId + namespace
+     3. AID (Wire.kt + apduservice.xml together)
+     4. NDEF MIME (Ndef.kt + manifest together)
+     5. identity URI, once the domain resolves
+     6. uninstall on both phones, install the same build on both
+     7. re-run: tap → request, tap → pay, scan → pay, push to a closed app
+   Do not do 3 or 4 without 6 and 7.

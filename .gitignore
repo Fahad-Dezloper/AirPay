@@ -15,3 +15,15 @@ app/google-services.json
 server/service-account*.json
 *firebase-adminsdk*.json
 server/.venv/
+
+# Kotlin compiler scratch — build output, not source.
+.kotlin/
+
+# Keys and shared secrets. Never committed.
+secrets/
+
+# Built APKs and screenshots dropped there while testing.
+dist/
+
+__pycache__/
+*.pyc

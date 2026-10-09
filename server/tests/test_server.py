@@ -235,6 +235,55 @@ class DeliveryTest(unittest.TestCase):
         q.get(timeout=1)
         self.assertTrue(q.empty())
 
+    def test_the_paying_phone_is_not_rung_with_its_own_request(self):
+        """The payer registers the request itself before paying, so the server is watching and
+        knows who to tell if it is withdrawn. Delivering it back rang the payer's own phone with
+        its own request — "Seeker requests 1 USDC" on the Seeker, while it paid the OnePlus."""
+        fcm = FakeFcm()
+        svc = Service(Store(), FakeRpc(), fcm=fcm)
+        svc.add_device(PAYER, "p" * 40)
+        q = svc.hub.subscribe(PAYER)
+        svc.register(REF, TO, "0.01", "OnePlus", payer=PAYER, deliver=False)
+        self.assertTrue(q.empty(), "the payer already has this request — it made it")
+        self.assertEqual([], fcm.sent)
+        # It is still recorded as theirs, which is what the withdrawal and the reward need.
+        self.assertEqual(PAYER, svc.store.get(REF)["payer"])
+
+    def test_a_relayed_request_still_reaches_the_payer(self):
+        # The other half: "Request instead" after the phones parted has nobody but the server
+        # to carry it, and must keep working.
+        svc = Service(Store(), FakeRpc())
+        q = svc.hub.subscribe(PAYER)
+        svc.register(REF, TO, "0.01", "OnePlus", payer=PAYER)
+        self.assertEqual("request", q.get(timeout=1)["type"])
+
+    def test_later_tells_the_asker_without_answering_them(self):
+        """"Later" is not a no. The asker stops wondering, and the request stays payable."""
+        fcm = FakeFcm()
+        svc = Service(Store(), FakeRpc(), fcm=fcm)
+        svc.add_device(TO, "t" * 40)
+        q = svc.hub.subscribe(TO)
+        svc.register(REF, TO, "0.01", "Seeker")
+        self.assertEqual(1, svc.defer(REF, "CPH2401"))
+        event = q.get(timeout=1)
+        self.assertEqual(("deferred", REF, "CPH2401", "0.01"),
+                         (event["type"], event["reference"], event["label"], event["amount"]))
+        self.assertEqual("deferred", fcm.sent[0][1]["type"])
+        # Still open, still watched, still payable — that is the whole difference from a decline.
+        self.assertEqual("open", svc.store.get(REF)["status"])
+        self.assertEqual("paid", svc.check_reference(REF))
+
+    def test_later_on_an_already_paid_request_tells_nobody(self):
+        svc = Service(Store(), FakeRpc())
+        svc.register(REF, TO, "0.01", "")
+        svc.check_reference(REF)
+        self.assertEqual(0, svc.defer(REF, "CPH2401"))
+
+    def test_later_on_a_reference_nobody_registered_is_an_error(self):
+        svc = Service(Store(), FakeRpc())
+        with self.assertRaises(KeyError):
+            svc.defer(REF, "CPH2401")
+
     def test_requests_to_yourself_or_garbage_payers_are_refused(self):
         svc = Service(Store(), FakeRpc())
         for payer in (TO, "nope"):
@@ -350,14 +399,22 @@ class HttpTest(unittest.TestCase):
         self.httpd = serve(self.svc, "127.0.0.1", 0, helius_auth="secret")
         self.base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+        from tests.authutil import session_for
+        self.tokens = {a: session_for(self.svc, a) for a in (TO, PAYER)}
 
     def tearDown(self):
         self.httpd.shutdown()
         self.httpd.server_close()
 
-    def post(self, path, body, headers=None):
+    def stream(self, who):
+        """An event stream opened as `who`; the address comes from the session, not the URL."""
+        return urllib.request.urlopen(urllib.request.Request(
+            f"{self.base}/v1/events", headers={"Authorization": f"Bearer {self.tokens[who]}"}), timeout=5)
+
+    def post(self, path, body, headers=None, as_=TO):
+        hdr = {"Authorization": f"Bearer {self.tokens[as_]}"} if as_ else {}
         req = urllib.request.Request(self.base + path, json.dumps(body).encode(),
-                                     {"Content-Type": "application/json", **(headers or {})})
+                                     {"Content-Type": "application/json", **hdr, **(headers or {})})
         try:
             with urllib.request.urlopen(req, timeout=5) as r:
                 return r.status, json.loads(r.read())
@@ -369,11 +426,11 @@ class HttpTest(unittest.TestCase):
         self.assertEqual(200, self.post("/v1/requests", {"reference": REF, "recipient": TO, "amount": "0.01"})[0])
         with urllib.request.urlopen(f"{self.base}/v1/requests/{REF}", timeout=5) as r:
             self.assertEqual("open", json.loads(r.read())["status"])
-        code, body = self.post("/v1/requests", {"reference": REF, "recipient": PAYER, "amount": "0.01"})
+        code, body = self.post("/v1/requests", {"reference": REF, "recipient": PAYER, "amount": "0.01"}, as_=PAYER)
         self.assertEqual(409, code)
 
     def test_bad_input_is_400_not_500(self):
-        self.assertEqual(400, self.post("/v1/requests", {"reference": "x"})[0])
+        self.assertEqual(400, self.post("/v1/requests", {"reference": "x", "recipient": TO})[0])
 
     def test_webhook_without_the_secret_is_403(self):
         # 403 specifically: Helius retries every other 4xx.
@@ -382,7 +439,7 @@ class HttpTest(unittest.TestCase):
 
     def test_sse_delivers_the_paid_event_end_to_end(self):
         self.post("/v1/requests", {"reference": REF, "recipient": TO, "amount": "0.01"})
-        stream = urllib.request.urlopen(f"{self.base}/v1/events?recipient={TO}", timeout=5)
+        stream = self.stream(TO)
         self.assertEqual(b": connected\n", stream.readline())
         stream.readline()
         self.assertTrue(wait_for(lambda: self.svc.hub.count() == 1))
@@ -396,7 +453,7 @@ class HttpTest(unittest.TestCase):
 
     def test_a_request_made_while_the_payer_was_offline_is_replayed_on_connect(self):
         self.post("/v1/requests", {"reference": REF, "recipient": TO, "amount": "0.01", "label": "Seeker", "payer": PAYER})
-        stream = urllib.request.urlopen(f"{self.base}/v1/events?recipient={PAYER}", timeout=5)
+        stream = self.stream(PAYER)
         self.assertEqual(b": connected\n", stream.readline())
         stream.readline()
         kind, data = stream.readline(), stream.readline()
@@ -416,21 +473,21 @@ class HttpTest(unittest.TestCase):
 
     def test_rejection_endpoint(self):
         self.post("/v1/requests", {"reference": REF, "recipient": TO, "amount": "0.01", "payer": PAYER})
-        self.assertEqual((200, {"told": 0}), self.post("/v1/rejections", {"reference": REF, "label": "CPH2401"}))
-        self.assertEqual(404, self.post("/v1/rejections", {"reference": PAYER, "label": "x"})[0])
+        self.assertEqual((200, {"told": 0}), self.post("/v1/rejections", {"reference": REF, "label": "CPH2401"}, as_=PAYER))
+        self.assertEqual(404, self.post("/v1/rejections", {"reference": PAYER, "label": "x"}, as_=PAYER)[0])
 
     def test_tap_relay_endpoint(self):
-        code, body = self.post("/v1/taps", {"to": TO, "address": PAYER, "label": "CPH2401"})
+        code, body = self.post("/v1/taps", {"to": TO, "address": PAYER, "label": "CPH2401"}, as_=PAYER)
         self.assertEqual((200, {"live": 0}), (code, body))
-        self.assertEqual(400, self.post("/v1/taps", {"to": TO, "address": "nope"})[0])
+        self.assertEqual(400, self.post("/v1/taps", {"to": "nope", "address": PAYER}, as_=PAYER)[0])
 
-    def test_sse_rejects_a_bad_address(self):
+    def test_sse_needs_a_session(self):
         try:
-            urllib.request.urlopen(f"{self.base}/v1/events?recipient=nope", timeout=5)
-            self.fail("expected 400")
+            urllib.request.urlopen(f"{self.base}/v1/events?recipient={TO}", timeout=5)
+            self.fail("expected 401")
         except urllib.error.HTTPError as e:
             with e:
-                self.assertEqual(400, e.code)
+                self.assertEqual(401, e.code)
 
 
 # ---------------------------------------------------------------------------------- tokens

@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Duffle bill tile: Food, a takeaway cup. Ported from
+     ui/components/ui/Marks.tsx `meal` (PORT-2026-10-01.md section 5.4).
+     24x24 grid, drawn at 48dp.
+
+     Outline D.Ink #343433; one detail in D.Blue #008FFF: the lid and the fork.
+
+     The 0.833 stroke is part of the drawing. It is traced from the user's reference
+     sheet (12 reference px to a grid unit) and is the ONE exception to the app's
+     stroke rule: it does NOT follow markStroke (CSS var mark-stroke), so do not
+     scale or override it when this drawable is tinted or resized.
+
+     Path data is copied verbatim from Marks.tsx; it has not been redrawn or
+     re-optimised. Its circle and rect elements became paths because
+     VectorDrawable has no such elements; the numbers are unchanged. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="48dp" android:height="48dp"
+    android:viewportWidth="24" android:viewportHeight="24">
+    <path
+        android:pathData="M6.542 5.917 6.987 4.225A.917 .917 0 0 1 7.873 3.542H16.127A.917 .917 0 0 1 17.013 4.225L17.458 5.917"
+        android:fillColor="#00000000"
+        android:strokeColor="#008FFF"
+        android:strokeWidth="0.833"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <path
+        android:pathData="M5.208 5.917H18.792A.5 .5 0 0 1 19.292 6.417V7.958A.5 .5 0 0 1 18.792 8.458H5.208A.5 .5 0 0 1 4.708 7.958V6.417A.5 .5 0 0 1 5.208 5.917Z"
+        android:fillColor="#00000000"
+        android:strokeColor="#343433"
+        android:strokeWidth="0.833"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <path
+        android:pathData="M5.75 8.458 7.497 19.892A.667 .667 0 0 0 8.156 20.458H15.844A.667 .667 0 0 0 16.503 19.892L18.25 8.458"
+        android:fillColor="#00000000"
+        android:strokeColor="#343433"
+        android:strokeWidth="0.833"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <path
+        android:pathData="M10.333 11.458V13.542A1.667 1.667 0 0 0 13.667 13.542V11.458M12 11.458V20.458"
+        android:fillColor="#00000000"
+        android:strokeColor="#008FFF"
+        android:strokeWidth="0.833"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+</vector>

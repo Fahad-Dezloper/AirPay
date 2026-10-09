@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Hugeicons QR Code (stroke rounded, free set, MIT) — @hugeicons/core-free-icons 4.3.4 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp" android:viewportWidth="24" android:viewportHeight="24">
+    <path
+        android:pathData="M2.5 6C2.5 4.35 2.5 3.52 3.01 3.01C3.52 2.5 4.35 2.5 6 2.5C7.65 2.5 8.48 2.5 8.99 3.01C9.5 3.52 9.5 4.35 9.5 6C9.5 7.65 9.5 8.48 8.99 8.99C8.48 9.5 7.65 9.5 6 9.5C4.35 9.5 3.52 9.5 3.01 8.99C2.5 8.48 2.5 7.65 2.5 6Z"
+        android:strokeColor="#FF000000" android:strokeWidth="1.5"
+        android:strokeLineCap="round" android:strokeLineJoin="round" />
+    <path
+        android:pathData="M2.5 18C2.5 16.35 2.5 15.52 3.01 15.01C3.52 14.5 4.35 14.5 6 14.5C7.65 14.5 8.48 14.5 8.99 15.01C9.5 15.52 9.5 16.35 9.5 18C9.5 19.65 9.5 20.48 8.99 20.99C8.48 21.5 7.65 21.5 6 21.5C4.35 21.5 3.52 21.5 3.01 20.99C2.5 20.48 2.5 19.65 2.5 18Z"
+        android:strokeColor="#FF000000" android:strokeWidth="1.5"
+        android:strokeLineCap="round" android:strokeLineJoin="round" />
+    <path
+        android:pathData="M14.5 6C14.5 4.35 14.5 3.52 15.01 3.01C15.52 2.5 16.35 2.5 18 2.5C19.65 2.5 20.48 2.5 20.99 3.01C21.5 3.52 21.5 4.35 21.5 6C21.5 7.65 21.5 8.48 20.99 8.99C20.48 9.5 19.65 9.5 18 9.5C16.35 9.5 15.52 9.5 15.01 8.99C14.5 8.48 14.5 7.65 14.5 6Z"
+        android:strokeColor="#FF000000" android:strokeWidth="1.5"
+        android:strokeLineCap="round" android:strokeLineJoin="round" />
+    <path
+        android:pathData="M14.5 14.5H17V17H14.5V14.5Z M19 19H21.5V21.5H19V19Z M14.5 19H17V21.5H14.5V19Z M19 14.5H21.5V17H19V14.5Z"
+        android:strokeColor="#FF000000" android:strokeWidth="1.5"
+        android:strokeLineCap="round" android:strokeLineJoin="round" />
+</vector>

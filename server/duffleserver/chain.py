@@ -17,6 +17,7 @@ class RpcError(Exception):
 
 
 PUBLIC_DEVNET = "https://api.devnet.solana.com"
+PUBLIC_MAINNET = "https://api.mainnet-beta.solana.com"
 
 
 class Rpc:
@@ -70,6 +71,13 @@ class Rpc:
         # `confirmed` is the floor for this method; `processed` is refused.
         res = self.call("getSignaturesForAddress", [address, {"limit": 10, "commitment": "confirmed"}])
         return verify.successful_signatures(res)
+
+    def signatures_with_time(self, address: str, limit: int = 20) -> list[dict]:
+        """Successful signatures with their block times, so a caller can skip transactions
+        older than it cares about without fetching each one to find out."""
+        res = self.call("getSignaturesForAddress", [address, {"limit": limit, "commitment": "confirmed"}])
+        return [{"signature": e["signature"], "blockTime": e.get("blockTime")}
+                for e in (res or []) if isinstance(e, dict) and e.get("err") is None and "signature" in e]
 
     def mint_decimals(self, mint: str) -> int | None:
         """The decimals the chain says a mint has; None if it isn't a mint."""

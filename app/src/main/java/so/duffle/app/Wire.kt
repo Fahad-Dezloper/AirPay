@@ -47,6 +47,22 @@ data class PayRequest(
     val symbol: String = if (token == "SOL") "SOL" else token.take(4),
     /** The asking phone's maker, as a [Brand] key. Display only. */
     val brand: String? = null,
+    /**
+     * The wallet vouching for [recipient], when the money is going to a linked wallet rather
+     * than to the one that holds the name. See [Vouch].
+     */
+    val owner: String? = null,
+    /** Days since the epoch. Signed over, so it cannot be stretched after the fact. */
+    val linkExpiry: Long = 0,
+    /** base64, unpadded, 64 bytes of ed25519. */
+    val linkSignature: String? = null,
+    /**
+     * A recent blockhash from the asking phone, or null. Only a hint, and only for a payer with
+     * no connection: it lets that phone build and sign without reaching Solana, then hand the
+     * signed payment back over NFC for the asking phone to send. A payer who is online ignores
+     * it and fetches their own, so the request itself still never expires.
+     */
+    val blockhash: String? = null,
 ) {
     val isSol get() = token == "SOL"
     /** The SPL mint, or null for SOL. */
@@ -77,7 +93,24 @@ data class PayRequest(
             put("s", symbol)
         }
         brand?.let { put("b", it) }
+        if (owner != null && linkSignature != null) {
+            put("o", owner); put("x", linkExpiry); put("z", linkSignature)
+        }
+        blockhash?.let { put("h", it) }
     }.toString().toByteArray(Charsets.UTF_8)
+
+    /**
+     * The link, but only when it verifies against [recipient]. Null otherwise.
+     *
+     * The single route from a payload to a name with a tick on the confirm sheet. Note it
+     * checks the link against the address **being paid**, not against anything else in the
+     * payload: the question the payer needs answered is who owns the destination.
+     */
+    fun link(): Vouch.Link? {
+        val o = owner ?: return null
+        val sig = linkSignature ?: return null
+        return Vouch.check(o, recipient, linkExpiry, sig)
+    }
 
     /**
      * The same request as a `solana:` URL. Emitting the standard form means a plain Solana Pay
@@ -96,7 +129,13 @@ data class PayRequest(
      * base58, so an unvalidated payload from a hostile or buggy peer would crash the payer's
      * app at the worst possible moment — mid-tap, in front of someone.
      */
-    fun validate(): String? = when {
+    /**
+     * @param nameResolved true only for a request this phone built itself, for a name it looked
+     *   up on the chain and found at [recipient]. That is the one way a name with a dot is
+     *   proven, so it is the one request allowed to carry one. Anything that arrived from
+     *   somewhere else is checked with the default, and a domain-shaped name on it is refused.
+     */
+    fun validate(nameResolved: Boolean = false): String? = when {
         !isBase58Address(recipient) -> "The request has an invalid destination address."
         !isBase58Address(reference) -> "The request has an invalid reference."
         genesis != null && !isBase58Address(genesis) -> "The request has an invalid Genesis token."
@@ -105,10 +144,13 @@ data class PayRequest(
         symbol.isBlank() || symbol.length > 12 -> "The request has an unreadable token name."
         amount.isNotBlank() && amount.toDoubleOrNull() == null -> "The request has an unreadable amount."
         (amount.toDoubleOrNull() ?: 0.0) < 0 -> "The request asks for a negative amount."
-        (amount.toDoubleOrNull() ?: 0.0) > MAX_AMOUNT -> "That amount looks wrong — refusing it."
+        (amount.toDoubleOrNull() ?: 0.0) > MAX_AMOUNT -> "That amount looks wrong, refusing it."
         // Readable and in range but not expressible in lamports, e.g. "0.0000000001" or "0".
         amount.isNotBlank() && units() == null -> "That amount can't be paid in $symbol."
         label.length > 64 -> "The request has an oversized label."
+        !nameResolved && Username.looksLikeDomain(label) -> "The request has a name shaped like a domain."
+        owner != null && !isBase58Address(owner) -> "The request has an invalid owner."
+        (owner == null) != (linkSignature == null) -> "The request carries half a wallet link."
         else -> null
     }
 
@@ -117,6 +159,9 @@ data class PayRequest(
         // deadline; v4 drops it, because the payer fetches a fresh one only when they press Pay
         // and a request is otherwise good forever. A v3 phone would still be running timers
         // against a hash this side never sends, so it is refused rather than half-understood.
+        // The optional "h" added since is not that deadline coming back: it is used only by a
+        // payer with no connection (see [blockhash]), and a phone that does not know the key
+        // ignores it, so the version stays where it is.
         const val WIRE_VERSION = 4
 
         /** A sanity ceiling. A tap should never carry a life-changing sum by accident. */
@@ -163,6 +208,12 @@ data class PayRequest(
                 symbol = o.optString("s").ifBlank { if (o.optString("t", "SOL") == "SOL") "SOL" else o.optString("t").take(4) },
                 // An unknown brand is dropped, not refused: it only decides a picture.
                 brand = o.optString("b").takeIf { Brand.isKnown(it) },
+                owner = if (o.has("o")) o.getString("o") else null,
+                linkExpiry = o.optLong("x"),
+                linkSignature = if (o.has("z")) o.getString("z") else null,
+                // A hint, so an unreadable one is dropped, not refused: the request is still
+                // payable by anyone with a connection.
+                blockhash = o.optString("h").takeIf { isBase58Address(it) },
             )
         } catch (e: Exception) {
             null
@@ -194,6 +245,18 @@ data class TapCard(
     val genesis: String? = null,
     /** This phone's maker, as a [Brand] key, so the other side can show its mark. */
     val brand: String? = null,
+    /**
+     * The wallet that vouches for [address], when this is not the wallet carrying the name.
+     *
+     * With the three link fields present the other phone can work out who this is without
+     * believing anything we say: it rebuilds the signed statement, checks the signature against
+     * `owner`, and resolves `owner`'s domain from the chain. See [Vouch].
+     */
+    val owner: String? = null,
+    /** Days since the epoch. Inside the signature, so it cannot be stretched afterwards. */
+    val linkExpiry: Long = 0,
+    /** base64, unpadded, 64 bytes of ed25519. */
+    val linkSignature: String? = null,
 ) {
     fun toBytes(): ByteArray = JSONObject().apply {
         put("v", PayRequest.WIRE_VERSION)
@@ -202,13 +265,38 @@ data class TapCard(
         put("l", label)
         genesis?.let { put("g", it) }
         brand?.let { put("b", it) }
+        // All three or none: a partial link is not checkable and must not travel.
+        if (owner != null && linkSignature != null) {
+            put("o", owner); put("x", linkExpiry); put("z", linkSignature)
+        }
     }.toString().toByteArray(Charsets.UTF_8)
+
+    /**
+     * The link, but only if it actually verifies. Null whenever it does not.
+     *
+     * The only route from a payload to a tick, so there is no way to show one on an unchecked
+     * claim: the fields on this object are just numbers until this says otherwise.
+     */
+    fun link(): Vouch.Link? {
+        val o = owner ?: return null
+        val sig = linkSignature ?: return null
+        return Vouch.check(o, address, linkExpiry, sig)
+    }
 
     /** Untrusted like everything else that arrives by radio. */
     fun validate(): String? = when {
         !PayRequest.isBase58Address(address) -> "That phone sent an invalid address."
         genesis != null && !PayRequest.isBase58Address(genesis) -> "That phone sent an invalid Genesis token."
         label.length > 64 -> "That phone sent an oversized name."
+        // A username may not wear a domain's clothes. Names with a dot are resolved from the
+        // chain and never travel by radio, so one arriving here is a phone claiming a name it
+        // did not prove — which is exactly what the tick is supposed to rule out.
+        Username.looksLikeDomain(label) -> "That phone sent a name shaped like a domain."
+        owner != null && !PayRequest.isBase58Address(owner) -> "That phone sent an invalid owner."
+        // Not checked here: whether the signature is GOOD. A bad link is not a bad card — the
+        // tap is still a perfectly good introduction, it just does not carry a name. Refusing
+        // the whole payload over it would turn an unverifiable claim into a failed tap.
+        (owner == null) != (linkSignature == null) -> "That phone sent half a wallet link."
         else -> null
     }
 
@@ -223,6 +311,9 @@ data class TapCard(
                 label = o.optString("l"),
                 genesis = if (o.has("g")) o.getString("g") else null,
                 brand = o.optString("b").takeIf { Brand.isKnown(it) },
+                owner = if (o.has("o")) o.getString("o") else null,
+                linkExpiry = o.optLong("x"),
+                linkSignature = if (o.has("z")) o.getString("z") else null,
             ).takeIf { it.validate() == null }
         } catch (e: Exception) {
             null
@@ -305,8 +396,13 @@ object Base58 {
 object Apdu {
 
     /**
-     * Proprietary AID: F0 + "Duffle". The F0 prefix is the range reserved for
+     * Proprietary AID: F0 + "Duffle" in ASCII. The F0 prefix is the range reserved for
      * non-registered applications, so it cannot collide with a real payment applet.
+     *
+     * **The name is AirPay now; these bytes still spell the old one, deliberately.** Both
+     * phones in a tap must route on the SAME AID, so changing it is a coordinated reinstall,
+     * not an edit — and it buys nothing anybody can see. Left alone until after submission;
+     * see pending.txt. Do not "correct" this comment to match the app name.
      */
     const val AID = "F0447566666C65"
 
@@ -336,6 +432,14 @@ object Apdu {
 
     const val INS_HELLO: Byte = 0x10
 
+    /**
+     * Reader → card, after SELECT: one piece of a signed payment, for the asking phone to send.
+     * P1 is the piece's index from zero and P2 is 1 on the last piece. See [OfflineTx].
+     */
+    const val INS_HAND: Byte = 0x20
+
+    fun isHand(cmd: ByteArray) = cmd.size >= 5 && cmd[0] == 0x80.toByte() && cmd[1] == INS_HAND
+
     fun isHello(cmd: ByteArray) = cmd.size >= 5 && cmd[0] == 0x80.toByte() && cmd[1] == INS_HELLO
 
     /** The data field of a short or extended-length APDU, or null if the lengths do not add up. */
@@ -354,6 +458,7 @@ object Apdu {
     val SW_WRONG_OFFSET = byteArrayOf(0x6B, 0x00)
     val SW_UNKNOWN_CMD = byteArrayOf(0x6D, 0x00)
     val SW_NOT_READY = byteArrayOf(0x69, 0x85.toByte())
+    val SW_WRONG_LENGTH = byteArrayOf(0x67, 0x00)
 
     fun isOk(r: ByteArray) = r.size >= 2 &&
         r[r.size - 2] == 0x90.toByte() && r[r.size - 1] == 0x00.toByte()

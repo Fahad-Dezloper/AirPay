@@ -56,6 +56,27 @@ class Hub:
             return sum(len(v) for v in self._subs.values())
 
 
+#: What cannot wait: money arriving, somebody asking for it or answering, somebody standing
+#: next to you. These wake a sleeping phone. Everything else (rewards, referrals, offers) is
+#: sent at normal priority, which the phone may hold until it next wakes: nothing is lost by a
+#: reward arriving a few minutes late, and FCM stops honouring "high" for an app that uses it
+#: for everything.
+URGENT = frozenset({"paid", "wallet", "request", "withdrawn", "rejected", "deferred", "tap", "message", "shop"})
+
+#: How long FCM keeps trying a phone that is switched off, per kind, in seconds. The default is
+#: four weeks, which is how "X tapped your phone" turns up a fortnight after X went home. A tap
+#: is only news while they are still standing there; an offer nudge is stale after a day.
+TTL = {"tap": 300, "offer": 24 * 3600}
+
+
+def android_config(kind: str) -> dict:
+    """The `android` block for one message: how urgently, and for how long, FCM delivers it."""
+    out = {"priority": "high" if kind in URGENT else "normal"}
+    if kind in TTL:
+        out["ttl"] = f"{TTL[kind]}s"
+    return out
+
+
 class Fcm:
     """FCM HTTP v1. Disabled unless a project id and service-account credentials are set and
     google-auth is installed; the server runs fine without it."""
@@ -91,7 +112,10 @@ class Fcm:
     def send(self, token: str, data: dict) -> str:
         """Returns 'ok', 'gone' (token should be dropped) or 'error'."""
         body = json.dumps(
-            {"message": {"token": token, "data": {k: str(v) for k, v in data.items()}, "android": {"priority": "high"}}}
+            {"message": {"token": token,
+                         # A missing value is left out, not sent as the word "None".
+                         "data": {k: str(v) for k, v in data.items() if v is not None},
+                         "android": android_config(str(data.get("type") or ""))}}
         ).encode()
         req = urllib.request.Request(
             f"https://fcm.googleapis.com/v1/projects/{self.project_id}/messages:send",
