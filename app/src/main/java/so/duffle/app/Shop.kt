@@ -190,7 +190,7 @@ object Shop {
          * True when [usdPrice] is an estimate, which the server says on every figure it sends.
          * Bitrefill's API gives no USD price for a package, so the server converts its internal
          * unit at a rate it measures from real invoices — close, not exact. An estimate is
-         * written "about 5.49 USDC", never "5.49 USDC", and never goes on the Pay button: only
+         * written "~5.49 USDC", never "5.49 USDC", and never goes on the Pay button: only
          * the invoice's own figure is the price.
          */
         val usdEstimate: Boolean = false,
@@ -272,6 +272,51 @@ object Shop {
     )
 
     /**
+     * The companies that go first on More, in this order, **by name** (2026-10-05): Hotstar,
+     * PhonePe, MakeMyTrip, Tinder, Amazon Prime, Uber, Swiggy, Jio, KFC, Cafe Coffee Day.
+     *
+     * By name and not by id because the ids are Bitrefill's and were not all in hand when the
+     * order was asked for: a guessed id that is one letter out silently orders nothing, where a
+     * name that is in the catalogue is found whatever its id turns out to be. Each entry is
+     * matched as a whole word or words inside the service's name, so "jio" finds "Jio" and
+     * "JioMart Gift Card" stays where it is, and "prime" is not found inside another word.
+     *
+     * A company not in the catalogue is simply not there. Everything these do not name follows
+     * in [LEAD]'s order, and then in the order the server sent it.
+     */
+    private val FIRST = listOf(
+        "hotstar", "phonepe", "makemytrip", "tinder", "prime", "uber", "swiggy", "jio", "kfc", "cafe coffee day",
+    )
+
+    /** Where a service called [name] comes in [FIRST], or -1. */
+    internal fun firstRank(name: String): Int {
+        val words = " " + name.lowercase().replace(Regex("[^a-z0-9]+"), " ").trim() + " "
+        return FIRST.indexOfFirst { " $it " in words }
+    }
+
+    /**
+     * What a person filters More by, and Bitrefill's categories that fall under each. The same
+     * grouping the server uses to build Home's shelves, with clothes pulled out of shopping
+     * because it is the one people ask for by name. Order is the order they are offered in.
+     */
+    val FILTERS: List<Pair<String, Set<String>>> = listOf(
+        "Streaming" to setOf("streaming"),
+        "Food" to setOf("food", "food-delivery", "groceries", "restaurants"),
+        "Travel" to setOf("travel", "flights", "train", "bus", "online-travel-agencies", "gasoline"),
+        "Clothes" to setOf("apparel", "fashion", "clothing", "shoes"),
+        "Shopping" to setOf("ecommerce", "online-marketplaces", "retail", "department-stores", "electronics"),
+        "Games" to setOf("games", "game-stores", "in-game-currencies"),
+        "Wallets" to setOf("digital-wallet"),
+        "Experiences" to setOf("experiences"),
+    )
+
+    /** Whether any of [service]'s products is in the filter called [filter]. */
+    fun inFilter(service: Service, filter: String): Boolean {
+        val wanted = FILTERS.firstOrNull { it.first == filter }?.second ?: return true
+        return service.cards.any { c -> c.product.categories.any { it in wanted } }
+    }
+
+    /**
      * The brands §3.1 collapses into **one** row, and the order of their tabs.
      *
      * "MakeMyTrip is one row although Bitrefill sells five MakeMyTrip products" — and those
@@ -335,8 +380,13 @@ object Shop {
         // `indexOf` is -1 for anything unlisted, so a listed brand sorts by its place in [LEAD]
         // and everything else sorts after it by the order it arrived in. Keyed on the index
         // this loop carries rather than `out.indexOf`, which would compare whole Services.
+        // Three bands: the companies named in [FIRST], then [LEAD]'s, then the rest as they came.
         return out.withIndex()
-            .sortedBy { (i, s) -> LEAD.indexOf(s.id).takeIf { it >= 0 } ?: (LEAD.size + i) }
+            .sortedBy { (i, s) ->
+                firstRank(s.name).takeIf { it >= 0 }
+                    ?: LEAD.indexOf(s.id).takeIf { it >= 0 }?.let { FIRST.size + it }
+                    ?: (FIRST.size + LEAD.size + i)
+            }
             .map { it.value }
     }
 

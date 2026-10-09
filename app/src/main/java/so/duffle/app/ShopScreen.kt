@@ -1,5 +1,7 @@
 package so.duffle.app
 
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -113,9 +115,8 @@ private const val SOLD_BY =
         "order and payment; it does not issue the code and cannot change or refund it. If " +
         "something goes wrong, contact AirPay support or Bitrefill support."
 
-/** §3.3's line under the prices. A statement about this app's own behaviour. */
-private const val ALSO_IN_APP =
-    "The code also appears in AirPay once delivered. Sold and delivered by Bitrefill."
+/** The line under the prices: who sells it. The same words the recharge sheet ends on. */
+private const val ALSO_IN_APP = "Sold and delivered by Bitrefill."
 
 /** §3.2's heading over the warnings — marked, not iconed (§3.2). */
 private const val READ_FIRST = "Read before you buy"
@@ -275,12 +276,12 @@ internal fun notEnough(cost: BigDecimal?, balance: BigDecimal?, estimate: Boolea
 }
 
 /**
- * A package's cost as the price box writes it: "5.49 USDC", or "about 5.49 USDC" when the server
+ * A package's cost as the price box writes it: "5.49 USDC", or "~5.49 USDC" when the server
  * says the figure is an estimate. Only the invoice's own number is ever called the price.
  */
 private fun costLabel(pack: Shop.Package): String? =
     pack.usdPrice?.toBigDecimalOrNull()?.let(::usdcLabel)
-        ?.let { if (pack.usdEstimate) "about $it" else it }
+        ?.let { if (pack.usdEstimate) "~$it" else it }
 
 // -- §3.1 the list -----------------------------------------------------------------------------
 
@@ -344,28 +345,95 @@ internal fun ShopSection(
     val query = ShopQueryHold.query("shop:${section.title}", scroll)
     val scope = rememberCoroutineScope()
     val needle = if (searchable) query.value.trim() else ""
-    val shown = remember(services, needle) {
-        if (needle.isEmpty()) services
-        else services.filter { s ->
-            s.name.contains(needle, ignoreCase = true) ||
-                s.lead.guide.line?.contains(needle, ignoreCase = true) == true
+    // The category chosen from the filter sheet, held like the query so it survives opening a
+    // company and coming back. Only the kinds that have something in them are offered.
+    val category = ShopQueryHold.category("shop:${section.title}", scroll)
+    val offered = remember(services) { Shop.FILTERS.map { it.first }.filter { f -> services.any { Shop.inFilter(it, f) } } }
+    var choosing by remember { mutableStateOf(false) }
+    val kind = if (searchable) category.value?.takeIf { it in offered } else null
+    val shown = remember(services, needle, kind) {
+        services.filter { s ->
+            (kind == null || Shop.inFilter(s, kind)) &&
+                (needle.isEmpty() || s.name.contains(needle, ignoreCase = true) ||
+                    s.lead.guide.line?.contains(needle, ignoreCase = true) == true)
         }
     }
 
     Column(Modifier.fillMaxSize()) {
         // Pinned above the list, which scrolls under it, so it is reachable from any row.
         if (searchable) {
-            SearchField(query.value) {
-                query.value = it
-                // A shorter list under an old scroll offset would open part-way down it.
-                scope.launch { scroll.scrollTo(0) }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.weight(1f)) {
+                    SearchField(query.value) {
+                        query.value = it
+                        // A shorter list under an old scroll offset would open part-way down it.
+                        scope.launch { scroll.scrollTo(0) }
+                    }
+                }
+                if (offered.isNotEmpty()) {
+                    Spacer(Modifier.width(10.dp))
+                    // The filter. Filled when one is on, so a short list is seen to be a
+                    // filtered one and not all there is.
+                    val shape = RoundedCornerShape(16.dp)
+                    Box(
+                        Modifier.size(48.dp).clip(shape)
+                            .then(if (kind != null) Modifier.background(D.Blue) else Modifier.border(1.5.dp, D.Line, shape))
+                            .clickable { choosing = true }
+                            .semantics { contentDescription = if (kind != null) "Filter, showing $kind" else "Filter by category" },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        androidx.compose.material3.Icon(
+                            androidx.compose.ui.res.painterResource(R.drawable.hi_filter), null,
+                            Modifier.size(22.dp), tint = if (kind != null) D.White else D.Black,
+                        )
+                    }
+                }
             }
+            // What is on, said in words under the bar, with its own way off.
+            if (kind != null) {
+                Spacer(Modifier.height(10.dp))
+                Row(
+                    Modifier.clip(CircleShape).background(D.Black).clickable {
+                        category.value = null
+                        scope.launch { scroll.scrollTo(0) }
+                    }.padding(start = 14.dp, end = 10.dp, top = 7.dp, bottom = 7.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(kind, color = D.White, style = Type.body)
+                    Spacer(Modifier.width(6.dp))
+                    HiIcon(Hi.Close, D.White, 16.dp, contentDescription = "Clear filter")
+                }
+            }
+        }
+        if (choosing) Tray(onClose = { choosing = false }) {
+            Spacer(Modifier.height(Space.lead))
+            Text("Show", color = D.Black, style = Type.title)
+            Spacer(Modifier.height(Space.lead))
+            for (name in listOf<String?>(null) + offered) {
+                val on = name == kind
+                val count = if (name == null) services.size else services.count { Shop.inFilter(it, name) }
+                Row(
+                    Modifier.fillMaxWidth().heightIn(min = 52.dp).clickable {
+                        category.value = name
+                        choosing = false
+                        scope.launch { scroll.scrollTo(0) }
+                    },
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(name ?: "Everything", color = D.Black, style = Type.body.copy(fontWeight = if (on) FontWeight.Bold else FontWeight.Medium), modifier = Modifier.weight(1f))
+                    Text("$count", color = D.Quiet, style = Type.body)
+                    Spacer(Modifier.width(12.dp))
+                    Box(Modifier.size(22.dp), contentAlignment = Alignment.Center) { if (on) HiIcon(Hi.Tick, D.BlueInk, 20.dp) }
+                }
+            }
+            Spacer(Modifier.height(Space.lead))
         }
         Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(scroll)) {
             Spacer(Modifier.height(8.dp))
             if (shown.isEmpty()) {
                 Text(
-                    "Nothing matches \"$needle\"", color = D.Quiet, style = Type.body,
+                    if (needle.isEmpty()) "Nothing here yet" else if (kind != null) "Nothing in $kind matches \"$needle\"" else "Nothing matches \"$needle\"",
+                    color = D.Quiet, style = Type.body,
                     textAlign = TextAlign.Center,
                     modifier = Modifier.fillMaxWidth().padding(vertical = 32.dp),
                 )
@@ -394,13 +462,22 @@ internal fun ShopSection(
  * top with last visit's filter still applied.
  */
 private object ShopQueryHold {
-    private class Held(val scroll: ScrollState, val query: androidx.compose.runtime.MutableState<String>)
+    private class Held(
+        val scroll: ScrollState, val query: androidx.compose.runtime.MutableState<String>,
+        val category: androidx.compose.runtime.MutableState<String?> = mutableStateOf(null),
+    )
 
     private val held = mutableMapOf<String, Held>()
 
     fun query(key: String, scroll: ScrollState): androidx.compose.runtime.MutableState<String> {
         held[key]?.takeIf { it.scroll === scroll }?.let { return it.query }
         return mutableStateOf("").also { held[key] = Held(scroll, it) }
+    }
+
+    /** The filter chosen beside that query. Made with it and dropped with it. */
+    fun category(key: String, scroll: ScrollState): androidx.compose.runtime.MutableState<String?> {
+        query(key, scroll)
+        return held.getValue(key).category
     }
 }
 
@@ -965,7 +1042,7 @@ private fun ColumnScope.Amounts(
         label = when {
             short -> "Not enough USDC"
             // A price to say, and the balance covers it. Only an EXACT price goes on the button:
-            // an estimate is in the box ("about 5.49 USDC") and the button stays a bare Pay
+            // an estimate is in the box ("~5.49 USDC") and the button stays a bare Pay
             // until the invoice returns the real figure, which `buy()` checks against the
             // balance again before anything is signed.
             cost != null && pick?.usdEstimate != true -> usdcLabel(cost)?.let { "Pay $it" } ?: "Pay"
@@ -998,8 +1075,11 @@ private fun PriceBox(
     val press = remember { MutableInteractionSource() }
     val shape = RoundedCornerShape(16.dp)
     Box(
-        modifier.then(PressScale(press)).clip(shape)
-            .border(if (on) 2.dp else 1.5.dp, if (on) D.Black else D.Line, shape)
+        // The recharge plans' own wash and edge, so an amount here and a plan there are plainly
+        // the same kind of thing. Chosen, the edge and the tick go blue: plain white with a
+        // black ring read as an empty box that had been outlined.
+        modifier.then(PressScale(press)).clip(shape).background(PLAN_WASH)
+            .border(if (on) 2.dp else 1.5.dp, if (on) D.Blue else PLAN_EDGE, shape)
             .clickable(press, indication = null, onClick = onPick),
     ) {
         Column(Modifier.fillMaxWidth().padding(16.dp)) {
@@ -1026,7 +1106,7 @@ private fun PriceBox(
         if (on) {
             Box(
                 Modifier.align(Alignment.TopEnd).padding(12.dp).size(20.dp)
-                    .background(D.Black, CircleShape),
+                    .background(D.Blue, CircleShape),
                 contentAlignment = Alignment.Center,
             ) { HiIcon(Hi.Tick, D.White, 12.dp, disc = true) }
         }
