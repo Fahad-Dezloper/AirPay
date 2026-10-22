@@ -13,8 +13,9 @@ services:
     name: airpay-server
     runtime: docker
     rootDir: server
-    dockerfilePath: ./server/Dockerfile
-    dockerContext: ./server
+    # With rootDir set, Render reads these two paths from inside that folder.
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
     region: singapore
     plan: starter
     healthCheckPath: /healthz
@@ -59,8 +60,8 @@ services:
     name: skr-payer
     runtime: docker
     rootDir: payer
-    dockerfilePath: ./payer/Dockerfile
-    dockerContext: ./payer
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
     region: singapore
     plan: starter
     disk:
