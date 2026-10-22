@@ -107,6 +107,7 @@ def make_handler(engine: Engine, secret: bytes, sponsor=None):
 
 
 def serve(engine: Engine, secret: bytes, host: str = "0.0.0.0", port: int = 8788, sponsor=None) -> ThreadingHTTPServer:
-    httpd = ThreadingHTTPServer((host, port), make_handler(engine, secret, sponsor))
+    from .secretfiles import bind
+    httpd = bind(host, port, make_handler(engine, secret, sponsor), ThreadingHTTPServer)
     httpd.daemon_threads = True
     return httpd

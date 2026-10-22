@@ -1,0 +1,92 @@
+# AirPay on Render: the server (public, at api.airpayy.com) and the SKR payer (private, holds the
+# keys). Create both at once from the Render dashboard: New > Blueprint > this repository.
+#
+# Secrets are never in this file. Values marked `sync: false` are asked for once, when the
+# Blueprint is created. The key files are added afterwards as Render "Secret Files" on each
+# service (Environment > Secret Files), which Render mounts under /etc/secrets/.
+#
+#   airpay-server:  fcm.json (Firebase service account), payer_hmac
+#   skr-payer:      payer.json, sponsor.json, hmac   (hmac = the same contents as payer_hmac)
+
+services:
+  - type: web
+    name: airpay-server
+    runtime: docker
+    rootDir: server
+    dockerfilePath: ./server/Dockerfile
+    dockerContext: ./server
+    region: singapore
+    plan: starter
+    healthCheckPath: /healthz
+    disk:
+      name: airpay-data
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: DUFFLE_DB
+        value: /data/duffle.db
+      - key: PUBLIC_URL
+        value: https://api.airpayy.com
+      # Behind Render's proxy every caller looks the same; use the forwarded address instead.
+      - key: TRUST_PROXY
+        value: "1"
+      - key: LOG_LEVEL
+        value: INFO
+      - key: GOOGLE_APPLICATION_CREDENTIALS
+        value: /etc/secrets/fcm.json
+      - key: PAYER_HMAC_SECRET_FILE
+        value: /etc/secrets/payer_hmac
+      # The payer's address on Render's private network.
+      - key: PAYER_URL
+        fromService:
+          type: pserv
+          name: skr-payer
+          property: hostport
+      - key: HELIUS_WEBHOOK_TYPE
+        value: raw
+      - key: FCM_PROJECT_ID
+        sync: false
+      - key: BITREFILL_API_KEY
+        sync: false
+      - key: DUFFLE_RPC_URL
+        sync: false
+      - key: DUFFLE_MAINNET_RPC
+        sync: false
+      - key: DUFFLE_ADMIN_TOKEN
+        sync: false
+
+  - type: pserv
+    name: skr-payer
+    runtime: docker
+    rootDir: payer
+    dockerfilePath: ./payer/Dockerfile
+    dockerContext: ./payer
+    region: singapore
+    plan: starter
+    disk:
+      name: payer-data
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: PORT
+        value: "8788"
+      - key: PAYER_KEYFILE
+        value: /etc/secrets/payer.json
+      - key: SPONSOR_KEYFILE
+        value: /etc/secrets/sponsor.json
+      - key: PAYER_HMAC_SECRET_FILE
+        value: /etc/secrets/hmac
+      - key: MAX_PAYOUT_SKR
+        value: "1000"
+      - key: MAX_DAY_SKR
+        value: "10000"
+      - key: MAX_RECIPIENT_DAY_SKR
+        value: "1500"
+      - key: SPONSOR_FEE_USDC_UNITS
+        value: "10000"
+      - key: PAYER_PUBKEY
+        sync: false
+      - key: SPONSOR_PUBKEY
+        sync: false
+      - key: PAYER_RPC_URL
+        sync: false

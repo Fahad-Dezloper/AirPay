@@ -39,6 +39,11 @@ def load_key(path: str) -> SigningKey:
 
 def main() -> None:
     logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"), format="%(asctime)s %(name)s %(message)s")
+    # On a host that can only pass secrets as variables (Railway): see secretfiles.py.
+    from .secretfiles import materialize
+    materialize({"PAYER_KEY_B64": ("PAYER_KEYFILE", "payer.json"),
+                 "SPONSOR_KEY_B64": ("SPONSOR_KEYFILE", "sponsor.json"),
+                 "PAYER_HMAC_B64": ("PAYER_HMAC_SECRET_FILE", "hmac")})
     env = os.environ.get
     key = load_key(env("PAYER_KEYFILE", "/secrets/payer.json"))
     pub = sol.b58encode(bytes(key.verify_key))
@@ -93,7 +98,7 @@ def main() -> None:
             time.sleep(5)
 
     threading.Thread(target=loop, name="advance", daemon=True).start()
-    serve(engine, secret, "0.0.0.0", int(env("PORT", "8788")), sponsor=sponsor).serve_forever()
+    serve(engine, secret, env("HOST", "0.0.0.0"), int(env("PORT", "8788")), sponsor=sponsor).serve_forever()
 
 
 if __name__ == "__main__":

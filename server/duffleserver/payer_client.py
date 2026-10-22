@@ -33,6 +33,9 @@ def sign(secret: bytes, method: str, path: str, ts: str, body: bytes) -> str:
 class Payer:
     def __init__(self, url: str | None, secret_file: str | None, timeout: float = 15.0):
         self.url = (url or "").rstrip("/")
+        # Render's private network hands over "host:port" with no scheme.
+        if self.url and "://" not in self.url:
+            self.url = "http://" + self.url
         self.timeout = timeout
         self.secret = b""
         if secret_file and os.path.exists(secret_file):

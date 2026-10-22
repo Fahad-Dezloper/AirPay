@@ -36,6 +36,10 @@ def load_dotenv() -> None:
 
 def main() -> None:
     load_dotenv()
+    # On a host that can only pass secrets as variables (Railway): see secretfiles.py.
+    from .secretfiles import materialize
+    materialize({"FCM_JSON_B64": ("GOOGLE_APPLICATION_CREDENTIALS", "fcm.json"),
+                 "PAYER_HMAC_B64": ("PAYER_HMAC_SECRET_FILE", "payer_hmac")})
     logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"), format="%(asctime)s %(name)s %(message)s")
     env = os.environ.get
     # One Helius key serves both the devnet RPC and the webhooks API.

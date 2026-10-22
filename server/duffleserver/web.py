@@ -546,7 +546,7 @@ def make_handler(service, helius_auth: str | None, limiter: RateLimit | None = N
 
 def serve(service, host: str, port: int, helius_auth: str | None = None,
           admin_token: str | None = None, shop=None) -> ThreadingHTTPServer:
-    httpd = ThreadingHTTPServer((host, port),
-                                make_handler(service, helius_auth, admin_token=admin_token, shop=shop))
+    from .secretfiles import bind
+    httpd = bind(host, port, make_handler(service, helius_auth, admin_token=admin_token, shop=shop), ThreadingHTTPServer)
     httpd.daemon_threads = True
     return httpd
