@@ -16,6 +16,7 @@ from .chain import Rpc
 from .service import config_as_dict
 from .payer_client import PayerError
 from .plans import PlanCatalogue
+from . import stats
 from .shop import Shop
 from .store import Conflict
 
@@ -183,6 +184,13 @@ def make_handler(service, helius_auth: str | None, limiter: RateLimit | None = N
                     return self._json(403, {"error": "admin token required"})
                 days = float((parse_qs(url.query).get("days") or ["30"])[0])
                 return self._json(200, service.reward_ledger(days))
+            if url.path == "/v1/admin/stats":
+                # Counts only (duffleserver/stats.py), but still the business's numbers: admin only.
+                if not self._admin():
+                    return self._json(403, {"error": "admin token required"})
+                body = service.store.stats()
+                body["downloads"] = stats.downloads()
+                return self._json(200, body)
             if url.path == "/v1/rewards/config":
                 # Public on purpose: the app shows these amounts, and a screen promising a
                 # number the server no longer pays would be worse than showing nothing.

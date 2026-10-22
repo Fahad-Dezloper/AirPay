@@ -1026,6 +1026,12 @@ class Store:
             self._db.execute("UPDATE claims SET checked_at=?, refused=? WHERE offer_id=? AND address=?",
                              (at, refused, offer_id, address))
 
+    def stats(self) -> dict:
+        """Counts for the admin stats view (stats.py). Reads only."""
+        from .stats import collect
+        with self._lock:
+            return collect(self._db)
+
     def offer_proof(self, offer_id: str) -> dict:
         """What a dApp is shown: how many verified Seeker owners opened it, how many paid, and
         the signatures. This is the asset the unfunded campaign exists to produce."""
