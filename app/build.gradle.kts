@@ -40,6 +40,10 @@ android {
         // Live token prices come from Pyth's keyed Hermes gateway. Blank on a clone with no key,
         // which switches Pyth off and prices from Jupiter alone — see Pyth.configured.
         buildConfigField("String", "PYTH_API_KEY", local("pyth.apiKey"))
+        // Usage counts go to PostHog (Analytics.kt). The project key is public by design; blank
+        // on a clone without one, which switches analytics off.
+        buildConfigField("String", "POSTHOG_KEY", local("posthog.key"))
+        buildConfigField("String", "POSTHOG_HOST", "\"" + (localProps.getProperty("posthog.host") ?: "https://us.i.posthog.com") + "\"")
     }
     signingConfigs {
         // The key a build for friends is signed with: its own, generated once by share.sh into
@@ -114,6 +118,8 @@ dependencies {
     // Push for payments that land while the app is closed. Initialised by hand from
     // local.properties, so no google-services plugin and no build break without Firebase.
     implementation("com.google.firebase:firebase-messaging:25.1.3")
+    // Usage counts (Analytics.kt). Off on a build without a PostHog key.
+    implementation("com.posthog:posthog-android:3.72.6")
     // Reading a QR off the camera. CameraX drives the preview and hands frames to ML Kit,
     // which does the decoding on-device — no network, and no image leaves the phone.
     implementation("androidx.camera:camera-camera2:1.6.0")

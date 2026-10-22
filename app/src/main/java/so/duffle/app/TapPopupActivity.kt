@@ -171,6 +171,8 @@ class TapPopupActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        Analytics.init(this)
+        Analytics.event("tap_sheet_opened")
         wallet = Wallet(this)
         address = wallet.address
         // Whether this wallet's network fee is paid for it, for the sheet to say and the payment to use.

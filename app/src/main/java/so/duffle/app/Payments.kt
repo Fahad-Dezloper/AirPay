@@ -68,6 +68,7 @@ object Payments {
 
         // Requests never expire, so the same one can be paid twice — after a relaunch, or by a
         // second phone that tapped the same person. The chain is the only place both show.
+        Analytics.event("payment_started", "token" to req.symbol)
         stage("Checking it hasn't been paid…")
         when (val already = withContext(Dispatchers.IO) { Chain.findPayment(req.reference, req.recipient, units, req.mint) }) {
             is Chain.Found.Yes -> return PayResult.AlreadyPaid(already.signature)
@@ -148,7 +149,10 @@ object Payments {
 
         stage("Confirming on Solana…")
         return when (val c = Chain.confirm(signature, req.reference, req.recipient, units, req.mint)) {
-            Chain.Confirmation.Confirmed -> PayResult.Sent(signature)
+            Chain.Confirmation.Confirmed -> {
+                Analytics.event("payment_completed", "token" to req.symbol, "fee" to if (sponsor != null) "covered" else "own")
+                PayResult.Sent(signature)
+            }
             is Chain.Confirmation.Failed ->
                 PayResult.Failed("The chain refused it", "It went out and didn't land. Nothing left your wallet.", signature)
             // Submitted, and we could not get an answer — usually the public RPC refusing us,

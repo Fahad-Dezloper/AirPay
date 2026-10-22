@@ -200,6 +200,7 @@ internal fun BuySkrSheet(
                         stage = Stage.Sending
                         when (val done = withContext(Dispatchers.IO) { Swap.execute(signed.tx, o.requestId!!) }) {
                             is Swap.Done.Ok -> {
+                                Analytics.event("skr_bought", "token" to paying.symbol)
                                 landed = true
                                 Haptics.success(ctx)
                                 stage = Stage.Done(

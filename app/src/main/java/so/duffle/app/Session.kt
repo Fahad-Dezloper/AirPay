@@ -155,6 +155,7 @@ object Session {
         val t = out.optString("token")
         if (!t.startsWith("ap1_") || out.optString("address") != addr) return false
         save(context, addr, t, walletsOf(out))
+        Analytics.event("signed_in")
         return true
     }
 

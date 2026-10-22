@@ -455,6 +455,7 @@ class MainActivity : ComponentActivity() {
                         myGenesis = null
                         connected = r.address
                         refreshWallets()
+                        Analytics.event("wallet_connected")
                         push("✓ wallet ${r.address.take(8)}…${r.address.takeLast(4)}")
                     }
                     is Wallet.Outcome.Failed -> { push("✗ ${r.why}"); walletNotice = r.why }
@@ -669,6 +670,7 @@ class MainActivity : ComponentActivity() {
                                         purchase = Purchase.Working(item, "Confirming on Solana…", payWith, inv.shown)
                                         when (val c = Chain.confirm(sent.signature)) {
                                             Chain.Confirmation.Confirmed -> {
+                                                Analytics.event("shop_purchase", "category" to category, "token" to payWith.name)
                                                 push("✓ shop: paid ${inv.shown}")
                                                 purchase = Purchase.Done(item, inv.shown, sent.signature, inv.id)
                                                 Push.showBought(this@MainActivity, inv.id, product.name, inv.shown, phone)
@@ -1055,6 +1057,7 @@ class MainActivity : ComponentActivity() {
         // and leaves the token row with no lines at all.
         MarketDay.attach(this)
         installCrashGuard()
+        Analytics.init(this)
         // Before anything talks to the server: the saved session, if there is one.
         Session.init(this)
         wallet = Wallet(this)

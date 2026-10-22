@@ -166,6 +166,7 @@ object Rewards {
         if (!enabled || address.isBlank()) return null
         val o = ServerClient.ask("/v1/rewards/claim", JSONObject(), timeoutMs = 20_000) ?: return null
         val p = o.optJSONObject("payout")
+        if (o.optBoolean("ok")) Analytics.event("reward_claimed")
         return Claimed(
             ok = o.optBoolean("ok"), skr = p?.optInt("skr") ?: 0, state = p?.optString("state").orEmpty(),
             refused = o.text("refused"), have = o.optInt("have"), need = o.optInt("need"),
@@ -483,6 +484,7 @@ object Rewards {
         val o = ServerClient.ask("/v1/offers/$offerId/claim", JSONObject().apply {
             put("address", address)
         }) ?: return "no_server"
+        if (o.optBoolean("ok")) Analytics.event("offer_claimed")
         return if (o.optBoolean("ok")) null else o.text("refused") ?: "refused"
     }
 
