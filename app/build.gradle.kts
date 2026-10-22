@@ -28,8 +28,8 @@ android {
         applicationId = "so.duffle.app"
         minSdk = 31
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1"
+        versionCode = 2
+        versionName = "1.0.2"
 
         buildConfigField("String", "TAP_SERVER_URL", local("duffle.server"))
         buildConfigField("boolean", "REWARDS", flag("rewards.enabled"))

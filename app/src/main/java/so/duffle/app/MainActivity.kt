@@ -2036,7 +2036,11 @@ class MainActivity : ComponentActivity() {
                         // The four things done most, one tap each, under what you hold.
                         Spacer(Modifier.height(Space.lead))
                         HomeActions(
-                            isSeeker = myGenesis != null,
+                            // Buying SKR is offered on a Seeker, whichever wallet is active: a
+                            // Seeker owner paying from Phantom is still a Seeker owner. The
+                            // wallet's Genesis Token also counts, for a Seeker owner on another
+                            // phone. (Offers still go by the Genesis Token alone.)
+                            isSeeker = myGenesis != null || onSeekerPhone,
                             onBuy = { url ->
                                 // SKR is bought here, in a sheet. Anything else is still a link.
                                 if (url.startsWith("https://jup.ag/")) buySkr = true
@@ -5678,10 +5682,14 @@ private fun NameDialog(
 
 
 /**
- * Scan, pay by name, history, and a fourth that depends on the phone: a Seeker owner can buy
- * SKR, anybody else is shown the Seeker. Round buttons with a label under each — blue with a
+ * Scan, pay by name, history, and a fourth that depends on the phone: on a Seeker (or with a
+ * wallet holding a Genesis Token) it buys SKR; anywhere else it shows the Seeker. Round buttons with a label under each — blue with a
  * white icon for the first three, the pay bar's black for the last.
  */
+/** This phone is a Solana Seeker, by what Android reports about the device itself. */
+internal val onSeekerPhone: Boolean =
+    android.os.Build.MANUFACTURER.equals("Solana Mobile Inc.", true) && android.os.Build.MODEL.equals("Seeker", true)
+
 @Composable
 internal fun HomeActions(
     isSeeker: Boolean,
