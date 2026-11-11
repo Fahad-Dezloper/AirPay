@@ -49,6 +49,18 @@ services:
         sync: false
       - key: BITREFILL_API_KEY
         sync: false
+      # CellUp recharges: Cryptorefills partner keys (the second is the 401 failover).
+      - key: CRYPTOREFILL_API
+        sync: false
+      - key: CRYPTOREFILL_API_2
+        sync: false
+      # Support emails to the inbox: a Gmail address and its APP password (not the login).
+      - key: SUPPORT_SMTP_USER
+        sync: false
+      - key: SUPPORT_SMTP_PASSWORD
+        sync: false
+      - key: SUPPORT_TO
+        value: airpayhq@gmail.com
       - key: DUFFLE_RPC_URL
         sync: false
       - key: DUFFLE_MAINNET_RPC
