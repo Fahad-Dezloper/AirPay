@@ -1,5 +1,10 @@
 package so.duffle.app
 
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.layout.union
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.Column
 import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.core.FiniteAnimationSpec
@@ -577,6 +582,8 @@ internal fun Tray(
     onClose: () -> Unit,
     /** False while something must not be interrupted — a payment in flight. */
     dismissible: Boolean = true,
+    /** True for a tray with a text field: it rides up on the keyboard instead of under it. */
+    liftWithKeyboard: Boolean = false,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     val scope = rememberCoroutineScope()
@@ -647,7 +654,8 @@ internal fun Tray(
                 .background(D.White, RoundedCornerShape(topStart = Tray.OUTER, topEnd = Tray.OUTER))
                 // Swallow taps so touching the tray never dismisses it.
                 .clickable(remember { MutableInteractionSource() }, indication = null) {}
-                .navigationBarsPadding()
+                .then(if (liftWithKeyboard) Modifier.windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.ime))
+                      else Modifier.navigationBarsPadding())
                 .padding(start = Tray.PAD, end = Tray.PAD, top = 10.dp, bottom = 12.dp),
         ) {
             Box(Modifier.align(Alignment.CenterHorizontally).size(36.dp, 4.dp).background(D.Line, CircleShape))

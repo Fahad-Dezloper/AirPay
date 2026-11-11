@@ -278,6 +278,12 @@ object Chain {
         recipientAccountExists: Boolean? = null,
         /** Set when the buyer has no SOL: see [Sponsor]. Null is the ordinary, self-paid transfer. */
         sponsor: Sponsor? = null,
+        /**
+         * Pay INTO this token account as it is, instead of the account derived from [recipient].
+         * For a seller that hands out a USDC account rather than a wallet (CellUp's server says
+         * which, from the chain). Null is the ordinary case.
+         */
+        destinationAccount: String? = null,
         /** Mainnet throughout. See [post]. */
     ): Built {
         if (!PayRequest.isBase58Address(payer)) return Built.Bad("Your wallet address looks wrong.")
@@ -302,9 +308,9 @@ object Chain {
             val mintKey = PublicKey(mint)
             val programKey = PublicKey(program)
             val source = PublicKey(tokenAccount(payer, mint, program))
-            val destination = PublicKey(tokenAccount(recipient, mint, program))
+            val destination = PublicKey(destinationAccount ?: tokenAccount(recipient, mint, program))
 
-            val needsAccount = recipientAccountExists?.not() ?: if (live) {
+            val needsAccount = if (destinationAccount != null) false else recipientAccountExists?.not() ?: if (live) {
                 exists(destination.toBase58())?.not() ?: return Built.Offline("could not reach Solana")
             } else false
 

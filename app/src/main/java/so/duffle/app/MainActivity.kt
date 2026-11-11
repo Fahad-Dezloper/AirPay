@@ -4401,7 +4401,7 @@ private fun PlanPill(text: String, outlined: Boolean = false) {
 
 /** A caption over a value — the shape that lets validity and data be compared down a column. */
 @Composable
-private fun Labelled(label: String, value: String, modifier: Modifier = Modifier) {
+internal fun Labelled(label: String, value: String, modifier: Modifier = Modifier) {
     Column(modifier.padding(end = 8.dp)) {
         Text(label.uppercase(), color = D.Quiet, style = Type.micro)
         Spacer(Modifier.height(Space.tight))
@@ -6180,7 +6180,7 @@ private fun PurchaseSheet(
 
 /** A label over a value, for the two things a plan is chosen on: how long, and how much. */
 @Composable
-private fun SheetStat(label: String, value: String, modifier: Modifier = Modifier) {
+internal fun SheetStat(label: String, value: String, modifier: Modifier = Modifier) {
     Column(modifier.padding(end = 12.dp)) {
         Text(label, color = D.Quiet, style = Type.caption)
         Spacer(Modifier.height(Space.tight))
@@ -6190,7 +6190,7 @@ private fun SheetStat(label: String, value: String, modifier: Modifier = Modifie
 
 /** One labelled fact: the label in a fixed column, the value beside it, so a list of them lines up. */
 @Composable
-private fun PurchaseFact(label: String, value: String) {
+internal fun PurchaseFact(label: String, value: String) {
     Row(Modifier.fillMaxWidth().padding(vertical = 5.dp), verticalAlignment = Alignment.Top) {
         Text(label, color = D.Quiet, style = Type.body, modifier = Modifier.width(150.dp).padding(end = 12.dp))
         Text(value, color = D.Black, style = Type.body, modifier = Modifier.weight(1f))
@@ -6199,7 +6199,7 @@ private fun PurchaseFact(label: String, value: String) {
 
 /** One point of a list: a dot in its own narrow column, and the text hanging to the right of it. */
 @Composable
-private fun BulletLine(
+internal fun BulletLine(
     text: String, color: Color = D.Quiet, style: androidx.compose.ui.text.TextStyle = Type.caption,
     maxLines: Int = Int.MAX_VALUE,
 ) {
@@ -6241,7 +6241,7 @@ internal val PLAN_EDGE = Color(0xFFDCEAF9)
  * grown.
  */
 @Composable
-private fun PlanTab(label: String, selected: Boolean, onPick: () -> Unit) {
+internal fun PlanTab(label: String, selected: Boolean, onPick: () -> Unit) {
     val ink by androidx.compose.animation.animateColorAsState(if (selected) D.Black else D.Quiet, tween(180), label = "tabInk")
     val bar by animateFloatAsState(if (selected) 1f else 0f, tween(220, easing = FastOutSlowInEasing), label = "tabBar")
     Column(
