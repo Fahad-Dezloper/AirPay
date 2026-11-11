@@ -469,7 +469,20 @@ class Wallet(private val activity: ComponentActivity) {
                 pkg, picked.token!!, addressBytes, message,
                 onToken = { t -> linked.add(picked.address, t, picked.name, picked.uri, picked.pkg) },
             ) { activity.startActivity(it) }
-        } else when (val r = adapter.transact(sender) {
+        } else signThroughDefault(address, addressBytes, message, retry = true)
+    } catch (e: Exception) {
+        android.util.Log.w("Wallet", "signMessage failed: ${e.message} / ${e.cause?.message}")
+        null
+    }
+
+    /**
+     * Signs through the phone's default wallet. A saved approval the wallet no longer honours
+     * comes back as "-1 authorization request failed" with nothing shown to the user; then the
+     * saved approval is dropped and the request made once more from scratch, which brings up the
+     * wallet's normal approval sheet instead of failing silently.
+     */
+    private suspend fun signThroughDefault(address: String, addressBytes: ByteArray, message: ByteArray, retry: Boolean): ByteArray? =
+        when (val r = adapter.transact(sender) {
             signMessagesDetached(arrayOf(message), arrayOf(addressBytes))
         }) {
             is TransactionResult.Success -> {
@@ -485,11 +498,18 @@ class Wallet(private val activity: ComponentActivity) {
                 signed?.signatures?.getOrNull(if (index >= 0) index else 0)
                     ?.takeIf { it.size == 64 }
             }
-            else -> null
+            else -> {
+                val why = (r as? TransactionResult.Failure)?.e?.let { it.message + " " + it.cause?.message }.orEmpty()
+                if (retry && adapter.authToken != null && "authorization request failed" in why) {
+                    android.util.Log.i("Wallet", "saved approval refused; asking afresh")
+                    forgetToken()
+                    signThroughDefault(address, addressBytes, message, retry = false)
+                } else {
+                    android.util.Log.w("Wallet", "signMessage refused: $why")
+                    null
+                }
+            }
         }
-    } catch (e: Exception) {
-        null
-    }
 
     companion object {
         /**

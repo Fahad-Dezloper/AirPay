@@ -336,8 +336,11 @@ class CellUpActivity : ComponentActivity() {
     /** Sign-in, once per wallet: it proves the wallet is yours to our server. */
     private suspend fun ensureSignedIn(addr: String): Boolean {
         if (Session.valid(addr)) return true
+        // "Busy" also locks every sheet in place (a payment must not be swiped away), so it is
+        // put back exactly as it was once the wallet answers, whoever asked for the sign-in.
+        val before = busy
         busy = "Approve sign-in in your wallet…"
-        val ok = Session.signIn(this, wallet, addr)
+        val ok = try { Session.signIn(this, wallet, addr) } finally { busy = before }
         if (ok) {
             lifecycleScope.launch { Push.token(this@CellUpActivity)?.let { ServerClient.registerDevice(addr, it) } }
             if (Build.VERSION.SDK_INT >= 33 &&
