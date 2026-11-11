@@ -16,6 +16,8 @@ from .chain import Rpc
 from .service import config_as_dict
 from .payer_client import PayerError
 from .plans import PlanCatalogue
+from .cryptorefills import RefillError
+from .topups import TopupRefused, match_operator
 from . import stats
 from .shop import Shop
 from .store import Conflict
@@ -25,13 +27,16 @@ log = logging.getLogger("duffle.web")
 MAX_BODY = 2 * 1024 * 1024
 #: POST routes that need no session: the catalogue's detail (a cache, no secret), Bitrefill's
 #: webhook (a nudge, never data) and the two admin routes, which check the admin token instead.
-PUBLIC_POST = {"/v1/shop/product", "/v1/shop/webhook", "/v1/offers", "/v1/rewards/config"}
+PUBLIC_POST = {"/v1/shop/product", "/v1/shop/webhook", "/v1/offers", "/v1/rewards/config", "/v1/topup/detect"}
 HEARTBEAT = 15.0
 #: What a shop invoice may be paid in. Checked against real invoices: Bitrefill quotes USDC and
 #: SOL on Solana for this account, and refuses USDT ("unsupported_payment_method").
 PAY_METHODS = ("usdc_solana", "solana")
 _PROOF_PATH = re.compile(r"^/v1/offers/([A-Za-z0-9_-]{1,64})/proof$")
 _CLAIM_PATH = re.compile(r"^/v1/offers/([A-Za-z0-9_-]{1,64})/claim$")
+_TOPUP_PATH = re.compile(r"^/v1/topup/orders/(cu_[0-9a-f]{32})$")
+_TOPUP_CANCEL = re.compile(r"^/v1/topup/orders/(cu_[0-9a-f]{32})/cancel$")
+_TOPUP_SUPPORT = re.compile(r"^/v1/topup/orders/(cu_[0-9a-f]{32})/support$")
 _REWARDS_PATH = re.compile(r"^/v1/rewards/([1-9A-HJ-NP-Za-km-z]{32,44})$")
 _REFERRALS_PATH = re.compile(r"^/v1/referrals/([1-9A-HJ-NP-Za-km-z]{32,44})$")
 _REQ_PATH = re.compile(r"^/v1/requests/([1-9A-HJ-NP-Za-km-z]{32,44})$")
@@ -56,7 +61,7 @@ class RateLimit:
 
 
 def make_handler(service, helius_auth: str | None, limiter: RateLimit | None = None,
-                 admin_token: str | None = None, shop=None):
+                 admin_token: str | None = None, shop=None, topups=None, support=None):
     limiter = limiter or RateLimit()
     #: Reads are limited too — they were not, and a list endpoint is as good a way to burn a
     #: provider quota as a write. Sign-in is limited hardest: it is the one route that is open
@@ -107,6 +112,74 @@ def make_handler(service, helius_auth: str | None, limiter: RateLimit | None = N
                 return want
             return ident["address"]
 
+        # -- CellUp recharges (topups.py) --------------------------------------------------------
+        def _topup_get(self, url, me):
+            if topups is None:
+                return self._json(503, {"error": "recharges are off"})
+            q = parse_qs(url.query)
+            one = lambda k: (q.get(k) or [""])[0]
+            try:
+                if url.path == "/v1/topup/countries":
+                    return self._json(200, {"countries": topups.countries()})
+                if url.path == "/v1/topup/operators":
+                    return self._json(200, {"operators": topups.operators(one("country"))})
+                if url.path == "/v1/topup/plans":
+                    return self._json(200, {"plans": topups.plans(one("country"), one("operator"))})
+                if me is None:
+                    return self._unauthorised()
+                if url.path == "/v1/topup/orders":
+                    return self._json(200, {"orders": topups.history(me)})
+                if url.path == "/v1/topup/support" and support is not None:
+                    return self._json(200, {"tickets": support.tickets(me)})
+                m = _TOPUP_PATH.match(url.path)
+                if m:
+                    return self._json(200, topups.status(me, m.group(1)))
+                m = _TOPUP_SUPPORT.match(url.path)
+                if m and support is not None:
+                    return self._json(200, support.preview(me, m.group(1)))
+            except TopupRefused as e:
+                return self._json(e.status, {"error": e.code, "message": e.message})
+            except RefillError as e:
+                return self._json(502, {"error": e.code, "message": "Could not reach the recharge service."})
+            return self._json(404, {"error": "not found"})
+
+        def _topup_post(self, path, body, me):
+            if topups is None:
+                return self._json(503, {"error": "recharges are off"})
+            try:
+                if path == "/v1/topup/detect":
+                    # Which network a number is on. Cryptorefills cannot say; Bitrefill's lookup can,
+                    # and its answer is matched to a network Cryptorefills sells in that country.
+                    country = str(body.get("country") or "").upper()
+                    found = None
+                    if shop is not None and shop.enabled:
+                        try:
+                            got = shop.operator(str(body.get("phone_number") or ""))
+                            if got.get("operator_found") and got.get("product"):
+                                found = match_operator(got["product"].get("name"), topups.operators(country))
+                        except Exception:  # noqa: BLE001 — a failed lookup only means "pick it yourself"
+                            found = None
+                    return self._json(200, {"operator": found})
+                if path == "/v1/topup/orders":
+                    out = topups.place(me, phone=str(body.get("phone_number") or ""),
+                                       country=str(body.get("country") or ""),
+                                       operator=str(body.get("operator") or ""),
+                                       plan_id=str(body.get("plan_id") or ""),
+                                       email=str(body.get("email") or "").strip(),
+                                       ip=self._ip(), agent=self.headers.get("User-Agent"))
+                    return self._json(200, out)
+                m = _TOPUP_CANCEL.match(path)
+                if m:
+                    return self._json(200, topups.cancel(me, m.group(1)))
+                m = _TOPUP_SUPPORT.match(path)
+                if m and support is not None:
+                    return self._json(200, support.send(me, m.group(1), email=str(body.get("email") or ""),
+                                                        query=str(body.get("query") or ""),
+                                                        app=self.headers.get("User-Agent")))
+            except TopupRefused as e:
+                return self._json(e.status, {"error": e.code, "message": e.message})
+            return self._json(404, {"error": "not found"})
+
         def _unauthorised(self):
             return self._json(401, {"error": "sign in"})
 
@@ -141,6 +214,8 @@ def make_handler(service, helius_auth: str | None, limiter: RateLimit | None = N
                     "push": service.fcm.enabled,
                     "helius": bool(service.helius and service.helius.enabled),
                 })
+            if url.path.startswith("/v1/topup/"):
+                return self._topup_get(url, me)
             m = _REQ_PATH.match(url.path)
             if m:
                 req = service.store.get(m.group(1))
@@ -235,6 +310,8 @@ def make_handler(service, helius_auth: str | None, limiter: RateLimit | None = N
                     return self._auth(path, body, me)
                 if path not in PUBLIC_POST and me is None:
                     return self._unauthorised()
+                if path.startswith("/v1/topup/"):
+                    return self._topup_post(path, body, me)
                 if path == "/v1/requests":
                     # Either side of a payment may register it — the asker (recipient) or the one
                     # being asked (payer) — but a caller may not register on behalf of strangers.
@@ -545,8 +622,8 @@ def make_handler(service, helius_auth: str | None, limiter: RateLimit | None = N
 
 
 def serve(service, host: str, port: int, helius_auth: str | None = None,
-          admin_token: str | None = None, shop=None) -> ThreadingHTTPServer:
+          admin_token: str | None = None, shop=None, topups=None, support=None) -> ThreadingHTTPServer:
     from .secretfiles import bind
-    httpd = bind(host, port, make_handler(service, helius_auth, admin_token=admin_token, shop=shop), ThreadingHTTPServer)
+    httpd = bind(host, port, make_handler(service, helius_auth, admin_token=admin_token, shop=shop, topups=topups, support=support), ThreadingHTTPServer)
     httpd.daemon_threads = True
     return httpd
