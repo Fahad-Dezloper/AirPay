@@ -168,6 +168,22 @@ class Shop:
     def enabled(self) -> bool:
         return bool(self.api_key)
 
+    def for_country(self, country: str) -> "Shop":
+        """The same account's shelf in another country, with its own cache.
+
+        Bitrefill's product list is per country (`?country=`), and this object reads one. CellUp
+        sells recharges anywhere, so it asks for a sibling; this shop itself, and AirPay's use
+        of it, is left exactly as it was.
+        """
+        cc = (country or "").upper()
+        if cc == (self.country or "").upper():
+            return self
+        with self._lock:
+            sibs = self.__dict__.setdefault("_siblings", {})
+            if cc not in sibs:
+                sibs[cc] = Shop(self.api_key, country=cc)
+            return sibs[cc]
+
     # -- catalogue ---------------------------------------------------------------------------
 
     def products(self, refresh: bool = False) -> list[dict]:
@@ -226,8 +242,10 @@ class Shop:
             expected = max(expected, self._read_pages(seen))
             if expected and len(seen) >= expected:
                 break
-        # The tiles' own products, by id, if the list missed them.
-        for pid in PINNED:
+        # The tiles' own products, by id, if the list missed them. They are India's tiles: a
+        # product fetched by id is not filtered by country, so asking for them while reading
+        # another country's shelf would put Hotstar into, say, Nigeria's catalogue.
+        for pid in (PINNED if self.country == "IN" else ()):
             if pid in seen:
                 continue
             try:
