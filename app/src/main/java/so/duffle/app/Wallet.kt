@@ -47,7 +47,7 @@ class Wallet(private val activity: ComponentActivity) {
         ConnectionIdentity(
             Uri.parse(IDENTITY_URI),
             Uri.parse("favicon.ico"),
-            "AirPay",
+            App.NAME,
         )
     ).apply {
         // Mainnet. The wallet has to be told, because it decides the cluster it signs for —

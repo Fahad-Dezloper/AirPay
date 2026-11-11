@@ -139,7 +139,7 @@ object Push {
 
     /** Opens the app where it was. For money: Home is where the balance is. */
     private fun home(context: Context) =
-        Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        Intent(context, CellUpActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
 
     /** Opens the notifications page, where the line this notification is about is listed. */
     private fun page(context: Context) = home(context).putExtra(EXTRA_OPEN, OPEN_ALERTS)
@@ -331,6 +331,29 @@ object Push {
         )
     }
 
+    /** A CellUp recharge ended: delivered, or not. The app is usually closed when it does. */
+    fun showTopup(context: Context, id: String, status: String, label: String, operator: String, phoneEnd: String) {
+        val delivered = status == "delivered"
+        val failed = status in setOf("expired", "cancelled", "failed", "refunded")
+        if (!delivered && !failed) return
+        notify(
+            context, Level.MONEY, tapId("topup$id"),
+            title = when {
+                delivered -> "Recharge done"
+                status == "refunded" -> "Recharge refunded"
+                else -> "Recharge not completed"
+            },
+            text = when {
+                delivered -> "$label from $operator is on the number ending $phoneEnd."
+                status == "refunded" -> "Your $operator recharge could not be delivered and was refunded."
+                else -> "Your $operator recharge for the number ending $phoneEnd did not go through."
+            },
+            open = home(context),
+            publicText = "News about your recharge",
+            alertAgain = true,
+        )
+    }
+
     fun cancel(context: Context, key: String) {
         context.getSystemService(NotificationManager::class.java)?.cancel(tapId(key))
     }
@@ -481,6 +504,12 @@ class TapMessagingService : FirebaseMessagingService() {
                 val failed = status in setOf("denied", "payment_error", "failed", "expired")
                 if (!delivered && !failed) return
                 Push.showOrder(this, invoice, Orders(this).all().firstOrNull { it.invoiceId == invoice }, delivered)
+            }
+            // A CellUp recharge ended (server/duffleserver/topups.py).
+            "topup" -> {
+                val id = d["id"]?.takeIf { it.startsWith("cu_") && it.length <= 40 } ?: return
+                Push.showTopup(this, id, d["status"].orEmpty(), d["label"].orEmpty().take(60),
+                    d["operator"].orEmpty().take(40), d["phone"].orEmpty().takeLast(4))
             }
             // An introduction relayed because the phones parted before HELLO could cross.
             "tap" -> {
