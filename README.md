@@ -1,10 +1,8 @@
-<p align="center">
-  <img src="docs/images/logo.png" alt="AirPay" width="300">
-</p>
+<h1 align="center">CellUp</h1>
 
 <p align="center">
-  <b>Pay your bills with crypto.</b><br>
-  Recharge a phone, pay a bill, buy a gift card or pay a friend, in USDC or SOL, straight from the wallet you already have.
+  <b>Recharge your phone with crypto.</b><br>
+  Prepaid top-ups in 140+ countries, paid in USDC straight from the Solana wallet you already have.
 </p>
 
 <p align="center">
@@ -14,73 +12,48 @@
   <img src="https://img.shields.io/badge/Wallet-never%20holds%20your%20keys-111418" alt="Never holds your keys">
 </p>
 
-<p align="center">
-  <img src="docs/images/onboarding.gif" alt="AirPay's sign-in screen, its icon morphing between Pay anyone, Shop, Earn SKR and AirPay" width="260">
-</p>
+CellUp is a native Android app for the Solana Seeker that does one thing: tops up a prepaid phone,
+anywhere. Type the number, CellUp finds its network, shows that network's plans, and you pay the
+exact USDC amount from your own wallet. It never holds your money or your keys; every payment is
+signed in your wallet and checked on Solana mainnet.
 
-AirPay is a native Android payments app for the Solana Seeker. It doesn't hold your money or your
-keys: it links the wallets you already use and gives you things to do with what's in them. Every
-payment is signed in your own wallet and confirmed on Solana mainnet.
-
-Built for **Clock In**, the Solana Mobile hackathon.
-
-> The Android package is `so.duffle.app` and some folders say `duffle`. That was the app's earlier
-> name. It's the same app.
+> **Looking for AirPay?** The earlier, wider app (pay anyone, tap to pay, shop, SKR rewards),
+> released as AirPay 1.0.2, is on the [`old`](../../tree/old) branch. The Android package is still
+> `so.duffle.app` and some folders say `duffle`; those are earlier names of the same project.
 
 ---
-
-## Screens
-
-<table>
-  <tr>
-    <td align="center"><img src="docs/images/home.jpg" width="190" alt="Home screen"><br><sub><b>Home</b></sub></td>
-    <td align="center"><img src="docs/images/services.jpg" width="190" alt="Services"><br><sub><b>150+ services</b></sub></td>
-    <td align="center"><img src="docs/images/recharge-paid.jpg" width="190" alt="A phone recharge, paid"><br><sub><b>Recharge paid</b></sub></td>
-    <td align="center"><img src="docs/images/bill-paid.jpg" width="190" alt="A gift card for a bill, paid in USDC"><br><sub><b>Bill paid in USDC</b></sub></td>
-  </tr>
-  <tr>
-    <td align="center"><img src="docs/images/wallets.jpg" width="190" alt="Several linked wallets"><br><sub><b>All your wallets</b></sub></td>
-    <td align="center"><img src="docs/images/scan.jpg" width="190" alt="Scanning a Solana Pay QR code"><br><sub><b>Scan any QR</b></sub></td>
-    <td align="center"><img src="docs/images/buy-skr.jpg" width="190" alt="Buying SKR at the live rate"><br><sub><b>Buy SKR</b></sub></td>
-    <td align="center"><img src="docs/images/free-fees.jpg" width="190" alt="Free network fees for SKR holders"><br><sub><b>Free network fees</b></sub></td>
-  </tr>
-</table>
 
 ## What it does
 
 | | |
 |---|---|
-| 🧾 **Bills and recharges** | Phone recharges, bills and gift cards for 150+ services, paid in USDC or SOL. Sold and delivered by Bitrefill. |
-| 👛 **Every wallet in one place** | Link Seeker Wallet, Phantom, Solflare and Backpack through Mobile Wallet Adapter, and switch in one tap. |
-| 🔎 **Pay anyone** | Type a `.skr`, `.sol` or `.air` name, or scan a Solana Pay QR code. |
-| 📲 **Tap to pay** | Hold two phones together: one acts as a card over NFC, the other reads it and the pay sheet opens. |
-| ⛽ **No SOL needed** | AirPay's fee wallet pays the network fee. Wallets holding 1,000+ SKR pay nothing at all. |
-| 🪙 **Earn and buy SKR** | Verified Seeker owners earn SKR as scratch cards. Swap any token for SKR at the best Jupiter rate. |
+| 🌍 **140+ countries** | Every country Cryptorefills sells top-ups in. Small plans its minimum won't take (such as ₹10 and ₹20) come from Bitrefill instead. |
+| 🔎 **Finds the network for you** | From the number itself: a live lookup first, then the number's prefix (libphonenumber), with a table of renamed networks. Tested on numbers from 12 countries. You can always change it. |
+| 📋 **Every plan, sorted** | All plans by price, or by kind (plans, data, top-up), swipeable. Prices in the local currency: ₹49, Rp7,650, ₦1,000. |
+| 💸 **Pay in USDC** | One transfer from your wallet to the supplier's one-off address. The network fee is a little SOL from your wallet. |
+| 🧭 **Plain statuses** | Awaiting payment, Processing, Successful, Cancelled, Failed, Refunded, with a placed, paid, delivered timeline. Recharge again opens the same plan. |
+| 🛟 **Help per order** | Ask about a recharge from inside the app. The email to support carries the order's details from the server's own records, and replies go to the customer. |
 
-## How it fits together
+## How a recharge works
 
 ```
-┌────────────────────┐   signs    ┌───────────────────────┐
-│  Android app       │──────────► │  The user's wallet    │
-│  app/              │   (MWA)    │  (Seeker, Phantom, …) │
-└─────────┬──────────┘            └───────────────────────┘
-          │ HTTPS
-          ▼
-┌────────────────────┐   asks     ┌───────────────────────┐
-│  AirPay server     │──────────► │  Payer                │
-│  server/           │   (HMAC)   │  payer/               │
-│  watches the chain,│            │  the only part that   │
-│  shop, rewards,    │            │  holds a key: pays    │
-│  push              │            │  rewards, sponsors    │
-└────────────────────┘            │  network fees         │
-                                  └───────────────────────┘
+ number ──► network found ──► plans ──► pick one ──► order placed with the supplier
+                                                         │
+             wallet signs one USDC transfer ◄────────────┘  (exact amount, one-off address)
+                         │
+                         ▼
+           supplier sees the payment ──► recharge delivered ──► push + "Successful"
 ```
+
+The server places the order with **Cryptorefills** (or **Bitrefill** for the small plans), hands the
+app the address and exact amount, then follows the order to the end and pushes the result. Abandoned
+checkouts are cancelled so they never count as unpaid orders.
 
 | Folder | What it is |
 |---|---|
-| [`app/`](app) | The Android app. Kotlin and Jetpack Compose, one module. |
-| [`server/`](server) | The backend. Python and SQLite, in Docker. Every "paid" is checked against a transaction it fetched from Solana itself. |
-| [`payer/`](payer) | A small separate service that holds the two keys (SKR rewards and network fees). The server can only ask it; it checks, caps and signs. |
+| [`app/`](app) | The Android app. Kotlin and Jetpack Compose. CellUp's screens are in `CellUpActivity.kt`, the recharge client in `TopUp.kt`, number handling in `Phones.kt`. |
+| [`server/`](server) | The backend. Python and SQLite, in Docker, deployed to Render from `main`. Recharges in `topups.py` and `cryptorefills.py`, support mail in `support.py`. |
+| [`payer/`](payer) | A small separate service that holds keys. Used by AirPay's rewards and fee sponsorship; CellUp doesn't need it. |
 
 ---
 
@@ -88,9 +61,7 @@ Built for **Clock In**, the Solana Mobile hackathon.
 
 ### The fast way: let an AI assistant set it up
 
-[`AGENTS.md`](AGENTS.md) is written for AI coding assistants (Claude Code, Cursor, Codex and
-others). It tells the assistant where everything is, what it may do on its own, and what it must
-ask you for. Open the repository in your assistant and paste:
+[`AGENTS.md`](AGENTS.md) is written for AI coding assistants. Open the repository in yours and paste:
 
 ```text
 Read AGENTS.md and set this project up for me. Check what's already installed and configured,
@@ -98,98 +69,67 @@ ask me only for what's missing, start the server, then build the app and install
 connected phone. Don't press Pay or approve anything in a wallet; tell me when it's my turn.
 ```
 
-The assistant will stop and ask before it touches anything that costs money or deletes data.
-
 ### The manual way
 
 <details>
 <summary><b>1. What you need</b></summary>
 
 - macOS or Linux, **JDK 17**, the **Android SDK** (API 36) and `adb`
-- **Docker**, for the server
-- **Python 3.10+**, only to run the server's tests outside Docker
-- An Android phone with NFC, Android 12 or newer, with a Solana wallet app installed
-- Optional: `cloudflared`, to reach the server from outside your Wi-Fi
+- **Docker** for the server, or **Python 3.10+** to run it directly
+- An Android phone, Android 12 or newer, with a Solana wallet app (Seeker Wallet, Phantom, Solflare, Backpack)
 
 </details>
 
 <details>
-<summary><b>2. Keys and accounts (all optional, each switches a feature on)</b></summary>
+<summary><b>2. Keys and accounts (each switches a feature on)</b></summary>
 
-None of these are in the repository. The app builds without them.
+None of these are in the repository. Without them the server still runs; that feature stays off.
 
 | What | Where it goes | What it switches on |
 |---|---|---|
-| Firebase project (Android app `so.duffle.app`) | `firebase.*` in `local.properties`, and the service-account JSON named by `FCM_KEY_FILE` in `server/.env` | Push notifications. **The server won't start in Docker without `FCM_KEY_FILE`.** |
-| Bitrefill API key | `BITREFILL_API_KEY` in `.env` | Recharges, bills and gift cards |
-| Solana RPC URL (Helius or Alchemy) | `DUFFLE_MAINNET_RPC` in `.env` | Reliable chain reads. The public RPC works but is rate limited. |
-| SKR reward wallet keypair | `secrets/payer.json`, its public key as `PAYER_PUBKEY` in `server/.env` | Paying SKR rewards. Needs SKR and a little SOL. |
-| Fee wallet keypair | `secrets/sponsor.json`, its public key as `SPONSOR_PUBKEY` in `server/.env` | Free network fees. Needs a little SOL (0.05 is plenty). |
-| Pyth API key | `pyth.apiKey` in `local.properties` | Live token prices on Home |
+| Cryptorefills partner key (and a second for failover) | `CRYPTOREFILL_API`, `CRYPTOREFILL_API_2` in `server/.env` | Recharges |
+| Bitrefill API key | `BITREFILL_API_KEY` in `server/.env` | Network lookup and the small plans |
+| Gmail address and its **app password** | `SUPPORT_SMTP_USER`, `SUPPORT_SMTP_PASSWORD` in `server/.env` | Support emails sent by the server. Without them the app opens the phone's mail app instead. |
+| Solana RPC URL (Helius or Alchemy) | `DUFFLE_MAINNET_RPC` in `server/.env` | Reliable chain reads |
+| Firebase project | `firebase.*` in `local.properties`, service account via `FCM_KEY_FILE` | Push notifications |
 
-`secrets/`, `.env` and `local.properties` are gitignored. Never commit them.
-
-</details>
-
-<details>
-<summary><b>3. <code>local.properties</code> (repository root)</b></summary>
-
-```properties
-sdk.dir=/path/to/Android/sdk
-# Where the app finds the server: your computer's Wi-Fi address, or a public https address
-duffle.server=http://192.168.1.50:8787
-rewards.enabled=true
-# Optional
-firebase.appId=
-firebase.apiKey=
-firebase.projectId=
-firebase.senderId=
-pyth.apiKey=
-```
+`secrets/`, `.env` and `local.properties` are gitignored. Never commit them. On Render the same
+names are set under the service's Environment (see [`render.yaml`](render.yaml)).
 
 </details>
 
 <details>
-<summary><b>4. Start the server</b></summary>
+<summary><b>3. Start the server on your computer</b></summary>
 
 ```bash
-./run.sh            # build and start the server, wait until healthy, seed the offers
-./run.sh payer      # the same, plus the payer (needs the keys from step 2)
-./run.sh status     # health and containers
-./run.sh logs       # follow the logs
-./run.sh stop       # stop everything; data is kept
+./run.sh            # build and start in Docker, wait until healthy
+./run.sh status
+./run.sh logs
+./run.sh stop
 ```
+
+Or without Docker: `cd server && python -m duffleserver` (it reads the same environment).
 
 </details>
 
 <details>
-<summary><b>5. Build and install the app</b></summary>
+<summary><b>4. Build and install the app</b></summary>
+
+For a phone on USB talking to the server on your computer:
 
 ```bash
-./gradlew :app:assembleBenchmark
-adb install -r app/build/outputs/apk/benchmark/app-benchmark.apk
+adb reverse tcp:8787 tcp:8787
+./gradlew :app:installBenchmark -Pdev.server=http://localhost:8787
 ```
 
-| Build | Use it for |
-|---|---|
-| `debug` | Development. Allows plain `http://` to a server on your Wi-Fi. |
-| `benchmark` | Testing on a real phone: release speed, debug signing, preview hooks on. |
-| `share` | A build to give someone else. Points at a public address, signed with your own key. |
+| Build | App id | Use it for |
+|---|---|---|
+| `debug` | `so.duffle.app.dev` | Development. Installs beside the released app. |
+| `benchmark` | `so.duffle.app.bench` | Testing smoothness: release speed, debug signing. |
+| `share` | `so.duffle.app` | A build to give someone else, signed with your own key. |
 
-</details>
-
-<details>
-<summary><b>6. One command for everything</b></summary>
-
-```bash
-./start.sh          # server + public tunnel + fresh APK on every connected phone
-./start.sh stop
-./fresh.sh          # start over as a new user: wipes the server database and the app's data
-./share.sh          # server + public tunnel + a signed APK in dist/ to send to someone
-```
-
-The free tunnel gets a **new address every time it restarts**, and the app is built knowing the
-server's address. If the app can't load anything, the address changed: run `./start.sh` again.
+Debug builds of Jetpack Compose run several times slower than release builds; judge animations on
+`benchmark`.
 
 </details>
 
@@ -197,25 +137,22 @@ server's address. If the app can't load anything, the address changed: run `./st
 
 ```bash
 ./gradlew :app:testDebugUnitTest      # app
-./run.sh test                         # server and payer
+./run.sh test                         # server
 ```
 
 ---
 
 ## Good to know
 
-- **It moves real money.** The app is on mainnet. Test with small amounts.
-- **A wallet that just switched or disconnected has to authorize again.** Open Rewards and approve
-  once in the wallet.
-- **Free network fees need the fee wallet funded.** With no SOL in it, nothing is sponsored.
-- **Not a wallet.** AirPay holds no keys and can't move anyone's funds.
-- **Not tap-to-pay at a shop terminal.** That needs card-network keys; AirPay's tap is phone to
-  phone.
-- **Not on iPhone.** Apple restricts NFC card emulation to licensed payment providers.
+- **It moves real money.** Recharges are paid in USDC on mainnet. Test with a small plan.
+- **Minimums.** Cryptorefills refuses orders under 0.5 EUR; those plans are hidden or come from
+  Bitrefill.
+- **One network lookup per number.** US and Canadian numbers have no prefix data, so they rely on the
+  live lookup, which can take a few seconds.
+- **Not a wallet.** CellUp holds no keys and can't move anyone's funds.
 
 ## More docs
 
 - [AGENTS.md](AGENTS.md): a map of the code for AI assistants and new contributors
-- [server/README.md](server/README.md): how the server finds and verifies a payment
-- [payer/README.md](payer/README.md): the payer, its limits and how to pause it
+- [server/README.md](server/README.md): how the server verifies payments
 - [TESTING.md](TESTING.md): testing on real phones
