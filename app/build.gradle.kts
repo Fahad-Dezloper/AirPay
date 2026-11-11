@@ -16,6 +16,15 @@ fun local(key: String) = "\"" + (localProps.getProperty(key) ?: "").replace("\""
 // until the layer is finished. Set rewards.enabled=true in local.properties to see it.
 fun flag(key: String) = (localProps.getProperty(key) ?: "").trim().equals("true", true).toString()
 
+// The network rebrand table lives with the server (server/duffleserver/operator_aliases.json) and
+// is copied into the app's assets at build time, so the offline guess and the server agree.
+val copyAliases by tasks.registering(Copy::class) {
+    from(rootProject.file("server/duffleserver/operator_aliases.json"))
+    into(layout.buildDirectory.dir("generated/aliases"))
+}
+android.sourceSets.getByName("main").assets.srcDir(layout.buildDirectory.dir("generated/aliases"))
+tasks.named("preBuild") { dependsOn(copyAliases) }
+
 kotlin {
     compilerOptions { jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17) }
 }
@@ -60,7 +69,17 @@ android {
         }
     }
     buildTypes {
-        getByName("debug") { buildConfigField("boolean", "PREVIEWS", "true") }
+        getByName("debug") {
+            // Its own app id, so a test build installs next to the real app on a phone that has
+            // it, instead of replacing it (and wiping it, since the signing keys differ).
+            applicationIdSuffix = ".dev"
+            buildConfigField("boolean", "PREVIEWS", "true")
+            // -Pdev.server=http://localhost:8787 points a test build at a server on this Mac,
+            // reached over USB with `adb reverse tcp:8787 tcp:8787`. Production is untouched.
+            (project.findProperty("dev.server") as String?)?.let {
+                buildConfigField("String", "TAP_SERVER_URL", "\"" + it.replace("\"", "") + "\"")
+            }
+        }
         getByName("release") { buildConfigField("boolean", "PREVIEWS", "false") }
         // A release build in every way that affects speed (not debuggable, so ART optimises it),
         // signed with the debug key so it installs over the debug build, and with the adb preview
@@ -83,6 +102,11 @@ android {
         }
         create("benchmark") {
             initWith(getByName("release"))
+            // Beside the real app and the test build, never over either.
+            applicationIdSuffix = ".bench"
+            (project.findProperty("dev.server") as String?)?.let {
+                buildConfigField("String", "TAP_SERVER_URL", "\"" + it.replace("\"", "") + "\"")
+            }
             signingConfig = signingConfigs.getByName("debug")
             matchingFallbacks += listOf("release")
             isDebuggable = false
@@ -120,6 +144,11 @@ dependencies {
     implementation("com.google.firebase:firebase-messaging:25.1.3")
     // Usage counts (Analytics.kt). Off on a build without a PostHog key.
     implementation("com.posthog:posthog-android:3.72.6")
+    // Phone numbers in every country (Phones.kt): CellUp recharges wherever Cryptorefills sells.
+    implementation("com.googlecode.libphonenumber:libphonenumber:9.0.43")
+    // Which network first issued a number's prefix, offline: the fallback when the live lookup
+    // cannot tell (a number that changed network keeps its old prefix, so it is only a guess).
+    implementation("com.googlecode.libphonenumber:carrier:2.43")
     // Reading a QR off the camera. CameraX drives the preview and hands frames to ML Kit,
     // which does the decoding on-device — no network, and no image leaves the phone.
     implementation("androidx.camera:camera-camera2:1.6.0")
