@@ -2,6 +2,7 @@
 
 package so.duffle.app
 
+import androidx.compose.ui.node.invalidateDraw
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.drawText
@@ -186,7 +187,8 @@ class CellUpActivity : ComponentActivity() {
         loadOperators()
         lifecycleScope.launch { countries.addAll(TopUp.countries()) }
         refreshHistory()
-        setContent { Root() }
+        // Every press in CellUp gets the same soft, rounded wash instead of Android's grey block.
+        setContent { androidx.compose.runtime.CompositionLocalProvider(androidx.compose.foundation.LocalIndication provides SoftPress) { Root() } }
     }
 
     override fun onResume() {
@@ -787,7 +789,9 @@ class CellUpActivity : ComponentActivity() {
     private fun Home(s: SharedTransitionScope? = null, a: AnimatedVisibilityScope? = null) {
         Column(Modifier.fillMaxSize().navigationBarsPadding().imePadding()) {
             Header()
-            Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = Space.gutter)) {
+            // One screen, no scrolling: the page's parts at their own size, and the globe takes
+            // whatever height is left, growing or shrinking to fit any phone.
+            Column(Modifier.weight(1f).padding(horizontal = Space.gutter)) {
                 Spacer(Modifier.height(8.dp))
                 Text("Recharge your phone", style = Type.title, color = D.Black)
                 Spacer(Modifier.height(10.dp))
@@ -811,18 +815,17 @@ class CellUpActivity : ComponentActivity() {
                     Column { Spacer(Modifier.height(20.dp)); PrimaryButton("See plans", { openPlans() }) }
                 }
                 if (history.isNotEmpty()) {
-                    Spacer(Modifier.height(Space.section))
+                    Spacer(Modifier.height(20.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text("Recent", style = Type.heading, color = D.Black, modifier = Modifier.weight(1f))
                         Text("See all", style = Type.body, color = D.BlueInk, modifier = Modifier.clickable { screen = Screen.HISTORY })
                     }
                     Spacer(Modifier.height(Space.lead))
-                    history.take(3).forEach { o -> OrderRow(o) { openOrder(o) } }
+                    Spacer(Modifier.height(4.dp))
+                    history.take(2).forEach { o -> OrderRow(o) { openOrder(o) } }
                 }
-                Spacer(Modifier.height(24.dp))
                 // Where CellUp reaches: a slow globe with the countries pulsing. No location needed.
-                DotGlobe(Modifier.fillMaxWidth().aspectRatio(0.95f))
-                Spacer(Modifier.height(8.dp))
+                DotGlobe(Modifier.fillMaxWidth().weight(1f))
             }
             // Support, always in the same place: bottom centre, plain words, a thumb-sized target.
             if (connected != null) {
@@ -1838,3 +1841,53 @@ internal fun readableMoney(face: String?): String? {
 }
 
 internal fun orderPlan(o: TopUp.Order): String = readableMoney(o.face) ?: o.label
+
+
+/**
+ * The press feedback for the whole app: a pale blue, rounded wash that comes up quickly and fades
+ * out gently, reaching a little past the row so it frames the content rather than cutting it.
+ */
+private object SoftPress : androidx.compose.foundation.IndicationNodeFactory {
+    override fun create(interactionSource: androidx.compose.foundation.interaction.InteractionSource): androidx.compose.ui.node.DelegatableNode =
+        Node(interactionSource)
+    override fun equals(other: Any?) = other === this
+    override fun hashCode() = 0x50F7
+
+    private class Node(private val source: androidx.compose.foundation.interaction.InteractionSource) :
+        Modifier.Node(), androidx.compose.ui.node.DrawModifierNode {
+        private val shade = androidx.compose.animation.core.Animatable(0f)
+
+        override fun onAttach() {
+            coroutineScope.launch {
+                var held = 0
+                source.interactions.collect { i ->
+                    when (i) {
+                        is androidx.compose.foundation.interaction.PressInteraction.Press -> {
+                            held++; launch { shade.animateTo(1f, tween(90)) }
+                        }
+                        is androidx.compose.foundation.interaction.PressInteraction.Release,
+                        is androidx.compose.foundation.interaction.PressInteraction.Cancel -> {
+                            held = (held - 1).coerceAtLeast(0)
+                            if (held == 0) launch { shade.animateTo(0f, tween(260)) }
+                        }
+                    }
+                }
+            }
+            coroutineScope.launch { androidx.compose.runtime.snapshotFlow { shade.value }.collect { invalidateDraw() } }
+        }
+
+        override fun androidx.compose.ui.graphics.drawscope.ContentDrawScope.draw() {
+            val a = shade.value
+            if (a > 0f) {
+                val out = 8.dp.toPx()
+                drawRoundRect(
+                    Color(0xFF0066CC).copy(alpha = 0.07f * a),
+                    topLeft = Offset(-out, 0f),
+                    size = androidx.compose.ui.geometry.Size(size.width + out * 2, size.height),
+                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(16.dp.toPx()),
+                )
+            }
+            drawContent()
+        }
+    }
+}
