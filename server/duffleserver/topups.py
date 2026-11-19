@@ -39,6 +39,8 @@ log = logging.getLogger("duffle.topups")
 
 PHONE = re.compile(r"^\+[1-9][0-9]{6,14}$")
 EMAIL = re.compile(r"^[^@\s]{1,64}@[^@\s]{1,190}\.[A-Za-z]{2,24}$")
+#: How long a Bitrefill "delivered" is still checked for a reversal (the operator rejecting it).
+BR_SETTLE = 24 * 3600
 #: Unpaid orders one wallet may have open at once.
 MAX_OPEN = 3
 #: Cryptorefills keeps a payment window of 30 minutes; after a little more than that an order
@@ -83,6 +85,10 @@ _BR_STATE = {
     "expired": "expired",
     "cancelled": "cancelled", "canceled": "cancelled",
     "denied": "failed", "payment_error": "failed", "failed": "failed", "error": "failed",
+    # Seen live 2026-11-19: the operator refused a Jio recharge -> invoice "all_error",
+    # its order "permanent_failure". Neither word was known, and the old code fell back to
+    # payment_status "complete" and showed Successful.
+    "all_error": "failed", "partial_error": "failed", "permanent_failure": "failed",
     "refunded": "refunded",
 }
 
@@ -105,7 +111,7 @@ def bitrefill_state(out: dict) -> str:
     """
     s = _BR_STATE.get(str(out.get("status") or "").strip().lower(), "unknown")
     orders = [str(o.get("status") or "").strip().lower() for o in out.get("orders") or []]
-    if any(o in _BR_ORDER_FAILED for o in orders) and s not in ("waiting", "paying", "partial"):
+    if any(_br_order_failed(o) for o in orders) and s not in ("waiting", "paying", "partial"):
         return "refunded" if any(o in ("refunded", "refund") for o in orders) else "failed"
     if s == "delivered":
         raw = str(out.get("status") or "").strip().lower()
@@ -117,9 +123,18 @@ def bitrefill_state(out: dict) -> str:
         return "failed" if orders else "delivering"
     if s in ("waiting", "unknown"):
         p = _BR_STATE.get(str(out.get("payment_status") or "").strip().lower(), "unknown")
+        # The payment's status says the money arrived, never that the recharge did.
+        if p == "delivered":
+            p = "delivering"
         if p in ("paying", "partial", "delivering") or (s == "unknown" and p != "unknown"):
             return p
     return s
+
+
+def _br_order_failed(status: str) -> bool:
+    """An order word that means it did not deliver, including ones Bitrefill adds later
+    (any "...fail..." or "...error..."): a new failure word must never read as success."""
+    return status in _BR_ORDER_FAILED or "fail" in status or "error" in status
 
 
 def _usdc_text(base_units: int) -> str:
@@ -482,8 +497,9 @@ class TopupDesk:
         with self.store._lock:
             rows = [dict(r) for r in self.store._db.execute(
                 "SELECT * FROM topups WHERE state NOT IN ('delivered','expired','cancelled','failed','refunded')"
-                " AND created_at>? AND looked_at<? ORDER BY looked_at LIMIT 25",
-                (now - FOLLOW_FOR, now - 8)).fetchall()]
+                " AND created_at>? AND looked_at<? AND (state!='confirming' OR looked_at<?)"
+                " ORDER BY looked_at LIMIT 25",
+                (now - FOLLOW_FOR, now - 8, now - 60)).fetchall()]
         changed = 0
         for row in rows:
             before = row["state"]
@@ -495,7 +511,36 @@ class TopupDesk:
                 continue
             if self._refresh(row)["state"] != before:
                 changed += 1
+        # Bitrefill can say "delivered" and then take it back when the operator rejects the
+        # recharge (seen live 2026-11-19, twice). So a Bitrefill delivery is watched for a day.
+        if self.shop is not None:
+            with self.store._lock:
+                late = [dict(r) for r in self.store._db.execute(
+                    "SELECT * FROM topups WHERE supplier='bitrefill' AND state='delivered'"
+                    " AND updated_at>? AND looked_at<? ORDER BY looked_at LIMIT 10",
+                    (now - BR_SETTLE, now - 60)).fetchall()]
+            for row in late:
+                if self._recheck_one(row):
+                    changed += 1
         return changed
+
+    def _recheck_one(self, row: dict) -> bool:
+        """Asks Bitrefill again about an order shown delivered; corrects it and tells the buyer
+        if it did not deliver after all. True when it changed."""
+        fresh = self._refresh_bitrefill(dict(row, state="delivered", told=1))
+        if fresh.get("state") in (None, "delivered", "delivering", "confirming", row["state"]):
+            # Still delivered, or not known: keep it exactly as it was (its updated_at too, so the
+            # follow-up window still ends), and look again later.
+            with self.store._lock, self.store._db:
+                self.store._db.execute("UPDATE topups SET state=?, updated_at=? WHERE id=?",
+                                       (row["state"], row["updated_at"], row["id"]))
+            return False
+        log.warning("topup %s was shown delivered; Bitrefill now says %s", row["id"], fresh.get("state"))
+        with self.store._lock, self.store._db:
+            self.store._db.execute("UPDATE topups SET told=0 WHERE id=?", (row["id"],))
+        if fresh.get("state") in FINAL:
+            self._tell(self._row(row["id"]))
+        return True
 
     # ---- inside ----------------------------------------------------------------------------
     @staticmethod
@@ -545,19 +590,7 @@ class TopupDesk:
             rows = [dict(r) for r in self.store._db.execute(
                 "SELECT * FROM topups WHERE supplier='bitrefill' AND state='delivered' AND created_at>?",
                 (since,)).fetchall()]
-        fixed = 0
-        for row in rows:
-            before = row["state"]
-            fresh = self._refresh_bitrefill(dict(row, state="delivering", told=1))
-            if fresh.get("state") != before:
-                fixed += 1
-                log.warning("topup %s was shown delivered; Bitrefill says %s", row["id"], fresh.get("state"))
-                # The buyer was told "delivered"; tell them what really happened.
-                with self.store._lock, self.store._db:
-                    self.store._db.execute("UPDATE topups SET told=0 WHERE id=?", (row["id"],))
-                if fresh.get("state") in FINAL:
-                    self._tell(self._row(row["id"]))
-        return fixed
+        return sum(1 for row in rows if self._recheck_one(row))
 
     def _refresh_bitrefill(self, row: dict) -> dict:
         shop = self.shop.for_country(row["country"]) if hasattr(self.shop, "for_country") else self.shop
@@ -576,7 +609,26 @@ class TopupDesk:
         raw = got.get("status")
         if got.get("payment_status"):
             raw = f"{raw}/{got['payment_status']}"
-        return self._update(row, {"state": bitrefill_state(got), "raw_state": raw, "code": code})
+        state = bitrefill_state(got)
+        if state == "delivered" and row["state"] != "delivered":
+            # Bitrefill saying "sent" is not the phone saying "received". Hold it as confirming
+            # until the buyer taps "Yes, I got it", or a day passes with Bitrefill still saying
+            # delivered. A failure in that time moves it to failed/refunded as usual.
+            since = row["updated_at"] if row["state"] == "confirming" else self._now()
+            if row["state"] != "confirming" or self._now() - since < BR_SETTLE:
+                state = "confirming"
+        return self._update(row, {"state": state, "raw_state": raw, "code": code})
+
+    def confirm(self, buyer: str, our_id: str) -> dict:
+        """The buyer says the recharge reached the phone. Only a confirming order moves."""
+        row = self._mine(buyer, our_id)
+        if row["state"] == "confirming":
+            log.info("topup %s confirmed received by the buyer", our_id)
+            # They just said so themselves: no push telling them again.
+            with self.store._lock, self.store._db:
+                self.store._db.execute("UPDATE topups SET told=1 WHERE id=?", (our_id,))
+            self._update(dict(row, told=1), {"state": "delivered", "raw_state": "buyer_confirmed"})
+        return self.view(self._row(our_id))
 
     def _update(self, row: dict, out: dict) -> dict:
         now = self._now()

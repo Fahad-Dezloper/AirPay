@@ -241,7 +241,11 @@ class Orders(Base):
         self.shop.status, self.shop.redemption = "all_delivered", {"code": "X1"}
         self.clock.t += 20; self.desk.watch(); self.clock.t += 20; self.desk.watch()
         got = self.desk.status(BUYER, out["id"])
-        self.assertEqual((got["state"], got["code"], got["address"]), ("delivered", '{"code": "X1"}', None))
+        # "Sent" by Bitrefill is held as confirming, not shown as success yet.
+        self.assertEqual((got["state"], got["code"], got["address"]), ("confirming", '{"code": "X1"}', None))
+        self.assertEqual(self.told, [])
+        self.clock.t += 24 * 3600 + 120; self.desk.watch()
+        self.assertEqual(self.desk.status(BUYER, out["id"])["state"], "delivered")
         self.assertEqual(len(self.told), 1)
         self.assertEqual(self.told[0][1]["status"], "delivered")
 
@@ -399,3 +403,98 @@ class RecheckCorrectsAWrongDelivered(Base):
         self.assertEqual(self.desk.recheck_bitrefill(), 0)
         self.assertEqual(self.store._db.execute("SELECT state FROM topups WHERE id=?", (out["id"],)).fetchone()[0], "delivered")
         self.assertEqual(len(self.told), told_before)
+
+
+class ConfirmingUntilTheBuyerSaysYes(Base):
+    """Bitrefill's "delivered" is held as confirming: the buyer's Yes, a failure, or a day decides."""
+
+    def sent(self):
+        out = self.place("br:reliance-jio-india:jio-10")
+        self.shop.status, self.shop.payment_status, self.shop.order_statuses = "all_delivered", "paid", ["delivered"]
+        self.clock.t += 20; self.desk.watch()
+        self.assertEqual(self.state(out), "confirming")
+        return out
+
+    def state(self, out):
+        return self.store._db.execute("SELECT state FROM topups WHERE id=?", (out["id"],)).fetchone()[0]
+
+    def test_yes_makes_it_successful_without_a_push(self):
+        out = self.sent()
+        self.assertEqual(self.desk.confirm(BUYER, out["id"])["state"], "delivered")
+        self.assertEqual(self.told, [])
+
+    def test_yes_on_an_order_not_confirming_changes_nothing(self):
+        out = self.place("br:reliance-jio-india:jio-10")
+        self.assertEqual(self.desk.confirm(BUYER, out["id"])["state"], "waiting")
+
+    def test_nobody_else_can_say_yes(self):
+        out = self.sent()
+        with self.assertRaises(TopupRefused):
+            self.desk.confirm("SomeoneElse1111111111111111111111111111111", out["id"])
+        self.assertEqual(self.state(out), "confirming")
+
+    def test_a_failure_while_confirming_is_shown_and_told(self):
+        out = self.sent()
+        self.shop.status, self.shop.order_statuses = "all_error", ["permanent_failure"]
+        self.clock.t += 5 * 60; self.desk.watch()
+        self.assertEqual(self.state(out), "failed")
+        self.assertEqual([t[1]["status"] for t in self.told], ["failed"])
+
+    def test_still_confirming_before_a_day_successful_after(self):
+        out = self.sent()
+        for _ in range(4):
+            self.clock.t += 5 * 3600; self.desk.watch()
+        self.assertEqual(self.state(out), "confirming")
+        self.clock.t += 5 * 3600; self.desk.watch()
+        self.assertEqual(self.state(out), "delivered")
+        self.assertEqual([t[1]["status"] for t in self.told], ["delivered"])
+
+    def test_an_unreachable_bitrefill_changes_nothing(self):
+        out = self.sent()
+        def down(_id): raise OSError("bitrefill down")
+        self.shop.order = down
+        self.clock.t += 5 * 60; self.desk.watch()
+        self.assertEqual(self.state(out), "confirming")
+        self.assertEqual(self.told, [])
+
+    def test_confirming_is_asked_about_once_a_minute_not_every_few_seconds(self):
+        self.sent()
+        asked = len(self.shop.orders_asked)
+        for _ in range(5):
+            self.clock.t += 10; self.desk.watch()
+        self.assertLessEqual(len(self.shop.orders_asked) - asked, 1)
+
+    def test_a_confirmed_order_that_bitrefill_later_fails_is_corrected(self):
+        out = self.sent()
+        self.desk.confirm(BUYER, out["id"])
+        self.shop.status, self.shop.order_statuses = "all_error", ["refunded"]
+        self.clock.t += 5 * 60; self.desk.watch()
+        self.assertEqual(self.state(out), "refunded")
+
+
+class OperatorRefusalIsNeverSuccess(Base):
+    """The live 2026-11-19 answer, word for word, for a refused Jio recharge."""
+
+    def test_all_error_with_a_permanent_failure_is_failed(self):
+        self.assertEqual(bitrefill_state({"status": "all_error", "payment_status": "complete",
+                                          "orders": [{"status": "permanent_failure"}]}), "failed")
+
+    def test_all_error_with_a_refunded_order_is_refunded(self):
+        self.assertEqual(bitrefill_state({"status": "all_error", "payment_status": "complete",
+                                          "orders": [{"status": "refunded"}]}), "refunded")
+
+    def test_an_unknown_invoice_word_with_payment_complete_is_not_delivered(self):
+        self.assertEqual(bitrefill_state({"status": "something_new", "payment_status": "complete",
+                                          "orders": []}), "delivering")
+
+    def test_an_unknown_failure_word_on_the_order_is_failed(self):
+        self.assertEqual(bitrefill_state({"status": "something_new", "payment_status": "complete",
+                                          "orders": [{"status": "temporary_failure_x"}]}), "failed")
+
+    def test_the_whole_flow_shows_failed_and_tells_failed(self):
+        out = self.place("br:reliance-jio-india:jio-10")
+        self.shop.status, self.shop.payment_status, self.shop.order_statuses = "all_error", "complete", ["permanent_failure"]
+        self.clock.t += 20; self.desk.watch()
+        self.assertEqual(self.store._db.execute("SELECT state FROM topups WHERE id=?", (out["id"],)).fetchone()[0], "failed")
+        self.assertEqual(self.told[-1][1]["status"], "failed")
+        self.assertNotIn("delivered", [t[1]["status"] for t in self.told])

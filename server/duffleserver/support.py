@@ -45,6 +45,7 @@ MIN_QUERY, MAX_QUERY = 5, 2000
 _STATE_WORDS = {
     "waiting": "Awaiting payment", "paying": "Processing (payment confirming)",
     "partial": "Part paid", "delivering": "Processing (sending to network)",
+    "confirming": "Confirming (supplier says sent, buyer has not confirmed yet)",
     "delivered": "Successful", "expired": "Cancelled (expired unpaid)",
     "cancelled": "Cancelled", "failed": "Failed", "refunded": "Refunded",
 }
@@ -64,7 +65,7 @@ def _when(ts) -> str:
 
 _SYMBOLS = {"INR": "₹", "USD": "$", "EUR": "€", "GBP": "£", "NGN": "₦", "PHP": "₱", "JPY": "¥", "BRL": "R$"}
 _SHORT_STATE = {"waiting": "Awaiting payment", "paying": "Processing", "partial": "Part paid",
-                "delivering": "Processing", "delivered": "Successful", "expired": "Cancelled",
+                "delivering": "Processing", "confirming": "Confirming", "delivered": "Successful", "expired": "Cancelled",
                 "cancelled": "Cancelled", "failed": "Failed", "refunded": "Refunded"}
 
 

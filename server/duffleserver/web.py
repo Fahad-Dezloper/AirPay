@@ -36,6 +36,7 @@ _PROOF_PATH = re.compile(r"^/v1/offers/([A-Za-z0-9_-]{1,64})/proof$")
 _CLAIM_PATH = re.compile(r"^/v1/offers/([A-Za-z0-9_-]{1,64})/claim$")
 _TOPUP_PATH = re.compile(r"^/v1/topup/orders/(cu_[0-9a-f]{32})$")
 _TOPUP_CANCEL = re.compile(r"^/v1/topup/orders/(cu_[0-9a-f]{32})/cancel$")
+_TOPUP_CONFIRM = re.compile(r"^/v1/topup/orders/(cu_[0-9a-f]{32})/confirm$")
 _TOPUP_SUPPORT = re.compile(r"^/v1/topup/orders/(cu_[0-9a-f]{32})/support$")
 _REWARDS_PATH = re.compile(r"^/v1/rewards/([1-9A-HJ-NP-Za-km-z]{32,44})$")
 _REFERRALS_PATH = re.compile(r"^/v1/referrals/([1-9A-HJ-NP-Za-km-z]{32,44})$")
@@ -171,6 +172,9 @@ def make_handler(service, helius_auth: str | None, limiter: RateLimit | None = N
                 m = _TOPUP_CANCEL.match(path)
                 if m:
                     return self._json(200, topups.cancel(me, m.group(1)))
+                m = _TOPUP_CONFIRM.match(path)
+                if m:
+                    return self._json(200, topups.confirm(me, m.group(1)))
                 m = _TOPUP_SUPPORT.match(path)
                 if m and support is not None:
                     return self._json(200, support.send(me, m.group(1), email=str(body.get("email") or ""),
