@@ -71,7 +71,6 @@ checkouts are cancelled so they never count as unpaid orders.
 |---|---|
 | [`app/`](app) | The Android app. Kotlin and Jetpack Compose. AirPay's screens are in `CellUpActivity.kt`, the recharge client in `TopUp.kt`, number handling in `Phones.kt`. |
 | [`server/`](server) | The backend. Python and SQLite, in Docker, deployed to Render from `main`. Recharges in `topups.py` and `cryptorefills.py`, support mail in `support.py`. |
-| [`payer/`](payer) | The key-holding service behind AirPay 1.0.2's SKR rewards and fee sponsorship. No longer used or deployed. |
 
 ---
 
@@ -172,5 +171,4 @@ Debug builds of Jetpack Compose run several times slower than release builds; ju
 ## More docs
 
 - [AGENTS.md](AGENTS.md): a map of the code for AI assistants and new contributors
-- [server/README.md](server/README.md): how the server verifies payments
-- [TESTING.md](TESTING.md): testing on real phones
+- [server/README.md](server/README.md): running the server
