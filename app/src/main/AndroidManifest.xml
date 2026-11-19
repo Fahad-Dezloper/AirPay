@@ -31,7 +31,7 @@
         android:allowBackup="false"
         android:enableOnBackInvokedCallback="true">
 
-        <!-- CellUp: mobile recharges only. The AirPay screens (MainActivity and the tap, scan
+        <!-- AirPay: mobile recharges only. The AirPay screens (MainActivity and the tap, scan
              and request activities) stay in the code but are no longer reachable; NFC, the
              camera and the wallet-app hooks are gone with them. -->
         <activity

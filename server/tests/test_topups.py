@@ -1,4 +1,4 @@
-"""CellUp's recharge desk: the server prices it, limits unpaid orders, follows it, tells the buyer once."""
+"""AirPay's recharge desk: the server prices it, limits unpaid orders, follows it, tells the buyer once."""
 import unittest
 
 from duffleserver.cryptorefills import RefillError

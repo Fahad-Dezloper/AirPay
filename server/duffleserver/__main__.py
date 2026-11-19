@@ -88,7 +88,7 @@ def main() -> None:
     # The Bitrefill token lives here rather than in the APK, where decompiling it would hand
     # over the account's order history.
     shop = Shop(env("BITREFILL_API_KEY"), country=env("SHOP_COUNTRY", "IN"))
-    # CellUp's recharges: Cryptorefills, our partner (topups.py). Two keys, so a revoked one fails
+    # AirPay's recharges: Cryptorefills, our partner (topups.py). Two keys, so a revoked one fails
     # over to the other; their go-live checklist asks for exactly that.
     mainnet = Rpc(mainnet_url, fallback=PUBLIC_MAINNET)
 

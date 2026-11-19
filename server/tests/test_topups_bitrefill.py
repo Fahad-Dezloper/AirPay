@@ -1,4 +1,4 @@
-"""Bitrefill as CellUp's fallback for the recharges under Cryptorefills' minimum.
+"""Bitrefill as AirPay's fallback for the recharges under Cryptorefills' minimum.
 
 Cryptorefills refuses orders under 0.56 USDC, which is where ₹10 and ₹20 sit. Bitrefill sells them
 (AirPay did, through shop.py), so the desk offers Bitrefill's plans for the same network, only

@@ -11,7 +11,7 @@ import java.util.Locale
  * Phone numbers for every country, through Google's libphonenumber: the country code, whether a
  * number can be real, its E.164 form (what Cryptorefills is sent), and how to write it back.
  *
- * Replaces the app's India-only handling ("+91" and ten digits), which CellUp cannot use: it
+ * Replaces the app's India-only handling ("+91" and ten digits), which AirPay cannot use: it
  * recharges in every country Cryptorefills sells in.
  */
 object Phones {

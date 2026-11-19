@@ -112,7 +112,7 @@ def make_handler(service, helius_auth: str | None, limiter: RateLimit | None = N
                 return want
             return ident["address"]
 
-        # -- CellUp recharges (topups.py) --------------------------------------------------------
+        # -- AirPay recharges (topups.py) --------------------------------------------------------
         def _topup_get(self, url, me):
             if topups is None:
                 return self._json(503, {"error": "recharges are off"})

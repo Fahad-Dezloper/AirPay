@@ -111,11 +111,11 @@ import kotlinx.coroutines.withContext
 
 /** The product's name, in one place, so the rename is one line. */
 internal object App {
-    const val NAME = "CellUp"
+    const val NAME = "AirPay"
 }
 
 /**
- * CellUp: recharge any phone, in any country Cryptorefills sells in, with USDC from your own
+ * AirPay: recharge any phone, in any country Cryptorefills sells in, with USDC from your own
  * wallet. One flow: number, network, plan, pay, delivered. Everything else AirPay did is off.
  *
  * Built from AirPay's own pieces so it feels the same: the plan card (PLAN_WASH / PLAN_EDGE,
@@ -187,7 +187,7 @@ class CellUpActivity : ComponentActivity() {
         loadOperators()
         lifecycleScope.launch { countries.addAll(TopUp.countries()) }
         refreshHistory()
-        // Every press in CellUp gets the same soft, rounded wash instead of Android's grey block.
+        // Every press in AirPay gets the same soft, rounded wash instead of Android's grey block.
         setContent { androidx.compose.runtime.CompositionLocalProvider(androidx.compose.foundation.LocalIndication provides SoftPress) { Root() } }
     }
 
@@ -257,7 +257,7 @@ class CellUpActivity : ComponentActivity() {
                 val ids = operators.map { it.id }
                 val prefix = withContext(Dispatchers.Default) { Phones.matchOperator(Phones.issuer(n.e164), ids) }
                 val pick = live?.takeIf { it in ids } ?: prefix
-                if (BuildConfig.DEBUG) android.util.Log.i("CellUp", "detect ${n.region} live=$live prefix=$prefix pick=$pick " +
+                if (BuildConfig.DEBUG) android.util.Log.i("AirPay", "detect ${n.region} live=$live prefix=$prefix pick=$pick " +
                     "${System.currentTimeMillis() - t0}ms of ${ids.size}")
                 val op = operators.firstOrNull { it.id == pick }
                 if (op != null) {
@@ -576,7 +576,7 @@ class CellUpActivity : ComponentActivity() {
     }
 
     /**
-     * A globe of dots turning slowly, with some of the countries CellUp recharges pulsing on it.
+     * A globe of dots turning slowly, with some of the countries AirPay recharges pulsing on it.
      * Drawn, not an image: it stays crisp at any size and costs nothing to ship.
      */
     @Composable
@@ -824,7 +824,7 @@ class CellUpActivity : ComponentActivity() {
                     Spacer(Modifier.height(4.dp))
                     history.take(2).forEach { o -> OrderRow(o) { openOrder(o) } }
                 }
-                // Where CellUp reaches: a slow globe with the countries pulsing. No location needed.
+                // Where AirPay reaches: a slow globe with the countries pulsing. No location needed.
                 DotGlobe(Modifier.fillMaxWidth().weight(1f))
             }
             // Support, always in the same place: bottom centre, plain words, a thumb-sized target.
@@ -1238,7 +1238,7 @@ class CellUpActivity : ComponentActivity() {
 
     /** What support will read about [o]: the same facts the server attaches from its records. */
     private fun supportSubject(o: TopUp.Order) =
-        "CellUp help · Order ${o.id.removePrefix("cu_").take(10).uppercase()} · ${o.operator} ${orderPlan(o)} · ${statusOf(o).word}"
+        "AirPay help · Order ${o.id.removePrefix("cu_").take(10).uppercase()} · ${o.operator} ${orderPlan(o)} · ${statusOf(o).word}"
 
     private fun supportFacts(o: TopUp.Order): List<Pair<String, String>> = listOfNotNull(
         "Order" to o.id.removePrefix("cu_").take(10).uppercase(),
@@ -1288,7 +1288,7 @@ class CellUpActivity : ComponentActivity() {
 
     /** The email body support reads: the customer's words first, then the order, one fact a line. */
     private fun supportBody(o: TopUp.Order, q: String): String = buildString {
-        appendLine("Hi CellUp support,")
+        appendLine("Hi AirPay support,")
         appendLine()
         appendLine(q.trim())
         appendLine()
@@ -1302,7 +1302,7 @@ class CellUpActivity : ComponentActivity() {
         appendLine("Delivered by: ${if (o.supplier == "bitrefill") "Bitrefill" else "Cryptorefills"}")
         appendLine("Reference: ${o.id}")
         appendLine()
-        appendLine("Sent from the CellUp app")
+        appendLine("Sent from the AirPay app")
     }
 
     /** No server mail account: the same message, ready to send from the phone's mail app. */
@@ -1319,7 +1319,7 @@ class CellUpActivity : ComponentActivity() {
 
     /**
      * After Send. Through our server the message is known to have reached support. Through the
-     * phone's mail app it is not: CellUp only handed it over, and cannot see whether Send was
+     * phone's mail app it is not: AirPay only handed it over, and cannot see whether Send was
      * pressed there. So that path asks, on the way back, instead of claiming it went.
      */
     @Composable

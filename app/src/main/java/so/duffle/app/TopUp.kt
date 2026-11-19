@@ -4,7 +4,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * CellUp's recharges, as the server offers them (server/duffleserver/topups.py).
+ * AirPay's recharges, as the server offers them (server/duffleserver/topups.py).
  *
  * The catalogue is Cryptorefills', read and trimmed by our server; prices are in USDC and are
  * decided by the server, never here. An order comes back with the one-off address and exact

@@ -1,4 +1,4 @@
-# CellUp on Render: one service, the server (public, at api.airpayy.com).
+# AirPay on Render: one service, the server (public, at api.airpayy.com).
 # Create it from the Render dashboard: New > Blueprint > this repository.
 #
 # Secrets are never in this file. Values marked `sync: false` are asked for once, when the
@@ -44,7 +44,7 @@ services:
         sync: false
       - key: BITREFILL_API_KEY
         sync: false
-      # CellUp recharges: Cryptorefills partner keys (the second is the 401 failover).
+      # AirPay recharges: Cryptorefills partner keys (the second is the 401 failover).
       - key: CRYPTOREFILL_API
         sync: false
       - key: CRYPTOREFILL_API_2

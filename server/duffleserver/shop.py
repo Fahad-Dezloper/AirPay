@@ -171,7 +171,7 @@ class Shop:
     def for_country(self, country: str) -> "Shop":
         """The same account's shelf in another country, with its own cache.
 
-        Bitrefill's product list is per country (`?country=`), and this object reads one. CellUp
+        Bitrefill's product list is per country (`?country=`), and this object reads one. AirPay
         sells recharges anywhere, so it asks for a sibling; this shop itself, and AirPay's use
         of it, is left exactly as it was.
         """

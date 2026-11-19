@@ -280,7 +280,7 @@ object Chain {
         sponsor: Sponsor? = null,
         /**
          * Pay INTO this token account as it is, instead of the account derived from [recipient].
-         * For a seller that hands out a USDC account rather than a wallet (CellUp's server says
+         * For a seller that hands out a USDC account rather than a wallet (AirPay's server says
          * which, from the chain). Null is the ordinary case.
          */
         destinationAccount: String? = null,

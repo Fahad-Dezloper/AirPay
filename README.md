@@ -1,4 +1,4 @@
-<h1 align="center">CellUp</h1>
+<h1 align="center">AirPay</h1>
 
 <p align="center">
   <b>Recharge your phone with crypto.</b><br>
@@ -13,16 +13,16 @@
 </p>
 
 <p align="center">
-  <img src="docs/images/cellup-globe.gif" alt="CellUp's home screen globe turning, with the flags of supported countries appearing" width="300">
+  <img src="docs/images/cellup-globe.gif" alt="AirPay's home screen globe turning, with the flags of supported countries appearing" width="300">
 </p>
 
-CellUp is a native Android app for the Solana Seeker that does one thing: tops up a prepaid phone,
-anywhere. Type the number, CellUp finds its network, shows that network's plans, and you pay the
+AirPay is a native Android app for the Solana Seeker that does one thing: tops up a prepaid phone,
+anywhere. Type the number, AirPay finds its network, shows that network's plans, and you pay the
 exact USDC amount from your own wallet. It never holds your money or your keys; every payment is
 signed in your wallet and checked on Solana mainnet.
 
-> **Looking for AirPay?** The earlier, wider app (pay anyone, tap to pay, shop, SKR rewards),
-> released as AirPay 1.0.2, is on the [`old`](../../tree/old) branch. The Android package is still
+> **Looking for the earlier AirPay?** Version 1.0.2, the wider app (pay anyone, tap to pay, shop,
+> SKR rewards), is on the [`old`](../../tree/old) branch. AirPay now does one thing: recharges. The Android package is still
 > `so.duffle.app` and some folders say `duffle`; those are earlier names of the same project.
 
 ---
@@ -68,9 +68,9 @@ checkouts are cancelled so they never count as unpaid orders.
 
 | Folder | What it is |
 |---|---|
-| [`app/`](app) | The Android app. Kotlin and Jetpack Compose. CellUp's screens are in `CellUpActivity.kt`, the recharge client in `TopUp.kt`, number handling in `Phones.kt`. |
+| [`app/`](app) | The Android app. Kotlin and Jetpack Compose. AirPay's screens are in `CellUpActivity.kt`, the recharge client in `TopUp.kt`, number handling in `Phones.kt`. |
 | [`server/`](server) | The backend. Python and SQLite, in Docker, deployed to Render from `main`. Recharges in `topups.py` and `cryptorefills.py`, support mail in `support.py`. |
-| [`payer/`](payer) | AirPay's key-holding service for SKR rewards and fee sponsorship. CellUp doesn't use it and it is no longer deployed. |
+| [`payer/`](payer) | The key-holding service behind AirPay 1.0.2's SKR rewards and fee sponsorship. No longer used or deployed. |
 
 ---
 
@@ -166,7 +166,7 @@ Debug builds of Jetpack Compose run several times slower than release builds; ju
   Bitrefill.
 - **One network lookup per number.** US and Canadian numbers have no prefix data, so they rely on the
   live lookup, which can take a few seconds.
-- **Not a wallet.** CellUp holds no keys and can't move anyone's funds.
+- **Not a wallet.** AirPay holds no keys and can't move anyone's funds.
 
 ## More docs
 

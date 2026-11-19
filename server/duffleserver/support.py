@@ -84,7 +84,7 @@ def short_id(row: dict) -> str:
 def subject_for(row: dict) -> str:
     what = readable_money(row.get("face")) or row.get("label") or ""
     state = _SHORT_STATE.get(row.get("state"), row.get("state") or "")
-    return _one_line(f"CellUp help · Order {short_id(row)} · {row.get('operator', '')} {what} · {state}", 180)
+    return _one_line(f"AirPay help · Order {short_id(row)} · {row.get('operator', '')} {what} · {state}", 180)
 
 
 def details_for(row: dict, app: str | None = None) -> list[tuple[str, str]]:
@@ -142,7 +142,7 @@ class SupportDesk:
     def preview(self, buyer: str, order_id: str) -> dict:
         """What the email will say about the order, for the app to show before sending."""
         row = self.topups._mine(buyer, order_id)
-        return {"to": "CellUp support", "subject": subject_for(row),
+        return {"to": "AirPay support", "subject": subject_for(row),
                 "details": [{"label": k, "value": v} for k, v in details_for(row)[:12]],
                 "mail": self.enabled}
 
@@ -174,12 +174,12 @@ class SupportDesk:
             return {"ok": True, "ticket": ticket, "mailed": False}
         msg = EmailMessage()
         msg["Subject"] = subject_for(row)
-        msg["From"] = formataddr(("CellUp support form", self.mailer.user))
+        msg["From"] = formataddr(("AirPay support form", self.mailer.user))
         msg["To"] = self.mailer.to
         msg["Reply-To"] = email
-        msg["Message-ID"] = make_msgid(domain="cellup.app")
+        msg["Message-ID"] = make_msgid(domain="airpayy.com")
         rule = "━" * 20
-        lines = ["Hi CellUp support,", "", query, "", "Thanks,", email, "",
+        lines = ["Hi AirPay support,", "", query, "", "Thanks,", email, "",
                  rule, "ORDER DETAILS (from our records)", rule]
         lines += [f"{k}: {v}" for k, v in details_for(row, app)]
         lines += ["", rule, f"Customer email: {email}", f"Ticket: {ticket}",

@@ -144,7 +144,7 @@ dependencies {
     implementation("com.google.firebase:firebase-messaging:25.1.3")
     // Usage counts (Analytics.kt). Off on a build without a PostHog key.
     implementation("com.posthog:posthog-android:3.72.6")
-    // Phone numbers in every country (Phones.kt): CellUp recharges wherever Cryptorefills sells.
+    // Phone numbers in every country (Phones.kt): AirPay recharges wherever Cryptorefills sells.
     implementation("com.googlecode.libphonenumber:libphonenumber:9.0.43")
     // Which network first issued a number's prefix, offline: the fallback when the live lookup
     // cannot tell (a number that changed network keeps its old prefix, so it is only a guess).

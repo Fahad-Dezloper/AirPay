@@ -41,7 +41,7 @@ class Support(unittest.TestCase):
         self.dir.cleanup()
 
     def test_mail_carries_our_records_and_replies_to_the_buyer(self):
-        out = self.support.send(ME, self.oid, email="buyer@example.com", query="Paid but no data yet", app="CellUp/1")
+        out = self.support.send(ME, self.oid, email="buyer@example.com", query="Paid but no data yet", app="AirPay/1")
         self.assertTrue(out["ok"])
         msg = self.sent[0]
         self.assertEqual(msg["To"], "airpayhq@gmail.com")

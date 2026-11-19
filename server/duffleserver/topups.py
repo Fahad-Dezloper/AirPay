@@ -1,5 +1,5 @@
 """
-CellUp's one job: put credit or a plan on a phone number, anywhere Cryptorefills sells it, paid
+AirPay's one job: put credit or a plan on a phone number, anywhere Cryptorefills sells it, paid
 in USDC from the buyer's own wallet.
 
 The server's part is small and strict:
@@ -149,8 +149,8 @@ REASONS = {
     "MAXIMUM_AMOUNT_PER_ORDER_EXCEEDED": "That amount is above the limit for one recharge.",
     "DAILY_SPENDING_LIMIT_EXCEEDED": "You have reached today's limit. Try again tomorrow.",
     "MONTHLY_SPENDING_LIMIT_EXCEEDED": "You have reached this month's limit.",
-    "KYC_MISSING": "This recharge needs identity verification, which CellUp does not offer yet.",
-    "FULLNAME_MISSING": "This recharge needs identity verification, which CellUp does not offer yet.",
+    "KYC_MISSING": "This recharge needs identity verification, which AirPay does not offer yet.",
+    "FULLNAME_MISSING": "This recharge needs identity verification, which AirPay does not offer yet.",
     "rate_limited": "Too many recharges right now. Try again in a few minutes.",
     "unreachable": "Could not reach the recharge service. Nothing was charged. Try again.",
     "not_configured": "Recharges are not available right now.",
