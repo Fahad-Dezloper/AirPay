@@ -22,8 +22,9 @@ exact USDC amount from your own wallet. It never holds your money or your keys; 
 signed in your wallet and checked on Solana mainnet.
 
 > **Looking for the earlier AirPay?** Version 1.0.2, the wider app (pay anyone, tap to pay, shop,
-> SKR rewards), is on the [`old`](../../tree/old) branch. AirPay now does one thing: recharges. The Android package is still
-> `so.duffle.app` and some folders say `duffle`; those are earlier names of the same project.
+> SKR rewards), is on the [`old`](../../tree/old) branch. AirPay now does one thing: recharges.
+> From 1.1.0 the app id is `com.airpayy.app`; 1.0.2 was `so.duffle.app`, so the two install side by
+> side. The code's own namespace and some folders still say `duffle`, an earlier name of the project.
 
 ---
 
@@ -141,9 +142,9 @@ adb reverse tcp:8787 tcp:8787
 
 | Build | App id | Use it for |
 |---|---|---|
-| `debug` | `so.duffle.app.dev` | Development. Installs beside the released app. |
-| `benchmark` | `so.duffle.app.bench` | Testing smoothness: release speed, debug signing. |
-| `share` | `so.duffle.app` | A build to give someone else, signed with your own key. |
+| `debug` | `com.airpayy.app.dev` | Development. Installs beside the released app. |
+| `benchmark` | `com.airpayy.app.bench` | Testing smoothness: release speed, debug signing. |
+| `share` | `com.airpayy.app` | A build to give someone else, signed with your own key. |
 
 Debug builds of Jetpack Compose run several times slower than release builds; judge animations on
 `benchmark`.

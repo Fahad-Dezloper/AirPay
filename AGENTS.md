@@ -118,7 +118,7 @@ secrets/  .env  server/.env  local.properties      Not in git. Never commit.
 ## Things that will trip you up
 
 - **Names.** "Duffle", "Tap" and "AirPay" are the same app at different times. The package is
-  `so.duffle.app`; the product is AirPay.
+  `so.duffle.app` (the code namespace); the published app id is `com.airpayy.app` from 1.1.0; the product is AirPay.
 - **The app is built knowing the server's address** (`duffle.server`). If the computer's Wi-Fi
   address or the tunnel address changes, rebuild and reinstall, or nothing loads.
 - **A 401 from the server means the wallet has not authorized**, not that the server is down.

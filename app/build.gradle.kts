@@ -34,11 +34,13 @@ android {
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "so.duffle.app"
+        // The published name: airpayy.com backwards. Permanent once on the dApp Store. The code's own
+        // namespace stays so.duffle.app; only this id is what phones and stores see.
+        applicationId = "com.airpayy.app"
         minSdk = 31
         targetSdk = 36
-        versionCode = 2
-        versionName = "1.0.2"
+        versionCode = 3
+        versionName = "1.1.0"
 
         buildConfigField("String", "TAP_SERVER_URL", local("duffle.server"))
         buildConfigField("boolean", "REWARDS", flag("rewards.enabled"))

@@ -213,6 +213,11 @@ def make_handler(service, helius_auth: str | None, limiter: RateLimit | None = N
                     "listeners": service.hub.count(),
                     "push": service.fcm.enabled,
                     "helius": bool(service.helius and service.helius.enabled),
+                    # Whether each is configured, never the values: lets a deploy be checked
+                    # without placing a real order or sending a real email.
+                    "recharges": bool(topups is not None and topups.cr.enabled),
+                    "small_recharges": bool(topups is not None and topups.shop is not None and topups.shop.enabled),
+                    "support_mail": bool(support is not None and support.enabled),
                 })
             if url.path.startswith("/v1/topup/"):
                 return self._topup_get(url, me)
