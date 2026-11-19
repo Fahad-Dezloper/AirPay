@@ -209,27 +209,6 @@ object Plans {
     private val TOPUP_SHELVES = setOf("top-up voucher", "isd")
     private val NUMBER = Regex("""\d+""")
 
-    /**
-     * The catalogue rows that describe THIS pack, or none.
-     *
-     * Matched on the price, then checked: two different plans can cost the same (a ₹1000 top-up
-     * and a ₹1000 yearly pack both exist), and a wrong description beside a real price is worse
-     * than none. So a talktime top-up only takes a top-up row, a plan never does, and where both
-     * sides state a number of days they must agree.
-     */
-    fun extrasFor(value: String, amount: Int, all: List<Extra>): List<Extra> {
-        if (amount <= 0) return emptyList()
-        val topup = "talktime" in value.lowercase() || "top-up" in value.lowercase()
-        val days = of(value).days
-        return all.filter { e ->
-            if (e.amount != amount) return@filter false
-            if ((e.category.lowercase() in TOPUP_SHELVES) != topup) return@filter false
-            val theirs = NUMBER.find(e.validity)?.value?.toIntOrNull()
-            // "1 Hour" and "Calendar Month" carry no day count on one side or the other: let through.
-            days == null || theirs == null || !e.validity.lowercase().contains("day") || theirs == days
-        }
-    }
-
     private val NUMBERED = Regex("""(?:^|\s)\d{1,2}[.)]\s+""")
 
     /**

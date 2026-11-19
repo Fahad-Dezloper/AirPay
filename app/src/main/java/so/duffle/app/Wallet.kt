@@ -46,7 +46,7 @@ class Wallet(private val activity: ComponentActivity) {
         // ConnectionIdentity takes (identityUri, iconUri, identityName) positionally in 2.1.1.
         ConnectionIdentity(
             Uri.parse(IDENTITY_URI),
-            Uri.parse("favicon.ico"),
+            Uri.parse(ICON_URI),
             App.NAME,
         )
     ).apply {
@@ -380,16 +380,6 @@ class Wallet(private val activity: ComponentActivity) {
         prefs.edit().remove(KEY_TOKEN).apply()
     }
 
-    /**
-     * Signs out of every wallet at once. Each wallet is forgotten with its session, so the app is
-     * back where it was before any wallet was connected. Nothing on chain changes, and nothing
-     * is asked of the wallet apps: this only forgets what this phone was holding.
-     */
-    fun logoutAll() {
-        linked.all().forEach { linked.remove(it) }
-        drop()
-    }
-
     /** A real disconnect: the user asked to sign out. */
     private fun forget() {
         linked.selected()?.let { linked.remove(it) }
@@ -415,32 +405,6 @@ class Wallet(private val activity: ComponentActivity) {
         data class Failed(val why: String) : SendOutcome
         /** Internal: the session went stale and the send is worth one retry. */
         data object NeedsReconnect : SendOutcome
-    }
-
-    /**
-     * Carries your name onto another wallet, by asking the named one to vouch for it.
-     *
-     * Switches the adapter to `owner`, gets one signature, and switches back — **always**, even
-     * when the signature fails, because leaving the app pointed at a wallet the user did not
-     * choose would make the next payment come from the wrong address.
-     *
-     * One approval, on the owner's wallet. The person sees a readable sentence naming the
-     * wallet being vouched for, not a transaction.
-     */
-    suspend fun link(owner: Linked, wallet: String): Vouch.Link? {
-        if (owner.address == wallet) return null
-        val previous = linked.selected()
-        return try {
-            use(owner)
-            val expiry = Vouch.expiryFor()
-            val signature = signMessage(owner.address, Vouch.message(owner.address, wallet, expiry))
-                ?: return null
-            Vouch.remember(activity, owner.address, wallet, expiry, Vouch.encode(signature))
-        } catch (e: Exception) {
-            null
-        } finally {
-            previous?.let { use(it) }
-        }
     }
 
     /**
@@ -515,8 +479,13 @@ class Wallet(private val activity: ComponentActivity) {
         /**
          * Identity shown in the wallet's approval sheet. Must be a real https URI — wallets
          * display it so the user knows who is asking, and a junk value looks like a scam.
+         * It has to be a site that resolves: the dApp Store rejected 1.1.0 because the old value
+         * (duffle.so, a domain that no longer exists) left the sheet with a dead origin and no icon.
          */
-        const val IDENTITY_URI = "https://duffle.so"
+        const val IDENTITY_URI = "https://www.airpayy.com"
+
+        /** Relative to [IDENTITY_URI]; the wallet fetches it to show our logo on the sheet. */
+        const val ICON_URI = "icon-192.png"
 
         private const val KEY_TOKEN = "auth_token"
         private const val SEEKER_WALLET_PKG = "com.solanamobile.wallet"

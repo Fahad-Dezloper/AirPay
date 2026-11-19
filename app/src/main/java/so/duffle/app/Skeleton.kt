@@ -90,76 +90,6 @@ internal fun Modifier.loadingFor(what: String): Modifier = semantics { contentDe
 
 // ----------------------------------------------------------------------------- the shapes
 
-/** The big balance on Home: one bar the size of the figure. */
-@Composable
-internal fun BalanceSkeleton() {
-    Box(Modifier.size(176.dp, 60.dp).skeleton(RoundedCornerShape(16.dp)))
-}
-
-/** "Pay a bill": the two rows of four tiles, so the grid is already where it will be. */
-@Composable
-internal fun BillTilesSkeleton() {
-    Column(Modifier.fillMaxWidth().loadingFor("bills"), verticalArrangement = Arrangement.spacedBy(20.dp)) {
-        repeat(2) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(20.dp)) {
-                repeat(4) {
-                    Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
-                        Box(Modifier.size(48.dp).skeleton(RoundedCornerShape(12.dp)))
-                        Spacer(Modifier.height(8.dp))
-                        SkeletonLine(44.dp, 10.dp)
-                    }
-                }
-            }
-        }
-    }
-}
-
-/**
- * The Rewards page below its title: the total, the cards, the week.
- *
- * No block between the total and the cards. There was one, for a Claim button the page no longer
- * has, and it pushed the grid 68dp lower than where it lands. The week card is 168, its real
- * minimum height.
- */
-@Composable
-internal fun RewardsSkeleton() {
-    Column(Modifier.fillMaxWidth().loadingFor("rewards")) {
-        Spacer(Modifier.height(24.dp))
-        SkeletonBox(Modifier.fillMaxWidth().height(168.dp), RoundedCornerShape(24.dp))
-        Spacer(Modifier.height(Space.section))
-        SkeletonLine(160.dp, 20.dp)
-        Spacer(Modifier.height(Space.lead))
-        repeat(2) { row ->
-            if (row > 0) Spacer(Modifier.height(Space.inline))
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(Space.inline)) {
-                repeat(2) { SkeletonBox(Modifier.weight(1f).aspectRatio(1f), RoundedCornerShape(24.dp)) }
-            }
-        }
-        Spacer(Modifier.height(Space.section))
-        SkeletonLine(110.dp, 20.dp)
-        Spacer(Modifier.height(Space.lead))
-        SkeletonBox(Modifier.fillMaxWidth().height(168.dp), RoundedCornerShape(24.dp))
-    }
-}
-
-/** The referral sheet: a heading, the code, the two counts, and a few people. */
-@Composable
-internal fun ReferralSkeleton() {
-    Column(Modifier.fillMaxWidth().loadingFor("your referral code")) {
-        SkeletonLine(190.dp, 24.dp)
-        Spacer(Modifier.height(Space.inline))
-        SkeletonLine(260.dp, 12.dp)
-        Spacer(Modifier.height(Space.lead))
-        SkeletonBox(Modifier.fillMaxWidth().height(64.dp), RoundedCornerShape(16.dp))
-        Spacer(Modifier.height(Space.inline))
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(Space.inline)) {
-            repeat(2) { SkeletonBox(Modifier.weight(1f).height(72.dp), RoundedCornerShape(16.dp)) }
-        }
-        Spacer(Modifier.height(Space.section))
-        repeat(3) { PersonSkeleton() }
-    }
-}
-
 @Composable
 private fun PersonSkeleton() {
     Row(Modifier.fillMaxWidth().height(64.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -171,34 +101,4 @@ private fun PersonSkeleton() {
             SkeletonLine(80.dp, 10.dp)
         }
     }
-}
-
-/** A few offer rows: a round face, three lines. */
-@Composable
-internal fun OffersSkeleton() {
-    Column(Modifier.fillMaxWidth().loadingFor("offers"), verticalArrangement = Arrangement.spacedBy(Space.section)) {
-        repeat(3) {
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
-                Box(Modifier.size(40.dp).skeleton(CircleShape))
-                Spacer(Modifier.width(Space.inline))
-                Column {
-                    SkeletonLine(64.dp, 10.dp)
-                    Spacer(Modifier.height(8.dp))
-                    SkeletonLine(140.dp, 18.dp)
-                    Spacer(Modifier.height(8.dp))
-                    SkeletonLine(230.dp, 12.dp)
-                }
-            }
-        }
-    }
-}
-
-/** A wallet card's balance while it loads: a translucent bar on the card's own colour. */
-@Composable
-internal fun CardBalanceSkeleton() {
-    Box(
-        Modifier.size(96.dp, 26.dp).skeleton(
-            RoundedCornerShape(13.dp), base = Color.White.copy(alpha = .35f), band = Color.White.copy(alpha = .7f),
-        ),
-    )
 }

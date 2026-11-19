@@ -12,6 +12,7 @@ import com.solana.mobilewalletadapter.clientlib.scenario.LocalAssociationScenari
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.util.concurrent.TimeUnit
+import org.sol4k.Base58
 
 /**
  * Talking to **one named wallet**, instead of whichever one Android picks.
@@ -102,7 +103,7 @@ object WalletLink {
     /** Links [pkg]'s wallet. [launch] starts the intent — the caller owns the activity. */
     suspend fun authorize(pkg: String, launch: (Intent) -> Unit): Linking =
         session(pkg, launch) { client ->
-            val r = client.authorize(Uri.parse(Wallet.IDENTITY_URI), Uri.parse("favicon.ico"), "AirPay", CLUSTER)
+            val r = client.authorize(Uri.parse(Wallet.IDENTITY_URI), Uri.parse(Wallet.ICON_URI), so.duffle.app.App.NAME, CLUSTER)
                 .get(TIMEOUT_MS, TimeUnit.MILLISECONDS)
             val account = r.accounts.firstOrNull()
                 ?: return@session Linking.Failed(
@@ -128,10 +129,10 @@ object WalletLink {
             // A refused stored token falls back to a fresh authorization in the same association,
             // as in [signMessage], rather than failing the payment at its last step.
             val auth = runCatching {
-                client.reauthorize(Uri.parse(Wallet.IDENTITY_URI), Uri.parse("favicon.ico"), "AirPay", token)
+                client.reauthorize(Uri.parse(Wallet.IDENTITY_URI), Uri.parse(Wallet.ICON_URI), so.duffle.app.App.NAME, token)
                     .get(TIMEOUT_MS, TimeUnit.MILLISECONDS)
             }.getOrNull() ?: runCatching {
-                client.authorize(Uri.parse(Wallet.IDENTITY_URI), Uri.parse("favicon.ico"), "AirPay", CLUSTER)
+                client.authorize(Uri.parse(Wallet.IDENTITY_URI), Uri.parse(Wallet.ICON_URI), so.duffle.app.App.NAME, CLUSTER)
                     .get(TIMEOUT_MS, TimeUnit.MILLISECONDS)
             }.getOrNull() ?: return@session Signing.NeedsReconnect
             val fresh = auth.authToken ?: return@session Signing.NeedsReconnect
@@ -161,11 +162,11 @@ object WalletLink {
             // issued under another cluster — authorize afresh in the SAME association: one extra
             // approval in the wallet, instead of a sign-in that fails before any prompt appears.
             val auth = runCatching {
-                client.reauthorize(Uri.parse(Wallet.IDENTITY_URI), Uri.parse("favicon.ico"), "AirPay", token)
+                client.reauthorize(Uri.parse(Wallet.IDENTITY_URI), Uri.parse(Wallet.ICON_URI), so.duffle.app.App.NAME, token)
                     .get(TIMEOUT_MS, TimeUnit.MILLISECONDS)
             }.onFailure { Log.i(TAG, "reauthorize refused: ${it.cause?.message ?: it.message}") }.getOrNull()
                 ?: runCatching {
-                    client.authorize(Uri.parse(Wallet.IDENTITY_URI), Uri.parse("favicon.ico"), "AirPay", CLUSTER)
+                    client.authorize(Uri.parse(Wallet.IDENTITY_URI), Uri.parse(Wallet.ICON_URI), so.duffle.app.App.NAME, CLUSTER)
                         .get(TIMEOUT_MS, TimeUnit.MILLISECONDS)
                 }.onFailure { Log.i(TAG, "authorize failed: ${it.cause?.message ?: it.message}") }.getOrNull()
                 ?: return@session null

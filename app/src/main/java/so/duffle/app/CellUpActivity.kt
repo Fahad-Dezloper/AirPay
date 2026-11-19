@@ -381,11 +381,13 @@ class CellUpActivity : ComponentActivity() {
                 val dest = o.address
                 val units = o.usdcUnits
                 if (dest == null || units == null || units <= 0) return@launch fail("Couldn't start this recharge", "Nothing was charged.")
+                if (!TopUp.matchesPlan(o, plan)) return@launch fail("The price changed",
+                    "This plan now costs ${o.usdc} USDC instead of ${plan.usdc}. Nothing was charged. Pick the plan again to see the new price.")
                 busy = "Preparing payment…"
                 val built = withContext(Dispatchers.IO) {
                     Chain.buildTokenTransfer(
-                        payer = addr, recipient = dest, mint = Shop.USDC_MAINNET, units = units,
-                        decimals = Shop.USDC_DECIMALS, reference = PayRequest.newReference(), symbol = "USDC",
+                        payer = addr, recipient = dest, mint = Addresses.USDC_MAINNET, units = units,
+                        decimals = Addresses.USDC_DECIMALS, reference = Addresses.newReference(), symbol = "USDC",
                         destinationAccount = if (o.payTo == "token_account") dest else null,
                     )
                 }

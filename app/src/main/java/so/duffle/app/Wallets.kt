@@ -183,9 +183,6 @@ data class Linked(
             return Color(c.red * k, c.green * k, c.blue * k)
         }
 
-    /** Seeker's own wallet: the one card with a gradient, and so the one with two inks. */
-    val isSeeker: Boolean get() = matches("seeker", "solanamobile", "seed vault", ".skr")
-
     /**
      * Words that identify THIS wallet's app among the installed ones, from what it said about
      * itself when it connected (its name and wallet URI). Null when it can't be told — Seeker
@@ -235,7 +232,7 @@ class Wallets(ctx: Context) {
         (0 until arr.length()).mapNotNull<Int, Linked> { i ->
             val o = arr.optJSONObject(i) ?: return@mapNotNull null
             val address = o.optString("a")
-            if (!PayRequest.isBase58Address(address)) null
+            if (!Addresses.isValid(address)) null
             else Linked(
                 address = address,
                 token = o.optString("t").ifBlank { null },

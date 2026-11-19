@@ -70,7 +70,24 @@ object TopUp {
         val failed get() = state in setOf("expired", "cancelled", "failed", "refunded")
         val finished get() = delivered || failed
         /** USDC in base units (6 decimals), exact: what the order asks for, to the last unit. */
-        val usdcUnits: Long? get() = usdc.toBigDecimalOrNull()?.movePointRight(6)?.longValueExact()
+        val usdcUnits: Long? get() = units(usdc)
+    }
+
+    /** USDC base units for a decimal string, or null if it is not a clean amount (never throws). */
+    fun units(usdc: String): Long? =
+        runCatching { usdc.toBigDecimalOrNull()?.movePointRight(6)?.longValueExact() }.getOrNull()
+
+    /**
+     * The order the server hands back must be the plan the person tapped, at (about) the price
+     * they saw. The app signs whatever amount the order asks for, so this is the one place a
+     * wrong or tampered server answer could make someone pay more than the card said. A 2%
+     * allowance covers a price refresh between showing the plan and placing the order.
+     */
+    fun matchesPlan(o: Order, plan: Plan): Boolean {
+        if (o.planId != null && o.planId != plan.id) return false
+        val shown = units(plan.usdc) ?: return false
+        val asked = o.usdcUnits ?: return false
+        return asked in 1..(shown + shown / 50)
     }
 
     sealed interface Placed {
@@ -173,7 +190,7 @@ object TopUp {
             label = j.optString("label"),
             face = j.text("face"),
             usdc = j.optString("usdc"),
-            address = j.text("address")?.takeIf { PayRequest.isBase58Address(it) },
+            address = j.text("address")?.takeIf { Addresses.isValid(it) },
             payTo = j.text("pay_to"),
             createdAt = (j.optDouble("created_at", 0.0) * 1000).toLong(),
             planId = j.text("plan_id"),

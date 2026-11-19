@@ -146,7 +146,6 @@ internal val Snap = spring<Float>(dampingRatio = 1f, stiffness = 439f)
 //   Geist Mono  addresses, signatures, codes — things read character by character
 //   Bricolage   the "AirPay" wordmark, and currency symbols
 //
-// Figtree is retired; `figtree.ttf` can go once nothing references it.
 
 @OptIn(ExperimentalTextApi::class)
 private fun variable(res: Int, w: Int, opsz: Float? = null) = Font(res, FontWeight(w),
