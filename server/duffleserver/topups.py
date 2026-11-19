@@ -87,13 +87,34 @@ _BR_STATE = {
 }
 
 
+#: What an order INSIDE an invoice says once it has failed. The invoice can still read
+#: "complete": that only means Bitrefill finished handling the payment, not that the recharge
+#: arrived (seen live on 2026-11-19: a Jio top-up shown as successful while Bitrefill emailed
+#: "Problem delivering your order").
+_BR_ORDER_FAILED = {"failed", "denied", "error", "payment_error", "refunded", "refund", "cancelled",
+                    "canceled", "expired", "not_delivered", "undeliverable", "rejected"}
+
+
 def bitrefill_state(out: dict) -> str:
     """One state for a Bitrefill invoice, as Shop.order returns it.
 
-    The invoice's own `status` leads. While it still says unpaid (or a word not known here), the
-    payment's status can say more: money seen, or too little of it.
+    The invoice's own `status` leads until it claims delivery; then the orders inside it decide.
+    Only `all_delivered`, or every order saying `delivered`, counts as delivered. A finished
+    invoice whose order did not deliver is failed (Bitrefill refunds it). Not knowing yet is
+    "delivering": keep looking, never guess success.
     """
     s = _BR_STATE.get(str(out.get("status") or "").strip().lower(), "unknown")
+    orders = [str(o.get("status") or "").strip().lower() for o in out.get("orders") or []]
+    if any(o in _BR_ORDER_FAILED for o in orders) and s not in ("waiting", "paying", "partial"):
+        return "refunded" if any(o in ("refunded", "refund") for o in orders) else "failed"
+    if s == "delivered":
+        raw = str(out.get("status") or "").strip().lower()
+        if orders and all(o == "delivered" for o in orders):
+            return "delivered"
+        if raw == "all_delivered" and not orders:
+            return "delivered"
+        # "complete" with orders that did not all deliver, or nothing to go on: not success.
+        return "failed" if orders else "delivering"
     if s in ("waiting", "unknown"):
         p = _BR_STATE.get(str(out.get("payment_status") or "").strip().lower(), "unknown")
         if p in ("paying", "partial", "delivering") or (s == "unknown" and p != "unknown"):
@@ -510,6 +531,33 @@ class TopupDesk:
                 self.store._db.execute("UPDATE topups SET looked_at=? WHERE id=?", (self._now(), row["id"]))
             return row
         return self._update(row, out)
+
+    def recheck_bitrefill(self, days: float = 7) -> int:
+        """Looks again, once, at recent Bitrefill orders marked delivered.
+
+        Before 2026-11-19 a finished invoice was read as delivered even when its order failed.
+        Any such order is corrected now, and its buyer told the real outcome.
+        """
+        if self.shop is None:
+            return 0
+        since = self._now() - days * 86400
+        with self.store._lock:
+            rows = [dict(r) for r in self.store._db.execute(
+                "SELECT * FROM topups WHERE supplier='bitrefill' AND state='delivered' AND created_at>?",
+                (since,)).fetchall()]
+        fixed = 0
+        for row in rows:
+            before = row["state"]
+            fresh = self._refresh_bitrefill(dict(row, state="delivering", told=1))
+            if fresh.get("state") != before:
+                fixed += 1
+                log.warning("topup %s was shown delivered; Bitrefill says %s", row["id"], fresh.get("state"))
+                # The buyer was told "delivered"; tell them what really happened.
+                with self.store._lock, self.store._db:
+                    self.store._db.execute("UPDATE topups SET told=0 WHERE id=?", (row["id"],))
+                if fresh.get("state") in FINAL:
+                    self._tell(self._row(row["id"]))
+        return fixed
 
     def _refresh_bitrefill(self, row: dict) -> dict:
         shop = self.shop.for_country(row["country"]) if hasattr(self.shop, "for_country") else self.shop

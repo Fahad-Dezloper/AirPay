@@ -101,8 +101,10 @@ class FakeShop:
 
     def order(self, invoice_id):
         self.orders_asked.append(invoice_id)
+        orders = ([{"status": st} for st in self.order_statuses] if getattr(self, "order_statuses", None)
+                  else [{"status": "delivered", "redemption": self.redemption}] if self.redemption else [])
         return {"invoice_id": invoice_id, "status": self.status, "payment_status": self.payment_status,
-                "orders": [{"status": "delivered", "redemption": self.redemption}] if self.redemption else []}
+                "orders": orders}
 
 
 class Clock:
@@ -285,7 +287,9 @@ class StateMapping(unittest.TestCase):
             ("not_delivered", "paid"): "delivering",      # contains "delivered"; is not
             ("partially_delivered", "paid"): "delivering",
             ("all_delivered", "paid"): "delivered",
-            ("complete", None): "delivered",
+            # "complete" says Bitrefill finished with the payment, not that the recharge arrived;
+            # without the orders to confirm it, keep looking (2026-11-19 failure).
+            ("complete", None): "delivering",
             ("expired", "unpaid"): "expired",
             ("denied", "paid"): "failed",
             ("payment_error", None): "failed",
@@ -341,3 +345,57 @@ class PackageNames(unittest.TestCase):
             self.skipTest("no price estimate in this environment")
         self.assertEqual(p["category"], "mobile_credits")
         self.assertEqual(p["benefits"], [{"type": "CREDITS", "unit": "INR", "amount": 7.47}])
+
+
+class DeliveryIsReadFromTheOrders(unittest.TestCase):
+    """A finished invoice is not a delivered recharge (seen live 2026-11-19)."""
+
+    def state(self, status, orders=(), payment=None):
+        from duffleserver.topups import bitrefill_state
+        return bitrefill_state({"status": status, "payment_status": payment,
+                                "orders": [{"status": o} for o in orders]})
+
+    def test_complete_invoice_with_a_failed_order_is_failed(self):
+        self.assertEqual(self.state("complete", ["failed"]), "failed")
+
+    def test_complete_invoice_with_an_undelivered_order_is_not_success(self):
+        self.assertEqual(self.state("complete", ["created"]), "failed")
+
+    def test_refunded_order_reads_refunded(self):
+        self.assertEqual(self.state("complete", ["refunded"]), "refunded")
+
+    def test_all_delivered_with_delivered_orders_is_delivered(self):
+        self.assertEqual(self.state("all_delivered", ["delivered"]), "delivered")
+        self.assertEqual(self.state("all_delivered"), "delivered")
+
+    def test_complete_without_order_detail_keeps_looking(self):
+        self.assertEqual(self.state("complete"), "delivering")
+
+    def test_not_delivered_is_never_delivered(self):
+        self.assertNotEqual(self.state("not_delivered", ["created"]), "delivered")
+
+    def test_unpaid_is_still_waiting(self):
+        self.assertEqual(self.state("unpaid", ["created"]), "waiting")
+
+
+class RecheckCorrectsAWrongDelivered(Base):
+    def test_a_failed_order_shown_as_delivered_is_corrected_and_the_buyer_told(self):
+        out = self.place("br:reliance-jio-india:jio-10")
+        # What the old reading did: a finished invoice taken as delivered, and the buyer told so.
+        with self.store._lock, self.store._db:
+            self.store._db.execute("UPDATE topups SET state='delivered', told=1 WHERE id=?", (out["id"],))
+        self.shop.status, self.shop.payment_status, self.shop.order_statuses = "complete", "paid", ["failed"]
+        self.assertEqual(self.desk.recheck_bitrefill(), 1)
+        row = self.store._db.execute("SELECT state, told FROM topups WHERE id=?", (out["id"],)).fetchone()
+        self.assertEqual(tuple(row), ("failed", 1))
+        self.assertEqual(self.told[-1][1]["status"], "failed")
+
+    def test_a_real_delivery_is_left_alone(self):
+        out = self.place("br:reliance-jio-india:jio-10")
+        with self.store._lock, self.store._db:
+            self.store._db.execute("UPDATE topups SET state='delivered', told=1 WHERE id=?", (out["id"],))
+        self.shop.status, self.shop.payment_status, self.shop.order_statuses = "all_delivered", "paid", ["delivered"]
+        told_before = len(self.told)
+        self.assertEqual(self.desk.recheck_bitrefill(), 0)
+        self.assertEqual(self.store._db.execute("SELECT state FROM topups WHERE id=?", (out["id"],)).fetchone()[0], "delivered")
+        self.assertEqual(len(self.told), told_before)

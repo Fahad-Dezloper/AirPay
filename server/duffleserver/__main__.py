@@ -115,6 +115,12 @@ def main() -> None:
                                                 host=env("SUPPORT_SMTP_HOST") or "smtp.gmail.com"))
 
     def follow_topups():
+        # Once at start: correct any recent Bitrefill order read as delivered when it was not.
+        try:
+            if topups.recheck_bitrefill():
+                logging.getLogger("duffle").warning("corrected Bitrefill orders shown as delivered")
+        except Exception:  # noqa: BLE001
+            logging.getLogger("duffle").exception("bitrefill recheck failed")
         while not stop.wait(10):
             try:
                 topups.watch()

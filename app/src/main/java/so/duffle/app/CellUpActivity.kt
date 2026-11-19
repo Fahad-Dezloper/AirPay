@@ -358,7 +358,7 @@ class CellUpActivity : ComponentActivity() {
         val n = number ?: return
         val op = operator ?: return
         val mail = email.trim()
-        if (!Identity.looksLikeEmail(mail)) { problem = "Enter an email for your receipt."; return }
+        if (!Identity.looksLikeEmail(mail)) { problem = "Enter your email: updates and any refund for this recharge are sent there."; return }
         val addr = connected ?: return connect { pay(plan) }
         if (busy != null) return
         problem = null
@@ -1112,7 +1112,11 @@ class CellUpActivity : ComponentActivity() {
                     RowLine()
                     Spacer(Modifier.height(Space.inline))
                     // The receipt email: asked once, kept if they say so, used every time after.
-                    Text("Email for your receipt", color = D.Black, style = Type.body)
+                    Text("Email for updates and refunds", color = D.Black, style = Type.body)
+                    Spacer(Modifier.height(2.dp))
+                    // The supplier writes here about the order, and if a recharge cannot be
+                    // delivered, the refund is claimed from that email. Say so where it is asked.
+                    Text("Your receipt, delivery updates and any refund are sent here.", color = D.Quiet, style = Type.caption)
                     Spacer(Modifier.height(Space.tight))
                     Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).border(1.5.dp, D.Line, RoundedCornerShape(14.dp))
                         .padding(horizontal = 14.dp, vertical = 14.dp)) {
@@ -1679,7 +1683,7 @@ class CellUpActivity : ComponentActivity() {
             Kind.CANCELLED -> "It was never paid, so nothing was charged."
             Kind.REFUNDED -> "It could not be delivered, so the USDC went back to your wallet."
             Kind.FAILED -> if (o.state == "partial") "Less than the full amount arrived. Contact support with the order number."
-                else "This recharge did not go through. If USDC left your wallet, contact support with the order number."
+                else "It could not be delivered. If you paid, check the email you entered: the refund is claimed from there. Tap Help if it isn't."
         }
     }
 
