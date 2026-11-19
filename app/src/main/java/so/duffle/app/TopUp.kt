@@ -154,6 +154,9 @@ object TopUp {
 
     suspend fun cancel(id: String): Order? = ServerClient.ask("/v1/topup/orders/$id/cancel", JSONObject())?.let { order(it) }
 
+    /** The buyer says the recharge reached the phone (Bitrefill orders wait for this). */
+    suspend fun confirm(id: String): Order? = ServerClient.ask("/v1/topup/orders/$id/confirm", JSONObject())?.let { order(it) }
+
     suspend fun history(): List<Order>? {
         val o = ServerClient.read("/v1/topup/orders") ?: return null
         return o.optJSONArray("orders").objects().mapNotNull { order(it) }

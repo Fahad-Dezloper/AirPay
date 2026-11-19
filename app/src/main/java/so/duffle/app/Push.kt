@@ -345,7 +345,7 @@ object Push {
             },
             text = when {
                 delivered -> "$label from $operator is on the number ending $phoneEnd."
-                status == "refunded" -> "Your $operator recharge could not be delivered and was refunded."
+                status == "refunded" -> "Your $operator recharge could not be delivered. Open AirPay to see how your refund comes back."
                 else -> "Your $operator recharge for the number ending $phoneEnd did not go through."
             },
             open = home(context),

@@ -459,6 +459,21 @@ class CellUpActivity : ComponentActivity() {
         }
     }
 
+    private var confirmBusy by mutableStateOf(false)
+
+    /** "Yes, I got it": the only way a Bitrefill recharge turns Successful before a day passes. */
+    private fun confirmReceived(o: TopUp.Order) {
+        confirmBusy = true
+        lifecycleScope.launch {
+            try {
+                val fresh = TopUp.confirm(o.id) ?: return@launch
+                (sheet as? Sheet.Paid)?.takeIf { it.order.id == o.id }?.let { sheet = it.copy(order = fresh) }
+                history.indexOfFirst { it.id == o.id }.takeIf { it >= 0 }?.let { history[it] = fresh }
+                if (fresh.delivered) Analytics.event("topup_delivered", "country" to fresh.country)
+            } finally { confirmBusy = false }
+        }
+    }
+
     private fun refreshHistory() {
         if (!Session.valid(connected)) return
         lifecycleScope.launch { TopUp.history()?.let { history.clear(); history.addAll(it) } }
@@ -1202,6 +1217,11 @@ class CellUpActivity : ComponentActivity() {
                         java.text.DateFormat.MEDIUM, java.text.DateFormat.SHORT).format(java.util.Date(o.createdAt)))
                     PurchaseFact("Order", o.id.removePrefix("cu_").take(10).uppercase())
                     Spacer(Modifier.height(Space.inline))
+                    if (o.state == "confirming") {
+                        PrimaryButton(if (confirmBusy) "Confirming…" else "Yes, I got it", { if (!confirmBusy) confirmReceived(o) },
+                            Modifier.fillMaxWidth(), loading = confirmBusy)
+                        TextLink("Not yet", { sheet = null }, modifier = Modifier.fillMaxWidth())
+                    } else
                     if (o.finished && s.plan == null) {
                         PrimaryButton(if (againBusy) "Opening plans…" else "Recharge again", { if (!againBusy) again(o) },
                             Modifier.fillMaxWidth(), loading = againBusy)
@@ -1678,10 +1698,14 @@ class CellUpActivity : ComponentActivity() {
     private class Status(val kind: Kind, val word: String, val ink: Color, val wash: Color, val headline: String) {
         fun detail(o: TopUp.Order) = when (kind) {
             Kind.DONE -> "${orderPlan(o)} is on ${Phones.pretty(o.phone)}."
-            Kind.PROCESSING -> "Your payment is in. The recharge reaches ${Phones.pretty(o.phone)} in a minute or two. We'll notify you."
+            Kind.PROCESSING -> if (o.state == "confirming")
+                    "Bitrefill says it was sent to ${Phones.pretty(o.phone)}. Got it? Tap Yes. If it fails, this changes on its own."
+                else "Your payment is in. The recharge reaches ${Phones.pretty(o.phone)} in a minute or two. We'll notify you."
             Kind.AWAITING -> "Nothing has been paid for this order yet."
             Kind.CANCELLED -> "It was never paid, so nothing was charged."
-            Kind.REFUNDED -> "It could not be delivered, so the USDC went back to your wallet."
+            Kind.REFUNDED -> if (o.supplier == "bitrefill")
+                    "It could not be delivered. Bitrefill emailed you about the refund: open that email and claim it if asked. Tap Help if it isn't there."
+                else "It could not be delivered, so the USDC went back to your wallet."
             Kind.FAILED -> if (o.state == "partial") "Less than the full amount arrived. Contact support with the order number."
                 else "It could not be delivered. If you paid, check the email you entered: the refund is claimed from there. Tap Help if it isn't."
         }
@@ -1697,6 +1721,7 @@ class CellUpActivity : ComponentActivity() {
             o.state == "cancelled" || o.state == "expired" || (o.state == "waiting" && stale && !paidHere) ->
                 Status(Kind.CANCELLED, "Cancelled", D.Quiet, D.Fill, "Cancelled")
             o.state == "waiting" && !paidHere -> Status(Kind.AWAITING, "Awaiting payment", D.OrangeInk, Color(0xFFFFF1E3), "Waiting for payment")
+            o.state == "confirming" -> Status(Kind.PROCESSING, "Confirming", D.BlueInk, PLAN_WASH, "Confirming your recharge")
             else -> Status(Kind.PROCESSING, "Processing", D.BlueInk, PLAN_WASH, "Processing your recharge")
         }
     }
@@ -1724,6 +1749,7 @@ class CellUpActivity : ComponentActivity() {
         val delivered: Pair<Step, String> = when {
             o.delivered -> Step.DONE to "Delivered to ${Phones.pretty(o.phone)}"
             o.state == "delivering" -> Step.ACTIVE to "Sending to ${o.operator}"
+            o.state == "confirming" -> Step.ACTIVE to "Did it reach ${Phones.pretty(o.phone)}?"
             o.state == "refunded" -> Step.FAILED to "Not delivered. Refunded"
             o.state == "failed" -> Step.FAILED to "Not delivered"
             st.kind == Kind.CANCELLED -> Step.SKIPPED to "Not sent"
@@ -1760,7 +1786,15 @@ class CellUpActivity : ComponentActivity() {
 
     private fun openOrder(o: TopUp.Order) {
         sheet = Sheet.Paid(null, o, null)
-        if (!o.finished) follow(o.id)
+        if (!o.finished) { follow(o.id); return }
+        // A finished order can still change (a supplier reverses a delivery), so the copy in the
+        // list is never trusted on its own: ask once and show what the server says now.
+        lifecycleScope.launch {
+            val fresh = TopUp.status(o.id) ?: return@launch
+            if (fresh.state == o.state) return@launch
+            history.indexOfFirst { it.id == o.id }.takeIf { it >= 0 }?.let { history[it] = fresh }
+            (sheet as? Sheet.Paid)?.takeIf { it.order.id == o.id }?.let { sheet = Sheet.Paid(null, fresh, null) }
+        }
     }
 
     // ---- words ---------------------------------------------------------------------------
