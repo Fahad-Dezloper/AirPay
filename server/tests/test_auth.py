@@ -208,7 +208,7 @@ class HttpAuthTest(unittest.TestCase):
 
     def test_full_sign_in_over_http(self):
         token = self.login(self.key, self.me)
-        self.assertEqual(200, self.call(f"/v1/rewards/{self.me}", token=token)[0])
+        self.assertEqual((200, self.me), (lambda r: (r[0], r[1]["address"]))(self.call("/v1/me", token=token)))
 
     def test_wrong_key_over_http_is_401_denied(self):
         _, c = self.call("/v1/auth/challenge", {"address": self.me})
@@ -216,26 +216,9 @@ class HttpAuthTest(unittest.TestCase):
         self.assertEqual((401, {"error": "denied"}), (code, body))
 
     def test_every_user_route_refuses_a_stranger(self):
-        posts = ["/v1/requests", "/v1/rpc", "/v1/rpc/mainnet", "/v1/withdrawals", "/v1/rejections",
-                 "/v1/deferrals", "/v1/taps", "/v1/messages", "/v1/rewards/preview", "/v1/rewards/reveal",
-                 "/v1/referrals/claim", "/v1/devices", "/v1/shop/invoice", "/v1/shop/order",
-                 "/v1/shop/operator", "/v1/offers/some-offer/claim",
-                 "/v1/sponsor", "/v1/sponsor/submit"]
-        for p in posts:
+        for p in ("/v1/rpc", "/v1/devices", "/v1/topup/orders", "/v1/auth/logout"):
             self.assertEqual(401, self.call(p, {"x": 1})[0], p)
-        for g in (f"/v1/rewards/{self.me}", f"/v1/referrals/{self.me}", "/v1/messages", "/v1/events"):
-            self.assertEqual(401, self.call(g)[0], g)
-
-    def test_reading_somebody_elses_rewards_is_403(self):
-        token = self.login(self.key, self.me)
-        self.assertEqual(403, self.call(f"/v1/rewards/{self.other}", token=token)[0])
-        self.assertEqual(403, self.call(f"/v1/referrals/{self.other}", token=token)[0])
-
-    def test_a_message_cannot_be_sent_as_somebody_else(self):
-        token = self.login(self.key, self.me)
-        code, row = self.call("/v1/messages", {"from": self.other, "to": self.other, "body": "hi"}, token)
-        self.assertEqual(200, code)
-        self.assertEqual(self.me, row["from"])
+        self.assertEqual(401, self.call("/v1/me")[0])
 
     def test_a_push_token_registers_for_the_caller_only(self):
         token = self.login(self.key, self.me)
@@ -243,36 +226,19 @@ class HttpAuthTest(unittest.TestCase):
         self.assertEqual([], self.svc.store.devices(self.other))
         self.assertEqual(["t" * 40], self.svc.store.devices(self.me))
 
-    def test_a_request_cannot_be_registered_for_two_strangers(self):
-        token = self.login(self.key, self.me)
-        third = wallet()[1]
-        code, _ = self.call("/v1/requests", {"reference": third, "recipient": self.other, "payer": third, "amount": "1"}, token)
-        self.assertEqual(403, code)
-
-    def test_a_tap_cannot_claim_to_come_from_somebody_else(self):
-        token = self.login(self.key, self.me)
-        self.assertEqual(403, self.call("/v1/taps", {"to": self.other, "address": self.other}, token)[0])
-
-    def test_a_refund_address_must_be_the_buyers_own(self):
-        token = self.login(self.key, self.me)
-        self.assertEqual(403, self.call("/v1/shop/invoice", {"product_id": "x", "refund_address": self.other}, token)[0])
-
-    def test_an_invoice_is_only_issued_in_a_currency_the_shop_takes(self):
-        token = self.login(self.key, self.me)
-        code, out = self.call("/v1/shop/invoice", {
-            "product_id": "x", "refund_address": self.me, "payment_method": "usdt_solana"}, token)
-        self.assertEqual(400, code)
-        self.assertIn("not supported", out.get("error", ""))
-
     def test_logout_revokes(self):
         token = self.login(self.key, self.me)
         self.assertEqual(200, self.call("/v1/auth/logout", {}, token)[0])
-        self.assertEqual(401, self.call(f"/v1/rewards/{self.me}", token=token)[0])
+        self.assertEqual(401, self.call("/v1/me", token=token)[0])
 
     def test_the_admin_token_is_not_a_user_session_and_vice_versa(self):
-        self.assertEqual(401, self.call(f"/v1/rewards/{self.me}", token="owner")[0])
+        self.assertEqual(401, self.call("/v1/me", token="owner")[0])
         token = self.login(self.key, self.me)
-        self.assertEqual(403, self.call("/v1/rewards/config", {"per_payment": 1}, token)[0])
+        self.assertEqual(403, self.call("/v1/admin/stats", token=token)[0])
+
+    def test_the_sign_in_text_names_airpay_s_real_site(self):
+        _, c = self.call("/v1/auth/challenge", {"address": self.me})
+        self.assertIn("URI: https://www.airpayy.com", c["message"])
 
     def test_sign_in_is_rate_limited(self):
         codes = {self.call("/v1/auth/challenge", {"address": wallet()[1]})[0] for _ in range(40)}

@@ -4,12 +4,11 @@
 #   1. wipes the server database (the old one is backed up to secrets/backup/) and starts the server
 #   2. points the app at this Mac's CURRENT address, builds it, installs it on the phone,
 #      wipes the app's data and opens it
-# The SKR payer is started too when secrets/payer.json and PAYER_PUBKEY are in place.
 # Phone: ADB_SERIAL=<serial> ./fresh.sh  (default: the Seeker).
 #
 # Why step 2 rewrites the address every time: the app is built knowing where the server is,
 # and the router hands this Mac a new address now and then. A build pointing at yesterday's
-# address cannot reach anything — no bills, no sign-in, no rewards — and says only "couldn't load".
+# address cannot reach anything (no plans, no sign-in) and says only "couldn't load".
 set -euo pipefail
 cd "$(dirname "$0")"
 MODE="${1:-full}"
@@ -29,12 +28,6 @@ if [ "$MODE" = "full" ]; then
   docker info >/dev/null 2>&1 || { echo "Docker is not running. Open Docker Desktop and run this again." >&2; exit 1; }
 
   say "1/3  Server: wipe the database and start"
-  if [ -f secrets/payer.json ] && grep -q '^PAYER_PUBKEY=.' server/.env; then
-    echo "payer key found: the SKR payer will start too"
-    export WITH_PAYER=1
-  else
-    echo "no payer key set up yet: starting the server without the SKR payer"
-  fi
   WIPE=yes ./run.sh reset
 fi
 

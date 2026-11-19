@@ -1,9 +1,8 @@
 """
-Buying real things with crypto, through Bitrefill.
+Phone recharges through Bitrefill.
 
-This is the answer to "why would anyone open this on a Tuesday". A tap pays a person; this pays
-a phone bill, a Hotstar subscription, a PhonePe balance that settles an electricity bill. India
-has 156 products; the catalogue is Bitrefill's, the payment is ours.
+AirPay uses it for the small phone recharges Cryptorefills will not sell (under its minimum):
+topups.py reads the operator's plans from here, places the invoice and follows the order.
 
 **The key lives here, not in the app.** A Bitrefill token compiled into an APK is readable by
 anyone who decompiles it, and it can read the account's order history.
@@ -31,7 +30,7 @@ import urllib.parse
 import urllib.request
 
 log = logging.getLogger("duffle.shop")
-
+_INVOICE_ID = re.compile(r"[A-Za-z0-9_-]{8,64}")
 
 def clean_text(raw: str | None) -> str | None:
     """Bitrefill's copy as plain text.
@@ -84,28 +83,6 @@ PINNED = (
 #: lookup rate-limits long before the catalogue does.
 OPERATOR_TTL = 600.0
 
-def _load_guides() -> dict:
-    """Hand-written content per product id, from `shop_guides.json`.
-
-    Bitrefill's own descriptions and terms are long and uneven, so these are the facts cut down
-    to what a buyer needs (ui/shop-guides.json, written 2026-10-02 from Bitrefill's text as it
-    stood on 2026-10-01). **A missing key means the catalogue does not say** — nothing here is
-    filled in to look complete — and a product with no entry is sent exactly as before.
-
-    A file that is missing or unreadable is an empty dict, never an exception: content is
-    decoration on top of a shop that works without it.
-    """
-    path = os.path.join(os.path.dirname(__file__), "shop_guides.json")
-    try:
-        with open(path, encoding="utf-8") as f:
-            guides = (json.load(f) or {}).get("guides") or {}
-    except (OSError, ValueError) as e:
-        log.info("shop guides unavailable: %s", e)
-        return {}
-    return {k: v for k, v in guides.items() if isinstance(v, dict)}
-
-
-GUIDES = _load_guides()
 
 #: Bitrefill's package `price` is an internal unit, not money. Two real purchases agree on how it
 #: converts: ₹50 Subway, price 629, was charged 0.54 USDC; ₹100 PhonePe, price 1294, was charged
@@ -114,41 +91,14 @@ GUIDES = _load_guides()
 #: overrides it. Whatever it says, the figure it produces is sent as an ESTIMATE.
 PRICE_UNITS_PER_USDC = float(os.environ.get("SHOP_PRICE_UNITS", "1165"))
 
-#: What a person is actually trying to do, in the order they would look for it. Bitrefill's own
-#: categories are shop-shaped ("apparel", "game-stores"); these are bill-shaped.
-SECTIONS = (
-    ("Phone", ("refill", "bundles", "data", "esim", "voip")),
-    # Three different things used to share one shelf called "TV & streaming": subscriptions you
-    # redeem online, satellite TV that credits a set-top box, and cinema tickets. They are not
-    # alternatives to each other — nobody deciding between Hotstar and a Dish TV recharge — and
-    # the one that needs a subscriber ID has nothing in common with the one that emails a code.
-    #
-    # Keyed on the precise category rather than "entertainment", which all three carry.
-    ("Streaming", ("streaming",)),
-    # Cinema is an explicit list, not a category. All four "experiences" products in India
-    # carry identical categories — PVR, BookMyShow, an arcade and Tinder — so there is nothing
-    # to key on. An include list means anything new falls through to More rather than being
-    # labelled Cinema because nobody updated a rule.
-    ("Cinema", ()),
-    # dth is deliberately absent: a set-top box recharge is not something this app does.
-    ("Bills & wallets", ("digital-wallet",)),
-    ("Travel", ("travel", "flights", "train", "bus", "online-travel-agencies", "gasoline")),
-    ("Food", ("food", "food-delivery", "groceries", "restaurants")),
-    ("Shopping", ("ecommerce", "online-marketplaces", "retail", "department-stores",
-                  "electronics", "apparel")),
-    ("Games", ("games", "game-stores", "in-game-currencies")),
-)
-
-
 def _positive(v) -> bool:
     try:
         return float(v) > 0
     except (TypeError, ValueError):
         return False
 
-
 class Shop:
-    """Bitrefill, reduced to the two things Duffle needs: what can I buy, and where do I pay."""
+    """Bitrefill, reduced to what a recharge needs: the plans, an invoice, and the order's state."""
 
     #: number -> (asked_at, answer). See OPERATOR_TTL.
     _operators: dict
@@ -297,7 +247,6 @@ class Shop:
         }
         # Content, where somebody wrote some. Merged under its own keys, so a product with no
         # entry is exactly what it was.
-        out.update(GUIDES.get(p.get("id")) or {})
         # The brand's own colour, which Bitrefill sends as `logo_background` on 55 of 150
         # products. A hand-written `brand_colour` wins; this fills the gap so the app does not
         # have to guess a ground from the logo's pixels where the catalogue already knows it.
@@ -323,58 +272,6 @@ class Shop:
             return {}
         return {"usd_price": f"{units / Shop.price_units:.2f}", "usd_price_estimate": True}
 
-    #: The Cinema shelf, by id. See the SECTIONS note.
-    CINEMA = ("pvr-cinemas-india", "bookmyshow-voucher-india")
-
-    def details(self, product_id: str) -> dict:
-        """The full text for one product, from the cache the catalogue was built from.
-
-        Served separately because it is only wanted once somebody has chosen something, and
-        because sending it with the catalogue would multiply the response by an order of
-        magnitude for text nobody reads while scrolling tiles.
-        """
-        for p in self.products():
-            if p.get("id") == product_id:
-                return {
-                    "id": product_id,
-                    "about": clean_text(p.get("description")),
-                    "terms": clean_text(p.get("termsAndConditions")),
-                }
-        return {"id": product_id}
-
-    #: Bitrefill categories that mean "credit a phone", as opposed to a gift card or a code.
-    RECHARGE = {"refill", "bundles", "data", "esim", "voip"}
-
-    def category_of(self, product_id: str) -> str:
-        """"recharge" or "gift" — what kind of purchase this was, for offers that ask for one."""
-        for p in self.products():
-            if p.get("id") == product_id:
-                return "recharge" if self.RECHARGE & set(p.get("categories") or []) else "gift"
-        return "gift"
-
-    def sections(self) -> list[dict]:
-        """The catalogue grouped the way someone shops for it, not the way a shop files it."""
-        items = [self._trim(p) for p in self.products()]
-        seen: set[str] = set()
-        out = []
-        cinema = [p for p in items if p["id"] in self.CINEMA]
-        for p in cinema:
-            seen.add(p["id"])
-        for title, cats in SECTIONS:
-            if title == "Cinema":
-                if cinema:
-                    out.append({"title": title, "products": cinema})
-                continue
-            rows = [p for p in items
-                    if p["id"] not in seen and any(c in cats for c in p["categories"])]
-            for p in rows:
-                seen.add(p["id"])
-            if rows:
-                out.append({"title": title, "products": rows})
-        rest = [p for p in items if p["id"] not in seen]
-        if rest:
-            out.append({"title": "More", "products": rest})
-        return out
 
     # -- paying ------------------------------------------------------------------------------
 
@@ -437,8 +334,6 @@ class Shop:
         pay = data.get("payment") or {}
         if not pay.get("address") or pay.get("price") is None:
             raise RuntimeError("that invoice came back without somewhere to pay it")
-        if payment_method == "usdc_solana":
-            self._learn_rate(product_id, package_id, value, int(pay["price"]))
         return {
             "invoice_id": data.get("id"),
             "address": pay["address"],
@@ -450,65 +345,6 @@ class Shop:
             "product_id": product_id,
             "value": value,
         }
-
-    def usd_estimate(self, product_id: str, package_id: str | None, value) -> float | None:
-        """About what a purchase costs in dollars, or None when the catalogue cannot say.
-
-        The same estimate the catalogue shows beside a package (see [_usd]), found for the package
-        actually bought. It exists so a purchase paid in SOL still has a dollar value on record: a
-        SOL invoice is quoted in lamports, which says nothing about dollars by itself.
-
-        A product sold by a free amount has no package to match. Its listed packages still say what
-        one unit of face value costs, so the price is scaled from the nearest of those. Good to a
-        few percent, which is enough to compare with an offer's floor and is never shown as a price.
-        """
-        try:
-            for p in self.products():
-                if p.get("id") != product_id:
-                    continue
-                packs = p.get("packages") or []
-                for pk in packs:
-                    if (package_id and pk.get("id") == package_id) or \
-                            (not package_id and str(pk.get("value")) == str(value)):
-                        est = self._usd(pk.get("price")).get("usd_price")
-                        return float(est) if est else None
-                if package_id:
-                    return None
-                face = float(value)
-                priced = [(float(pk["amount"]), float(pk["price"])) for pk in packs
-                          if _positive(pk.get("amount")) and _positive(pk.get("price"))]
-                if face <= 0 or not priced or Shop.price_units <= 0:
-                    return None
-                amount, price = min(priced, key=lambda ap: abs(ap[0] - face))
-                return round(face * price / amount / Shop.price_units, 2)
-        except (TypeError, ValueError):
-            return None
-        return None
-
-    def _learn_rate(self, product_id: str, package_id: str | None, value, base_units: int) -> None:
-        """Re-measure Bitrefill's unit against what an invoice actually asked for.
-
-        `base_units` is USDC at 6 decimals, which is only true of a USDC invoice — any other
-        payment method would measure a different currency and poison the estimate, so it is
-        skipped rather than guessed at. A reading that moves the rate by more than a third is
-        discarded: that is a bad invoice, not a market.
-        """
-        try:
-            for p in self.products():
-                if p.get("id") != product_id:
-                    continue
-                for pk in p.get("packages") or []:
-                    if (package_id and pk.get("id") == package_id) or \
-                            (not package_id and str(pk.get("value")) == str(value)):
-                        units, usdc = float(pk.get("price") or 0), base_units / 1_000_000
-                        if units > 0 and usdc > 0:
-                            rate = units / usdc
-                            if abs(rate - Shop.price_units) / Shop.price_units < 0.34:
-                                Shop.price_units = rate
-                                log.info("shop price unit: %.1f per USDC", rate)
-                        return
-        except (TypeError, ValueError):
-            return
 
     def operator(self, phone_number: str) -> dict:
         """Which network a number is on, according to Bitrefill.
@@ -538,9 +374,17 @@ class Shop:
         self._operators[number] = (now, out)
         return out
 
+    @staticmethod
+    def valid_invoice(invoice_id: str) -> bool:
+        """An id is spliced into a Bitrefill URL path, so only plain ids get that far: no
+        slashes, dots or query strings that would reach another endpoint with our key."""
+        return bool(_INVOICE_ID.fullmatch(invoice_id or ""))
+
     def order(self, invoice_id: str) -> dict:
         """What happened to an invoice. The app asks after paying, and keeps asking: delivery
         follows the payment by seconds, not milliseconds."""
+        if not self.valid_invoice(invoice_id):
+            raise ValueError("unknown invoice")
         data = self._get(f"/invoices/{invoice_id}").get("data") or {}
         orders = data.get("orders") or []
         out = []

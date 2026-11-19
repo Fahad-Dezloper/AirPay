@@ -5,8 +5,7 @@
 # What "start" does, in order:
 #   1. starts the AirPay server, opens the public tunnel and builds a fresh APK that points at it
 #      (this is ./share.sh, unchanged)
-#   2. starts the SKR payer too, when its key is set up
-#   3. installs that APK on every phone connected by USB, keeping the app's data, and opens it
+#   2. installs that APK on every phone connected by USB, keeping the app's data, and opens it
 #
 # One phone only:  ADB_SERIAL=<serial> ./start.sh     (see `adb devices` for serials)
 #
@@ -25,7 +24,7 @@ if [ "${1:-start}" = "stop" ]; then
   say "Stopping the tunnel and the server (data is kept)"
   [ -f "$PIDF" ] && kill "$(cat "$PIDF")" 2>/dev/null || true
   pkill -f "cloudflared tunnel" 2>/dev/null || true
-  (cd server && docker compose --profile payer stop)
+  (cd server && docker compose stop)
   echo "stopped. The app on the phone cannot reach the server until you run ./start.sh again."
   exit 0
 fi
@@ -36,16 +35,7 @@ say "A. Server, tunnel and a fresh APK"
 ./share.sh
 URL="$(cat "$URLF")"
 
-say "B. SKR payer"
-if [ -f secrets/payer.json ] && grep -q '^PAYER_PUBKEY=.' server/.env; then
-  # The same address as above, or the server would be restarted without knowing its own.
-  TRUST_PROXY=1 PUBLIC_URL="$URL" ./run.sh payer | tail -1
-  echo "payer started"
-else
-  echo "no payer key set up (secrets/payer.json and PAYER_PUBKEY): rewards will not pay out"
-fi
-
-say "C. Phones"
+say "B. Phones"
 if [ -n "${ADB_SERIAL:-}" ]; then
   PHONES="$ADB_SERIAL"
 else

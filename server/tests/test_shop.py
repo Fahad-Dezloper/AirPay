@@ -15,7 +15,7 @@ import os
 import unittest
 
 from duffleserver import shop
-from duffleserver.shop import GUIDES, Shop
+from duffleserver.shop import Shop
 
 
 def raw(pid="google-play-india", **kw) -> dict:
@@ -30,63 +30,6 @@ def raw(pid="google-play-india", **kw) -> dict:
     }
     p.update(kw)
     return p
-
-
-class GuideTest(unittest.TestCase):
-    def test_the_file_ships_and_loads(self):
-        # The same file the sandbox was written against: 23 products, keyed by Bitrefill id.
-        self.assertEqual(len(GUIDES), 24)
-        self.assertIn("google-play-india", GUIDES)
-
-    def test_a_guide_is_merged_under_the_keys_the_app_reads(self):
-        out = Shop._trim(raw("google-play-india"))
-        for key in ("kind", "line", "where_it_works", "how_used", "know", "steps", "amounts"):
-            self.assertIn(key, out, key)
-        self.assertEqual(out["kind"], "Gift card")
-        self.assertIsInstance(out["know"], list)
-        self.assertIsInstance(out["steps"], list)
-
-    def test_a_missing_key_stays_missing(self):
-        # Google Play's terms give no validity. The file leaves `valid_for` out and so must the
-        # response: filling the gap would be inventing a fact about somebody's money.
-        self.assertNotIn("valid_for", Shop._trim(raw("google-play-india")))
-
-    def test_a_product_with_no_guide_is_sent_exactly_as_before(self):
-        out = Shop._trim(raw("some-product-nobody-wrote-up"))
-        for key in ("kind", "line", "where_it_works", "how_used", "know", "steps", "amounts",
-                    "valid_for", "tab_label", "tab_line"):
-            self.assertNotIn(key, out, key)
-        self.assertEqual(out["id"], "some-product-nobody-wrote-up")
-        self.assertEqual(out["values"], ["500", "5000"])
-
-    def test_makemytrip_carries_its_tab_words(self):
-        tabs = [(k, g) for k, g in GUIDES.items() if "tab_label" in g]
-        self.assertEqual(len(tabs), 5)
-        self.assertEqual(sorted(g["tab_label"] for _, g in tabs),
-                         sorted(["Flights & hotels", "Holidays", "Rail", "Bus", "Hotel card"]))
-        for _, g in tabs:
-            self.assertTrue(g["tab_line"])
-
-    def test_a_missing_or_broken_file_is_an_empty_shelf_not_an_exception(self):
-        real = shop.os.path.dirname
-        try:
-            shop.os.path.dirname = lambda _p: "/nonexistent-dir"
-            self.assertEqual(shop._load_guides(), {})
-        finally:
-            shop.os.path.dirname = real
-
-
-class BrandColourTest(unittest.TestCase):
-    def test_a_written_colour_wins(self):
-        out = Shop._trim(raw("google-play-india", logo_background="#123456"))
-        self.assertEqual(out["brand_colour"], GUIDES["google-play-india"]["brand_colour"])
-
-    def test_the_catalogues_own_colour_fills_the_gap(self):
-        out = Shop._trim(raw("vodafone-india", logo_background="#EE3023"))
-        self.assertEqual(out["brand_colour"], "#EE3023")
-
-    def test_no_colour_anywhere_sends_none(self):
-        self.assertNotIn("brand_colour", Shop._trim(raw("nothing-here", logo_background=None)))
 
 
 class UsdPriceTest(unittest.TestCase):
@@ -122,35 +65,6 @@ class UsdPriceTest(unittest.TestCase):
         first = Shop._trim(p)["packages"][0]
         self.assertNotIn("usd_price", first)
         self.assertNotIn("usd_price_estimate", first)
-
-
-class RateLearningTest(unittest.TestCase):
-    def setUp(self):
-        self._units = Shop.price_units
-        Shop.price_units = 1165.0
-        self.s = Shop("key")
-        self.s._catalog = (10 ** 12, [raw()])           # fresh forever; no network
-
-    def tearDown(self):
-        Shop.price_units = self._units
-
-    def test_a_real_invoice_re_measures_the_rate(self):
-        # ₹500 priced 6385 units; the invoice asked 5.30 USDC -> 1204.7 units per USDC.
-        self.s._learn_rate("google-play-india", "google-play-india<&>500", "500", 5_300_000)
-        self.assertAlmostEqual(Shop.price_units, 6385 / 5.30, places=3)
-
-    def test_a_wild_reading_is_discarded(self):
-        # More than a third off is a bad invoice, not a market.
-        self.s._learn_rate("google-play-india", "google-play-india<&>500", "500", 500_000)
-        self.assertEqual(Shop.price_units, 1165.0)
-
-    def test_an_unknown_product_changes_nothing(self):
-        self.s._learn_rate("nope", None, "500", 5_300_000)
-        self.assertEqual(Shop.price_units, 1165.0)
-
-    def test_found_by_value_when_no_package_id_is_given(self):
-        self.s._learn_rate("google-play-india", None, "500", 5_300_000)
-        self.assertAlmostEqual(Shop.price_units, 6385 / 5.30, places=3)
 
 
 if __name__ == "__main__":

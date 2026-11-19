@@ -7,9 +7,6 @@
 #
 #   airpay-server:  fcm.json (Firebase service account)
 #
-# The SKR payer (AirPay's rewards and free network fees) is no longer deployed. With no
-# PAYER_URL set, the server simply reports rewards and fee sponsorship as off. The payer's code
-# is still in payer/ should it ever come back.
 
 services:
   - type: web
@@ -38,8 +35,6 @@ services:
         value: INFO
       - key: GOOGLE_APPLICATION_CREDENTIALS
         value: /etc/secrets/fcm.json
-      - key: HELIUS_WEBHOOK_TYPE
-        value: raw
       - key: FCM_PROJECT_ID
         sync: false
       - key: BITREFILL_API_KEY

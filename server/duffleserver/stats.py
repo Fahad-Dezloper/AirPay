@@ -20,7 +20,6 @@ import urllib.request
 
 DAY = 86_400.0
 REPO = "Fahad-Dezloper/AirPay"
-DELIVERED = ("all_delivered", "complete", "delivered")
 
 
 def _one(db: sqlite3.Connection, sql: str, *args) -> int:
@@ -53,37 +52,19 @@ def collect(db: sqlite3.Connection, now: float | None = None) -> dict:
         # Anyone who signed in, or whose session was renewed, in the window.
         "signed_in": window("SELECT COUNT(DISTINCT address) FROM sessions WHERE created_at >= ?"),
         "with_notifications": _one(db, "SELECT COUNT(DISTINCT recipient) FROM devices"),
-        "air_names": _one(db, "SELECT COUNT(*) FROM handles"),
     }
-    paid = "FROM requests WHERE status='paid'"
-    payments = {
-        "paid": _one(db, f"SELECT COUNT(*) {paid}"),
-        "paid_window": window(f"SELECT COUNT(*) {paid} AND paid_at >= ?"),
-        "by_tap": _one(db, f"SELECT COUNT(*) {paid} AND origin='tap'"),
-        "people_who_paid": _one(db, f"SELECT COUNT(DISTINCT payer) {paid} AND payer IS NOT NULL"),
-        "by_token": {s: n for s, n in _rows(db, f"SELECT symbol, COUNT(*) {paid} GROUP BY symbol ORDER BY 2 DESC")},
-        "requests_open": _one(db, "SELECT COUNT(*) FROM requests WHERE status='open'"),
+    done = "FROM topups WHERE state='delivered'"
+    recharges = {
+        "orders": _one(db, "SELECT COUNT(*) FROM topups"),
+        "orders_window": window("SELECT COUNT(*) FROM topups WHERE created_at >= ?"),
+        "delivered": _one(db, f"SELECT COUNT(*) {done}"),
+        "buyers": _one(db, f"SELECT COUNT(DISTINCT buyer) {done}"),
+        "usdc_delivered": round(float((_rows(db, f"SELECT COALESCE(SUM(CAST(usdc AS REAL)),0) {done}") or [[0]])[0][0] or 0), 2),
+        "by_state": {s: n for s, n in _rows(db, "SELECT state, COUNT(*) FROM topups GROUP BY state ORDER BY 2 DESC")},
+        "by_country": {c: n for c, n in _rows(db, f"SELECT country, COUNT(*) {done} GROUP BY country ORDER BY 2 DESC LIMIT 8")},
+        "by_supplier": {c: n for c, n in _rows(db, "SELECT supplier, COUNT(*) FROM topups GROUP BY supplier")},
     }
-    marks = ",".join("?" * len(DELIVERED))
-    shop = {
-        "orders": _one(db, "SELECT COUNT(*) FROM purchases"),
-        "delivered": _one(db, f"SELECT COUNT(*) FROM purchases WHERE status IN ({marks})", *DELIVERED),
-        "orders_window": window("SELECT COUNT(*) FROM purchases WHERE created_at >= ?"),
-        "buyers": _one(db, "SELECT COUNT(DISTINCT buyer) FROM purchases WHERE buyer IS NOT NULL"),
-        "usd_total": round(float(_rows(db, "SELECT COALESCE(SUM(usd),0) FROM purchases")[0][0] or 0), 2)
-        if _rows(db, "SELECT 1 FROM purchases LIMIT 1") else 0.0,
-        "by_category": {c or "other": n for c, n in _rows(
-            db, "SELECT category, COUNT(*) FROM purchases GROUP BY category ORDER BY 2 DESC LIMIT 8")},
-    }
-    rewards = {
-        "cards": _one(db, "SELECT COUNT(*) FROM rewards"),
-        "skr_by_state": {s: int(v or 0) for s, v in _rows(db, "SELECT state, SUM(skr) FROM rewards GROUP BY state")},
-        "offer_claims": _one(db, "SELECT COUNT(*) FROM claims"),
-        "skr_paid_out": _one(db, "SELECT COALESCE(SUM(skr),0) FROM payouts WHERE state='confirmed'"),
-        "referrals": _one(db, "SELECT COUNT(*) FROM referrals"),
-        "referrals_paid": _one(db, "SELECT COUNT(*) FROM referrals WHERE paid_at IS NOT NULL"),
-    }
-    # The last two weeks, one row a day: who joined and how many payments landed.
+    # The last two weeks, one row a day: who joined, how many recharges were placed and delivered.
     days = []
     for back in range(13, -1, -1):
         start = now - (back + 1) * DAY
@@ -91,10 +72,10 @@ def collect(db: sqlite3.Connection, now: float | None = None) -> dict:
         days.append({
             "day": time.strftime("%Y-%m-%d", time.gmtime(end)),
             "new_accounts": _one(db, "SELECT COUNT(*) FROM accounts WHERE created_at >= ? AND created_at < ?", start, end),
-            "payments": _one(db, f"SELECT COUNT(*) {paid} AND paid_at >= ? AND paid_at < ?", start, end),
-            "orders": _one(db, "SELECT COUNT(*) FROM purchases WHERE created_at >= ? AND created_at < ?", start, end),
+            "orders": _one(db, "SELECT COUNT(*) FROM topups WHERE created_at >= ? AND created_at < ?", start, end),
+            "delivered": _one(db, f"SELECT COUNT(*) {done} AND created_at >= ? AND created_at < ?", start, end),
         })
-    return {"at": now, "people": people, "payments": payments, "shop": shop, "rewards": rewards, "days": days}
+    return {"at": now, "people": people, "recharges": recharges, "days": days}
 
 
 def downloads(repo: str = REPO, timeout: float = 8.0) -> dict | None:
@@ -112,7 +93,7 @@ def downloads(repo: str = REPO, timeout: float = 8.0) -> dict | None:
 
 
 def _table(s: dict) -> str:
-    p, pay, shop, rw = s["people"], s["payments"], s["shop"], s["rewards"]
+    p, rc = s["people"], s["recharges"]
     w = lambda d: f"{d['24h']:>5} today   {d['7d']:>5} this week   {d['30d']:>5} this month"
     lines = [f"AirPay stats   {time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime(s['at']))}", ""]
     dl = s.get("downloads")
@@ -123,25 +104,16 @@ def _table(s: dict) -> str:
               f"  accounts         {p['accounts']}   ({p['wallets']} wallets linked)",
               f"  new accounts     {w(p['new_accounts'])}",
               f"  signed in        {w(p['signed_in'])}",
-              f"  notifications on {p['with_notifications']}      .air names {p['air_names']}", ""]
-    tokens = "  ".join(f"{k} {v}" for k, v in pay["by_token"].items()) or "none"
-    lines += ["PAYMENTS",
-              f"  paid             {pay['paid']}   by tap {pay['by_tap']}   by {pay['people_who_paid']} people",
-              f"  paid in window   {w(pay['paid_window'])}",
-              f"  tokens           {tokens}",
-              f"  open requests    {pay['requests_open']}", ""]
-    cats = "  ".join(f"{k} {v}" for k, v in shop["by_category"].items()) or "none"
-    lines += ["SHOP",
-              f"  orders           {shop['orders']}   delivered {shop['delivered']}   buyers {shop['buyers']}   ${shop['usd_total']:,.2f}",
-              f"  orders in window {w(shop['orders_window'])}",
-              f"  categories       {cats}", ""]
-    st = "  ".join(f"{k} {v}" for k, v in rw["skr_by_state"].items()) or "none"
-    lines += ["REWARDS",
-              f"  scratch cards    {rw['cards']}   SKR by state: {st}",
-              f"  offers claimed   {rw['offer_claims']}   SKR paid out {rw['skr_paid_out']}",
-              f"  referrals        {rw['referrals']}   rewarded {rw['referrals_paid']}", ""]
-    lines += ["LAST 14 DAYS        new  payments  orders"]
-    lines += [f"  {d['day']}     {d['new_accounts']:>4}  {d['payments']:>8}  {d['orders']:>6}" for d in s["days"]]
+              f"  notifications on {p['with_notifications']}", ""]
+    states = "  ".join(f"{k} {v}" for k, v in rc["by_state"].items()) or "none"
+    countries = "  ".join(f"{k} {v}" for k, v in rc["by_country"].items()) or "none"
+    lines += ["RECHARGES",
+              f"  orders           {rc['orders']}   delivered {rc['delivered']}   buyers {rc['buyers']}   ${rc['usdc_delivered']:,.2f}",
+              f"  orders in window {w(rc['orders_window'])}",
+              f"  by state         {states}",
+              f"  by country       {countries}", ""]
+    lines += ["LAST 14 DAYS        new  orders  delivered"]
+    lines += [f"  {d['day']}     {d['new_accounts']:>4}  {d['orders']:>6}  {d['delivered']:>9}" for d in s["days"]]
     return "\n".join(lines)
 
 

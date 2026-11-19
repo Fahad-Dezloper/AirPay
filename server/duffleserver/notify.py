@@ -1,13 +1,11 @@
 """
-Two doorbells: a live SSE stream for a payee with the app open, and FCM for one with it
-closed. Neither is the judge — the app re-checks the chain before showing ✓ Paid — so a
-duplicate or spurious ring costs a lookup, never money.
+Push (FCM) for a recharge that finishes while the app is closed. The app re-reads the order
+from the server when opened, so a duplicate or lost push costs nothing.
 """
 from __future__ import annotations
 
 import json
 import logging
-import queue
 import threading
 import urllib.error
 import urllib.request
@@ -15,58 +13,11 @@ import urllib.request
 log = logging.getLogger("duffle.notify")
 
 
-class Hub:
-    """Fan-out of paid events to SSE subscribers, keyed by recipient address."""
+#: A recharge finishing is the one thing AirPay tells you, and it is news: wake the phone.
+URGENT = frozenset({"topup"})
 
-    MAX_PER_RECIPIENT = 8
-
-    def __init__(self):
-        self._subs: dict[str, list[queue.Queue]] = {}
-        self._lock = threading.Lock()
-
-    def subscribe(self, recipient: str) -> queue.Queue | None:
-        q: queue.Queue = queue.Queue(maxsize=100)
-        with self._lock:
-            subs = self._subs.setdefault(recipient, [])
-            if len(subs) >= self.MAX_PER_RECIPIENT:
-                return None
-            subs.append(q)
-        return q
-
-    def unsubscribe(self, recipient: str, q: queue.Queue) -> None:
-        with self._lock:
-            subs = self._subs.get(recipient, [])
-            if q in subs:
-                subs.remove(q)
-            if not subs:
-                self._subs.pop(recipient, None)
-
-    def publish(self, recipient: str, event: dict) -> int:
-        with self._lock:
-            subs = list(self._subs.get(recipient, []))
-        for q in subs:
-            try:
-                q.put_nowait(event)
-            except queue.Full:
-                pass  # a stalled client loses a doorbell, not a payment
-        return len(subs)
-
-    def count(self) -> int:
-        with self._lock:
-            return sum(len(v) for v in self._subs.values())
-
-
-#: What cannot wait: money arriving, somebody asking for it or answering, somebody standing
-#: next to you. These wake a sleeping phone. Everything else (rewards, referrals, offers) is
-#: sent at normal priority, which the phone may hold until it next wakes: nothing is lost by a
-#: reward arriving a few minutes late, and FCM stops honouring "high" for an app that uses it
-#: for everything.
-URGENT = frozenset({"paid", "wallet", "request", "withdrawn", "rejected", "deferred", "tap", "message", "shop"})
-
-#: How long FCM keeps trying a phone that is switched off, per kind, in seconds. The default is
-#: four weeks, which is how "X tapped your phone" turns up a fortnight after X went home. A tap
-#: is only news while they are still standing there; an offer nudge is stale after a day.
-TTL = {"tap": 300, "offer": 24 * 3600}
+#: How long FCM keeps trying a switched-off phone, per kind, in seconds. Unset: FCM's default.
+TTL: dict[str, int] = {}
 
 
 def android_config(kind: str) -> dict:

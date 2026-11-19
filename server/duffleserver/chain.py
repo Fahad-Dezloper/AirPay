@@ -1,11 +1,9 @@
-"""Solana RPC, reduced to the three calls the server needs. Stdlib only."""
+"""Solana RPC: the proxy the phones pay through, and the account lookup a recharge needs. Stdlib only."""
 from __future__ import annotations
 
 import json
 import urllib.error
 import urllib.request
-
-from . import verify
 
 
 class Offline(Exception):
@@ -52,10 +50,9 @@ class Rpc:
     #: Read-and-send methods the phones are allowed to proxy through this server. Anything
     #: outside this list is refused, so an open proxy cannot be pointed at arbitrary RPC.
     PROXYABLE = {
-        "getLatestBlockhash", "getBalance", "sendTransaction", "getSignaturesForAddress",
-        "getTransaction", "getSignatureStatuses", "getHealth", "isBlockhashValid",
-        # Token payments: what a wallet holds, what a mint is, whether an account exists.
-        "getTokenAccountsByOwner", "getAccountInfo", "getTokenAccountBalance",
+        # What building and sending one USDC payment needs, and nothing else.
+        "getLatestBlockhash", "getBalance", "sendTransaction", "getSignatureStatuses",
+        "isBlockhashValid", "getAccountInfo", "getTokenAccountBalance",
     }
 
     def forward(self, payload: dict) -> dict:
@@ -66,43 +63,3 @@ class Rpc:
         body = json.dumps({"jsonrpc": "2.0", "id": payload.get("id", 1),
                            "method": method, "params": payload.get("params", [])}).encode()
         return self._post(body)
-
-    def signatures(self, address: str) -> list[str]:
-        # `confirmed` is the floor for this method; `processed` is refused.
-        res = self.call("getSignaturesForAddress", [address, {"limit": 10, "commitment": "confirmed"}])
-        return verify.successful_signatures(res)
-
-    def signatures_with_time(self, address: str, limit: int = 20) -> list[dict]:
-        """Successful signatures with their block times, so a caller can skip transactions
-        older than it cares about without fetching each one to find out."""
-        res = self.call("getSignaturesForAddress", [address, {"limit": limit, "commitment": "confirmed"}])
-        return [{"signature": e["signature"], "blockTime": e.get("blockTime")}
-                for e in (res or []) if isinstance(e, dict) and e.get("err") is None and "signature" in e]
-
-    def mint_decimals(self, mint: str) -> int | None:
-        """The decimals the chain says a mint has; None if it isn't a mint."""
-        res = self.call("getAccountInfo", [mint, {"encoding": "jsonParsed"}])
-        try:
-            parsed = res["value"]["data"]["parsed"]
-            return int(parsed["info"]["decimals"]) if parsed.get("type") == "mint" else None
-        except (KeyError, TypeError, ValueError):
-            return None
-
-    def transaction(self, signature: str) -> dict | None:
-        return self.call(
-            "getTransaction",
-            [signature, {"encoding": "json", "commitment": "confirmed", "maxSupportedTransactionVersion": 0}],
-        )
-
-
-def find_payment(rpc, reference: str, recipient: str, want: int, mint: str | None = None) -> tuple[str, str, str]:
-    """Returns (kind, signature, why) with kind in paid | short | notyet.
-    Raises Offline / RpcError, which callers must treat as 'unknown', not 'unpaid'."""
-    short = ("notyet", "", "")
-    for sig in rpc.signatures(reference):
-        v = verify.verify_transfer(rpc.transaction(sig), reference, recipient, want, mint)
-        if v.kind == "paid":
-            return ("paid", sig, "")
-        if v.kind == "rejected":
-            short = ("short", sig, v.why)
-    return short
