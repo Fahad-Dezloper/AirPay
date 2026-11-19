@@ -12,6 +12,10 @@
   <img src="https://img.shields.io/badge/Wallet-never%20holds%20your%20keys-111418" alt="Never holds your keys">
 </p>
 
+<p align="center">
+  <img src="docs/images/cellup-globe.gif" alt="CellUp's home screen globe turning, with the flags of supported countries appearing" width="300">
+</p>
+
 CellUp is a native Android app for the Solana Seeker that does one thing: tops up a prepaid phone,
 anywhere. Type the number, CellUp finds its network, shows that network's plans, and you pay the
 exact USDC amount from your own wallet. It never holds your money or your keys; every payment is
@@ -22,6 +26,19 @@ signed in your wallet and checked on Solana mainnet.
 > `so.duffle.app` and some folders say `duffle`; those are earlier names of the same project.
 
 ---
+
+## Screens
+
+<table>
+  <tr>
+    <td align="center"><img src="docs/images/cellup-home.jpg" width="190" alt="Home: enter your phone number, with a globe of supported countries"><br><sub><b>Type a number</b></sub></td>
+    <td align="center"><img src="docs/images/cellup-plans.jpg" width="190" alt="Airtel plans found from the number, sorted by price"><br><sub><b>Network found, plans listed</b></sub></td>
+    <td align="center"><img src="docs/images/cellup-pay.jpg" width="190" alt="A plan's details with the USDC amount to pay"><br><sub><b>Pay in USDC</b></sub></td>
+    <td align="center"><img src="docs/images/cellup-indonesia.jpg" width="190" alt="Telkomsel plans for an Indonesian number, priced in rupiah"><br><sub><b>Works abroad too</b></sub></td>
+  </tr>
+</table>
+
+<sub>Screenshots use test numbers.</sub>
 
 ## What it does
 
@@ -53,7 +70,7 @@ checkouts are cancelled so they never count as unpaid orders.
 |---|---|
 | [`app/`](app) | The Android app. Kotlin and Jetpack Compose. CellUp's screens are in `CellUpActivity.kt`, the recharge client in `TopUp.kt`, number handling in `Phones.kt`. |
 | [`server/`](server) | The backend. Python and SQLite, in Docker, deployed to Render from `main`. Recharges in `topups.py` and `cryptorefills.py`, support mail in `support.py`. |
-| [`payer/`](payer) | A small separate service that holds keys. Used by AirPay's rewards and fee sponsorship; CellUp doesn't need it. |
+| [`payer/`](payer) | AirPay's key-holding service for SKR rewards and fee sponsorship. CellUp doesn't use it and it is no longer deployed. |
 
 ---
 
