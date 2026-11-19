@@ -1,12 +1,15 @@
-# AirPay on Render: the server (public, at api.airpayy.com) and the SKR payer (private, holds the
-# keys). Create both at once from the Render dashboard: New > Blueprint > this repository.
+# CellUp on Render: one service, the server (public, at api.airpayy.com).
+# Create it from the Render dashboard: New > Blueprint > this repository.
 #
 # Secrets are never in this file. Values marked `sync: false` are asked for once, when the
-# Blueprint is created. The key files are added afterwards as Render "Secret Files" on each
-# service (Environment > Secret Files), which Render mounts under /etc/secrets/.
+# Blueprint is created. The Firebase key is added afterwards as a Render "Secret File"
+# (Environment > Secret Files), which Render mounts under /etc/secrets/:
 #
-#   airpay-server:  fcm.json (Firebase service account), payer_hmac
-#   skr-payer:      payer.json, sponsor.json, hmac   (hmac = the same contents as payer_hmac)
+#   airpay-server:  fcm.json (Firebase service account)
+#
+# The SKR payer (AirPay's rewards and free network fees) is no longer deployed. With no
+# PAYER_URL set, the server simply reports rewards and fee sponsorship as off. The payer's code
+# is still in payer/ should it ever come back.
 
 services:
   - type: web
@@ -35,14 +38,6 @@ services:
         value: INFO
       - key: GOOGLE_APPLICATION_CREDENTIALS
         value: /etc/secrets/fcm.json
-      - key: PAYER_HMAC_SECRET_FILE
-        value: /etc/secrets/payer_hmac
-      # The payer's address on Render's private network.
-      - key: PAYER_URL
-        fromService:
-          type: pserv
-          name: skr-payer
-          property: hostport
       - key: HELIUS_WEBHOOK_TYPE
         value: raw
       - key: FCM_PROJECT_ID
@@ -66,40 +61,4 @@ services:
       - key: DUFFLE_MAINNET_RPC
         sync: false
       - key: DUFFLE_ADMIN_TOKEN
-        sync: false
-
-  - type: pserv
-    name: skr-payer
-    runtime: docker
-    rootDir: payer
-    dockerfilePath: ./Dockerfile
-    dockerContext: .
-    region: singapore
-    plan: starter
-    disk:
-      name: payer-data
-      mountPath: /data
-      sizeGB: 1
-    envVars:
-      - key: PORT
-        value: "8788"
-      - key: PAYER_KEYFILE
-        value: /etc/secrets/payer.json
-      - key: SPONSOR_KEYFILE
-        value: /etc/secrets/sponsor.json
-      - key: PAYER_HMAC_SECRET_FILE
-        value: /etc/secrets/hmac
-      - key: MAX_PAYOUT_SKR
-        value: "1000"
-      - key: MAX_DAY_SKR
-        value: "10000"
-      - key: MAX_RECIPIENT_DAY_SKR
-        value: "1500"
-      - key: SPONSOR_FEE_USDC_UNITS
-        value: "10000"
-      - key: PAYER_PUBKEY
-        sync: false
-      - key: SPONSOR_PUBKEY
-        sync: false
-      - key: PAYER_RPC_URL
         sync: false
